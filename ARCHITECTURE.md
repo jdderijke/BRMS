@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.8 – concept** · 8 november 2026
+**Versie 0.9 – concept** · 8 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -169,7 +169,7 @@ staat; daarom QoS 1.
 4. `sensor_id` is de vaste ID uit de configuratie (bijv. het MAC-adres met dubbele punten,
    toegestaan in MQTT-topics).
 5. Elke grootheid heeft **één vaste eenheid** (bijv. °C, %, V, A, dBm, mG); berichten
-   bevatten geen eenheid. **[OPEN-25]** Tabel van grootheden: namen, eenheden en soort.
+   bevatten geen eenheid. De tabel van grootheden staat in §5.3.3.
 
 ---
 
@@ -272,14 +272,67 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
 |---|---|---|---|
 | BTHome v2 | Xiaomi Monitor 3 (pvvx) | BLE-advertenties, `bleak` | Eerste stap |
 | Ruuvi | RuuviTag (Pro) | BLE-advertenties; **[OPEN-5]** `ruuvitag-sensor` of eigen decoder op `bleak` | Gepland |
-| Victron | BMV-700 | **[OPEN-6]** BLE Instant Readout (`victron-ble`) of VE.Direct-USB (tekstprotocol) | Gepland |
-| Shelly | Walstroom, bilge | Lokale HTTP-API | Gepland |
-| Laadregelaar | Zonnepaneel 50 Wp | **[OPEN-7]** afhankelijk van type | Open |
+| Victron | BMV-700, 3× MPPT, MultiPlus | BLE Instant Readout, decoder in de BLE-reader (§5.2.2) | Gepland |
+| Shelly | Bilge | Lokale HTTP-API | Gepland |
 | Camera | IP-camera dek | Foto per interval, video op poll-nu (§5.7) | Later |
 | GPIO | Waar nodig | — | Gepland |
 
-**Walstroom.** De Shelly zit aan de 230V-kant: als hij offline is, is de walstroom weg.
-**[OPEN-8]** Hoe "offline" wordt vastgesteld (aantal gemiste polls / tijdsduur; poll-interval 30 s, §5.3.2).
+#### 5.2.2 Victron-apparaten en walstroom (besluit OPEN-6, OPEN-7, vervallen OPEN-8)
+
+**Aanleiding.** Open stond hoe de BMV-700 wordt uitgelezen (OPEN-6), welk type
+laadregelaar het zonnepaneel heeft (OPEN-7), en hoe walstroomuitval met de Shelly aan de
+230V-kant wordt vastgesteld (OPEN-8).
+
+**Redenering.** Aan boord zijn:
+- Victron BMV-700 met VE.Direct Bluetooth Smart dongle;
+- 2× Victron BlueSolar MPPT 75/15 met VE.Direct Bluetooth Smart dongle;
+- 1× Victron SmartSolar MPPT 100/30 met ingebouwde Bluetooth;
+- Victron MultiPlus 12/3000/120-16 (VE.Bus, geen ingebouwde Bluetooth), plus een MK3-USB
+  interface voor configuratie.
+
+Drie zonnebanken: 's winters is alleen één bank aangesloten (50 Wp), 's zomers ook de
+andere. Alle drie worden meegenomen.
+
+De VE.Direct Bluetooth Smart dongle (firmware ≥ 2.41, "instant readout" aangezet in
+VictronConnect) ondersteunt **Instant Readout** voor BMV-70x en BlueSolar MPPT: de
+belangrijkste gegevens worden versleuteld uitgezonden zonder koppeling. De SmartSolar doet
+dat met ingebouwde Bluetooth. Een **VE.Bus Smart dongle** voegt Instant Readout toe aan de
+MultiPlus, inclusief de toestand van de AC-ingang. Daarmee lopen alle Victron-apparaten via
+één decoder in de bestaande BLE-reader (§5.2.1), zonder extra reader of bekabeling.
+
+Walstroom via de MultiPlus is een *directe* meting: de MultiPlus meldt zelf of er spanning
+op de AC-ingang staat. Bij de Shelly aan de 230V-kant was stilte het signaal ("offline =
+walstroom weg"), wat botste met de regel dat ontbrekende data geen 0 is (§5.3.2) en een
+offline-criterium vereiste (OPEN-8). Met de MultiPlus is `walstroom = 0` een echte meting,
+en betekent stilte gewoon "sensor stil". Er is geen werk aan de 230V-kant nodig.
+
+**Verworpen alternatieven.**
+- *VE.Direct-USB-kabels (tekstprotocol) voor BMV en MPPT's.* Bekabeling naar elk apparaat;
+  de dongles zijn al aanwezig en Instant Readout volstaat.
+- *Walstroom via Shelly aan de 230V-kant.* Indirecte meting (stilte = walstroom weg), vereist
+  een offline-criterium en installatie aan de 230V-kant.
+- *Walstroom via de MK3-USB (MK2-protocol).* Bekabeld en meer gegevens, maar een tweede soort
+  Victron-reader met eigen protocol en seriële afhankelijkheid; het protocol kan ook
+  instellingen wijzigen; de MK3 is dan bezet voor configuratie en wordt bus master (waarna
+  een VE.Bus Smart dongle weinig toont). Eenvoud (P1) weegt zwaarder.
+- *Walstroom afleiden uit BMV-stroom of -spanning.* Onbetrouwbaar: laden kan ook van de
+  zon komen, druppelladen geeft ~0 A, en bij LiFePO4 ligt de rustspanning dicht bij de
+  druppellaadspanning.
+- *Alleen de MPPT met het aangesloten winterpaneel meenemen.* 's Zomers zijn alle drie in gebruik.
+
+**Specificatie.**
+1. BMV-700, de drie MPPT's en de MultiPlus worden uitgelezen via **BLE Instant Readout**,
+   gedecodeerd door de Victron-decoder in de BLE-reader (`victron-ble` als decoder, niet als
+   eigen scanner).
+2. Elk apparaat heeft een eigen `sensor_id` en een eigen **encryptiesleutel** (uit
+   VictronConnect) in de configuratie (§5.4).
+3. Vereist: VE.Direct-dongles op firmware ≥ 2.41 met instant readout aan; een **VE.Bus Smart
+   dongle** op de MultiPlus (aan te schaffen). Geen bus master (MK3, GX) permanent op de VE.Bus.
+4. **Walstroom** komt uit de AC-ingangstoestand van de MultiPlus (grootheid `walstroom`,
+   §5.3.3). De veldnaam in de decoder (bekend als `ac_in_state`) wordt bij de eerste test
+   met de echte MultiPlus bevestigd.
+5. De Shelly-reader (§5.2.1) wordt alleen nog gebruikt voor de **bilge** (Shelly Plus Uni).
+6. OPEN-8 vervalt.
 
 ### 5.3 Opslag
 
@@ -335,7 +388,7 @@ in type, duur en bewaarbeleid, en delen daarom één tabel `opname`.
 -- Alle numerieke metingen
 CREATE TABLE meting (
     ts         INTEGER NOT NULL,  -- Unix-tijd UTC, seconden
-    sensor_id  TEXT    NOT NULL,  -- vaste ID (bijv. MAC of 'shelly-walstroom'), niet de naam
+    sensor_id  TEXT    NOT NULL,  -- vaste ID (bijv. MAC of 'shelly-bilge'), niet de naam
     grootheid  TEXT    NOT NULL,  -- 'temperatuur', 'vocht', 'soc', 'bilge', ...
     waarde     REAL    NOT NULL,  -- aan/uit als 0/1
     PRIMARY KEY (sensor_id, grootheid, ts)
@@ -408,7 +461,8 @@ gemiddelde over 5 minuten geeft in feite de helling van de boot, de schokken zit
 toename.
 
 *Ontbrekende data.* Een interval zonder ontvangen data levert geen rij op, en zeker geen 0:
-bij walstroom betekent 0 "walstroom weg", wat iets anders is dan "geen bericht van de Shelly".
+bij walstroom betekent 0 "walstroom weg", wat iets anders is dan "geen bericht van de
+MultiPlus" (§5.2.2).
 
 *Flash.* Eén commit per opslagmoment (288 per dag) geeft inclusief WAL en checkpoint
 ruwweg 5–10 MB schrijfvolume per dag, enkele GB per jaar – verwaarloosbaar voor de
@@ -446,6 +500,54 @@ flashdrive. Het OS zelf (logs, swap, caches) schrijft waarschijnlijk meer; dat i
 4. Een interval zonder ontvangen data levert geen rij op.
 5. Elk opslagmoment is één commit; geen extra buffering. Bij stroomuitval gaat hooguit het
    lopende interval verloren.
+
+#### 5.3.3 Grootheden (besluit OPEN-25)
+
+**Aanleiding.** Berichten en database bevatten geen eenheid (§3.3); daarvoor moet per
+grootheid één naam, één eenheid en één soort vastliggen.
+
+**Redenering.** De tabel volgt uit wat de bronnen leveren. Namen zijn Nederlands, in kleine
+letters, zonder eenheid in de naam. Enkele keuzes:
+- *Sensorbatterij alleen als spanning.* Ruuvi levert alleen spanning; het percentage van
+  pvvx is daaruit berekend. Eén grootheid maakt alle sensoren vergelijkbaar en één alarm
+  "sensorbatterij laag" mogelijk.
+- *`batterijspanning` naast `spanning`.* De sensorbatterij en de accu krijgen verschillende
+  namen, zodat ze in configuratie en alarmen niet te verwarren zijn.
+- *Luchtdruk.* Kost niets extra (de Ruuvi 4-in-1 zendt hem toch) en een snel dalende druk
+  kondigt storm aan.
+- *Resterende tijd.* Victron's schatting hoe lang de accu het nog houdt; tijdens laden
+  levert de BMV geen waarde, en wordt er niets gepubliceerd.
+- *MPPT minimaal.* Alleen vermogen van het paneel en laadstroom naar de accu.
+
+**Verworpen alternatieven.**
+- *Sensorbatterij als percentage.* Niet door alle sensoren geleverd.
+- *Accuspanning van de MPPT's.* De BMV meet die al en is de referentie.
+- *"Opbrengst vandaag" van de MPPT's.* Teller die elke nacht naar 0 gaat; een gemiddelde rond
+  middernacht klopt niet. Achteraf te berekenen uit `zonnevermogen`.
+- *Laadfase van de MPPT (bulk/absorptie/druppel).* Geen getal en geen 0/1; past niet in de
+  soorten van §5.3.2.
+
+**Specificatie.** Een reader kan alleen grootheden uit deze tabel publiceren. De tabel
+staat op één plek in de code (module `grootheden`); dit document bevat een kopie.
+
+| Grootheid | Eenheid | Soort | Bron | Opmerking |
+|---|---|---|---|---|
+| `temperatuur` | °C | doorlopend | BTHome, Ruuvi | |
+| `vocht` | % | doorlopend | BTHome, Ruuvi | relatieve luchtvochtigheid |
+| `luchtdruk` | hPa | doorlopend | Ruuvi (4-in-1) | |
+| `versnelling_x`, `versnelling_y`, `versnelling_z` | mG | doorlopend | Ruuvi | gemiddelde ≈ helling van de boot |
+| `beweging` | aantal | toename | Ruuvi | toename van de bewegingsteller |
+| `batterijspanning` | V | doorlopend | BTHome, Ruuvi | batterij van de sensor zelf |
+| `rssi` | dBm | doorlopend | alle BLE-apparaten | signaalsterkte, gemeten door de scanner |
+| `spanning` | V | doorlopend | BMV-700 | accuspanning |
+| `stroom` | A | doorlopend | BMV-700 | negatief = ontladen |
+| `soc` | % | doorlopend | BMV-700 | laadtoestand |
+| `verbruikt` | Ah | doorlopend | BMV-700 | verbruikt sinds vol |
+| `resterende_tijd` | min | doorlopend | BMV-700 | geen waarde tijdens laden |
+| `zonnevermogen` | W | doorlopend | MPPT (3×) | vermogen van het paneel |
+| `laadstroom_zon` | A | doorlopend | MPPT (3×) | stroom van de MPPT naar de accu |
+| `walstroom` | 0/1 | toestand | MultiPlus | 1 = AC-ingang aanwezig |
+| `bilge` | 0/1 | toestand | Shelly Plus Uni | 1 = vlotter actief |
 
 **[OPEN-11]** Bewaartermijn / downsampling van oude data.
 
@@ -512,7 +614,7 @@ alarmen – laat uitvallen; daarom wordt de configuratie gecontroleerd vóór ge
 
 | Alarm | Voorwaarde |
 |---|---|
-| Walstroom weg | Shelly walstroom offline (§5.2) |
+| Walstroom weg | `walstroom` = 0 (MultiPlus, §5.2.2) |
 | Accu laag | SoC onder drempel, bijv. 50 % |
 | Vocht | Luchtvochtigheid langdurig > 80 % |
 | Vorst | Temperatuur < 2 °C |
@@ -709,9 +811,9 @@ bereikbaar; metingen gaan wel door (P4). **[OPEN-18]** Moet uitval van BRMS zelf
 | 3 | Gedrag zolang de systeemtijd nog niet betrouwbaar is | §4.2 |
 | 4 | ~~Interface van een reader~~ – **besloten in v0.4**: één BLE-reader met decoders, één Shelly-reader, push via MQTT | §5.2.1 |
 | 5 | Ruuvi: `ruuvitag-sensor` of eigen decoder | §5.2 |
-| 6 | Victron: BLE of VE.Direct-USB | §5.2 |
-| 7 | Type laadregelaar zonnepaneel | §5.2 |
-| 8 | Wanneer geldt de walstroom-Shelly als offline | §5.2 |
+| 6 | ~~Victron: BLE of VE.Direct-USB~~ – **besloten in v0.9**: BLE Instant Readout | §5.2.2 |
+| 7 | ~~Type laadregelaar zonnepaneel~~ – **besloten in v0.9**: 3× Victron MPPT via BLE | §5.2.2 |
+| 8 | ~~Wanneer geldt de walstroom-Shelly als offline~~ – **vervallen in v0.9**: walstroom via MultiPlus | §5.2.2 |
 | 9 | ~~Datamodel SQLite~~ – **besloten in v0.2**: generieke tabel `meting`, stills als bestand + tabel `still` (sinds v0.5 `opname`) | §5.3.1 |
 | 10 | ~~Meetinterval en schrijffrequentie~~ – **besloten in v0.3**: opslag per 5 min (gemiddelde; toestanden bij verandering), alarm op elke waarde, Shelly-poll 30 s | §5.3.2 |
 | 11 | Bewaartermijn / downsampling | §5.3 |
@@ -728,7 +830,7 @@ bereikbaar; metingen gaan wel door (P4). **[OPEN-18]** Moet uitval van BRMS zelf
 | 22 | ~~MQTT-clientbibliotheek~~ – **besloten in v0.8**: `paho-mqtt==2.1.0` direct, met eigen busmodule | §3.2 |
 | 23 | ~~MQTT-topic-indeling en berichtformaat~~ – **besloten in v0.8**: `brms/meting`, `brms/opname`, `brms/opdracht`, complete JSON-berichten, geen retain | §3.3 |
 | 24 | Opnamemethode camera (snapshot/RTSP, ffmpeg) | §5.7 |
-| 25 | Tabel van grootheden: namen, eenheden en soort | §3.3 |
+| 25 | ~~Tabel van grootheden~~ – **besloten in v0.9** | §5.3.3 |
 
 Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/eSIM.
 
@@ -745,4 +847,5 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.5 | 2026-11-08 | Claude Code, Opus 5.5 | Poll-nu voor pollende readers, niet voor BLE (§5.2.1). Camera uitgewerkt (§5.7): altijd aan (relais vervalt), foto elke 3 min / 2 weken, video 120 s op poll-nu / tot handmatig verwijderd, maximale videoruimte; OPEN-20 besloten, OPEN-24 toegevoegd. Tabel `still` → `opname` (§5.3.1). Derde soort "toename" voor de Ruuvi-bewegingsteller; versnelling X/Y/Z opgeslagen (§5.3.2). Bewegingsalarm met rustperiode 10 min (§5.5.1). Drempels en instellingen in configuratiebestand (§5.4). Verwijderen van opnames via web → opslag-service (§5.6). Back-up van opnames instelbaar (§7). |
 | 0.6 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-16 besloten (§7.1): wekelijkse back-up naar OneDrive (eigen Microsoft 365-account) met `rclone copy`, onversleuteld; consistente databasekopie; opnames instelbaar; back-up-interval korter dan bewaartermijn foto's. |
 | 0.7 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-12 besloten (§5.4.1): TOML via `tomllib`, één bestand `/etc/brms/brms.toml` buiten git en los van de code, wijzigen door herstart van de service, configuratie gecontroleerd bij start en met `brms check-config`. |
-| **0.8** | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-22 besloten (§3.2): `paho-mqtt==2.1.0` direct, zoals JSEM, met eigen busmodule als koppeling naar asyncio. OPEN-23 besloten (§3.3): topics `brms/meting`, `brms/opname`, `brms/opdracht`; complete JSON-berichten; geen retain; QoS per berichtsoort. OPEN-25 toegevoegd (tabel van grootheden). §5.2.1 bijgewerkt. |
+| 0.8 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-22 besloten (§3.2): `paho-mqtt==2.1.0` direct, zoals JSEM, met eigen busmodule als koppeling naar asyncio. OPEN-23 besloten (§3.3): topics `brms/meting`, `brms/opname`, `brms/opdracht`; complete JSON-berichten; geen retain; QoS per berichtsoort. OPEN-25 toegevoegd (tabel van grootheden). §5.2.1 bijgewerkt. |
+| **0.9** | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-6 en OPEN-7 besloten (§5.2.2): BMV-700, 3× MPPT (2× 75/15 met VE.Direct-dongle, 100/30 SmartSolar) en MultiPlus (VE.Bus Smart dongle) via BLE Instant Readout. Walstroom via MultiPlus in plaats van Shelly; OPEN-8 vervallen; Shelly alleen nog voor bilge. OPEN-25 besloten (§5.3.3): tabel van grootheden. §5.3.2, §5.5 bijgewerkt. |

@@ -23,9 +23,9 @@ Het systeem draait maanden **onbeheerd**: betrouwbaarheid en eenvoud gaan boven 
 | Bluetooth | USB-BLE-dongle met antenne (ingebouwde BT Pi 4 heeft beperkt bereik) | Nog kopen |
 | Test-sensoren | 3× Xiaomi Monitor 3 (MJWSD05MMC), pvvx-firmware, advertising **BTHome v2** | Besteld |
 | Sensoren (gepland) | RuuviTag (4-in-1) kajuit + vooronder; RuuviTag Pro 3-in-1 motorruim; RuuviTag Pro 2-in-1 buiten | Gepland |
-| Accu | Victron BMV-700 + VE.Direct Bluetooth Smart dongle (Instant Readout, `victron-ble`, encryptiesleutel uit VictronConnect). Alternatief: VE.Direct-USB-kabel (tekstprotocol) | In bezit |
-| Zonnepaneel | 50 Wp; type laadregelaar **nog onbekend** | Open |
-| Walstroom | Shelly aan 230V-kant (offline = walstroom weg), lokale HTTP-API; evt. ook op DI van router | Gepland |
+| Accu | Victron BMV-700 + VE.Direct Bluetooth Smart dongle (Instant Readout, `victron-ble`, encryptiesleutel uit VictronConnect) | In bezit |
+| Zonnepanelen | 3 banken: 2× Victron BlueSolar MPPT 75/15 + VE.Direct Bluetooth Smart dongle, 1× SmartSolar MPPT 100/30 (ingebouwde BT). Winter: alleen 50 Wp aangesloten | In bezit |
+| Lader/omvormer, walstroom | Victron MultiPlus 12/3000/120-16 (VE.Bus) + VE.Bus Smart dongle (Instant Readout, AC-ingang = walstroom). MK3-USB alleen voor configuratie | MultiPlus/MK3 in bezit, dongle nog kopen |
 | Bilge | Shelly Plus Uni (12V) met vlottercontact, lokale API | Gepland |
 | Camera | IP-camera wifi 2,4 GHz, RTSP/ONVIF, 12V, altijd aan (zie ARCHITECTURE.md §5.7) | Later |
 | Voeding | 12V boordnet → zekering → BatteryProtect → DC-DC 12→5V 3A | Nog kopen |
@@ -42,22 +42,8 @@ Energie: systeem ca. 11 W (~21 Ah/dag). Walstroom aanwezig maar kan wegvallen; a
 - Test-/ontwikkel-Pi 4 thuis: 192.168.178.114, user `jandirk`, SSH-alias `brms` (sleutel `~/.ssh/id_ed25519`).
 
 ## Software-architectuur
-- **Logger**: Python-service (systemd, `Restart=always`), leest periodiek:
-  - BLE-advertenties: Xiaomi/pvvx (BTHome v2), RuuviTag (`ruuvitag-sensor`/`bleak`), Victron (`victron-ble`).
-  - Shelly's via lokale HTTP-API (walstroom, bilge).
-  - GPIO waar nodig.
-- **Opslag**: SQLite (één bestand, WAL-modus). Tabel per meting of generieke tabel
-  (`timestamp UTC, sensor_id, grootheid, waarde`). Sensorconfig (MAC → naam/locatie, offsets) in config-bestand.
-- **Web**: Flask + Chart.js (actuele waarden + grafieken), alleen bereikbaar via Tailscale/LAN.
-- **Meldingen**: ntfy (push naar telefoon). Alarmen:
-  - walstroom weg
-  - accu SoC onder drempel (bijv. 50 %)
-  - luchtvochtigheid langdurig > 80 %
-  - temperatuur < 2 °C (vorst)
-  - bilgevlotter actief
-  - sensor geeft geen data meer (batterij leeg / buiten bereik)
-- **Betrouwbaarheid**: hardware-watchdog Pi, systemd-herstart, periodieke back-up SQLite naar thuis via Tailscale.
-- Python-omgeving: venv, dependencies vastgepind.
+Zie **ARCHITECTURE.md** – het ontwerpdocument is leidend voor architectuur, besluiten en open vragen.
+Er wordt niets gebouwd dat daar niet in staat.
 
 ## Ontwikkelaanpak
 - Ontwikkelen in PyCharm op Windows; testen op Pi 3B/Pi 4 thuis (zelfde OS).
@@ -71,6 +57,5 @@ de waarden (temperatuur, luchtvochtigheid, batterij, RSSI) decodeert en in SQLit
 Daarna: RuuviTag- en Victron-reader, Flask-pagina, ntfy-alarmen, systemd-service.
 
 ## Open punten
-- Type laadregelaar zonnepaneel (bepaalt uitleesmethode).
 - Accutype (bij LiFePO4: niet laden onder 0 °C – BMS/lader regelt dit; geen eigen accutemperatuurmeting gepland).
 - Data-abonnement / eSIM-provider kiezen; eSIM-profiel thuis installeren (RutOS-app of WAN-kabel).
