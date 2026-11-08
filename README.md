@@ -13,7 +13,7 @@ brms/            Python-package
   alarms.py      drempels + ntfy-meldingen
   config.py      inlezen config/brms.toml
   web/           Flask + Chart.js
-config/          brms.example.toml (eigen brms.toml staat niet in git)
+config/          brms.example.toml (op de Pi: /etc/brms/brms.toml, niet in git)
 deploy/systemd/  service-bestanden
 data/            SQLite-database (niet in git)
 tests/

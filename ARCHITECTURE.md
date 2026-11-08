@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.6 – concept** · 8 november 2026
+**Versie 0.7 – concept** · 8 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -397,9 +397,45 @@ Complexer; kan later alsnog.
   voor video's (§5.7);
 - back-up: of foto's en video's worden meegenomen (§7).
 
-Wijzigen gaat via SSH; de betreffende service leest het bestand opnieuw in.
-**[OPEN-12]** Bestandsformaat. *(Het projectskelet bevat een `brms.example.toml`; dat is
-een voorstel, geen besluit.)*
+#### 5.4.1 Formaat, plaats en wijzigen (besluit OPEN-12)
+
+**Aanleiding.** Het formaat van het configuratiebestand moest worden gekozen, en daarmee
+waar het staat en hoe een wijziging wordt doorgevoerd.
+
+**Redenering.** Het bestand wordt met de hand bewerkt via SSH en alleen door de services
+gelezen – nooit door BRMS geschreven (§5.4). Het moet commentaar toelaten (uitleg bij
+drempels), een lijst van sensoren met per sensor enkele velden kunnen bevatten, en bij
+voorkeur zonder extra afhankelijkheid te lezen zijn (P3). TOML voldoet aan alle eisen en
+wordt gelezen met `tomllib` uit de standaardbibliotheek (Python 3.11+; de Pi heeft 3.13).
+Dat `tomllib` alleen kan lezen is geen bezwaar.
+
+Een configuratie los van de code kan door een code-update nooit overschreven worden.
+Herstarten van een service bij een wijziging is eenvoudiger dan inlezen tijdens het
+draaien. Het risico daarvan is dat een tikfout een service – en daarmee bijvoorbeeld de
+alarmen – laat uitvallen; daarom wordt de configuratie gecontroleerd vóór gebruik.
+
+**Verworpen alternatieven.**
+- *YAML.* Vereist PyYAML (P3); inspringen luistert nauw en waarden worden onverwacht
+  omgezet (`no` → false, `0755` → octaal).
+- *JSON.* Geen commentaar mogelijk; één vergeten komma maakt het bestand ongeldig.
+- *INI (`configparser`).* Alles is tekst; lijsten van sensoren passen slecht.
+- *Python-bestand.* Configuratie wordt code: een tikfout laat de service crashen, en het
+  bestand kan alles uitvoeren.
+- *Meerdere bestanden (per service).* Onnodig; elke service leest zijn eigen deel.
+- *Inlezen tijdens het draaien (bijv. op signaal).* Complexer dan herstarten.
+
+**Specificatie.**
+1. Formaat **TOML**, gelezen met `tomllib`.
+2. **Eén bestand** voor alle services: **`/etc/brms/brms.toml`** op de Pi, buiten git en
+   los van de code. Elke service leest zijn eigen deel. Een voorbeeldbestand
+   (`config/brms.example.toml`) staat wel in git.
+3. Geheimen van rclone (OneDrive-token) staan niet in dit bestand maar in rclone's eigen
+   configuratie.
+4. Een wijziging wordt doorgevoerd door de betreffende service te **herstarten**
+   (`systemctl restart`).
+5. Elke service **controleert de configuratie bij het starten** en meldt fouten duidelijk
+   in het log. Met **`brms check-config`** is de configuratie vooraf te controleren, vóór
+   een herstart.
 
 ### 5.5 Alarmen en meldingen
 
@@ -611,7 +647,7 @@ bereikbaar; metingen gaan wel door (P4). **[OPEN-18]** Moet uitval van BRMS zelf
 | 9 | ~~Datamodel SQLite~~ – **besloten in v0.2**: generieke tabel `meting`, stills als bestand + tabel `still` (sinds v0.5 `opname`) | §5.3.1 |
 | 10 | ~~Meetinterval en schrijffrequentie~~ – **besloten in v0.3**: opslag per 5 min (gemiddelde; toestanden bij verandering), alarm op elke waarde, Shelly-poll 30 s | §5.3.2 |
 | 11 | Bewaartermijn / downsampling | §5.3 |
-| 12 | Formaat configuratiebestand | §5.4 |
+| 12 | ~~Formaat configuratiebestand~~ – **besloten in v0.7**: TOML, één bestand `/etc/brms/brms.toml`, herstart bij wijziging, controle bij start | §5.4.1 |
 | 13 | Alarmdetails: drempels, duur, hysterese, herhaling, herstel | §5.5 |
 | 14 | ntfy.sh of zelf gehost | §5.5 |
 | 15 | Authenticatie op webinterface | §5.6 |
@@ -638,4 +674,5 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.3 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-10 besloten (§5.3.2): ontvangen, alarmeren en opslaan losgekoppeld; opslag per 5 min als gemiddelde voor doorlopende grootheden, toestanden nooit gemiddeld maar bij verandering; Shelly-poll 30 s. OPEN-21 toegevoegd (flashslijtage door OS). §5.2, §6 bijgewerkt. |
 | 0.4 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-1 besloten (§3.1): losse services met lokale Mosquitto-broker (geen persistence, QoS 1 toestanden / 0 doorlopend, weggooien bij onbereikbare broker). OPEN-4 besloten (§5.2.1): één BLE-reader met decoders, één Shelly-reader, alleen geconfigureerde apparaten, asyncio. OPEN-22 en OPEN-23 toegevoegd. Systeemoverzicht (§3) en §6 bijgewerkt. |
 | 0.5 | 2026-11-08 | Claude Code, Opus 5.5 | Poll-nu voor pollende readers, niet voor BLE (§5.2.1). Camera uitgewerkt (§5.7): altijd aan (relais vervalt), foto elke 3 min / 2 weken, video 120 s op poll-nu / tot handmatig verwijderd, maximale videoruimte; OPEN-20 besloten, OPEN-24 toegevoegd. Tabel `still` → `opname` (§5.3.1). Derde soort "toename" voor de Ruuvi-bewegingsteller; versnelling X/Y/Z opgeslagen (§5.3.2). Bewegingsalarm met rustperiode 10 min (§5.5.1). Drempels en instellingen in configuratiebestand (§5.4). Verwijderen van opnames via web → opslag-service (§5.6). Back-up van opnames instelbaar (§7). |
-| **0.6** | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-16 besloten (§7.1): wekelijkse back-up naar OneDrive (eigen Microsoft 365-account) met `rclone copy`, onversleuteld; consistente databasekopie; opnames instelbaar; back-up-interval korter dan bewaartermijn foto's. |
+| 0.6 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-16 besloten (§7.1): wekelijkse back-up naar OneDrive (eigen Microsoft 365-account) met `rclone copy`, onversleuteld; consistente databasekopie; opnames instelbaar; back-up-interval korter dan bewaartermijn foto's. |
+| **0.7** | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-12 besloten (§5.4.1): TOML via `tomllib`, één bestand `/etc/brms/brms.toml` buiten git en los van de code, wijzigen door herstart van de service, configuratie gecontroleerd bij start en met `brms check-config`. |

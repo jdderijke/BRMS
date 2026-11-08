@@ -1,4 +1,4 @@
-# Voorbeeldconfiguratie. Kopieer naar config/brms.toml (staat niet in git:
+# Voorbeeldconfiguratie. Kopieer op de Pi naar /etc/brms/brms.toml (staat niet in git:
 # bevat o.a. de Victron-encryptiesleutel).
 
 [database]
