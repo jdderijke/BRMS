@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.7 – concept** · 8 november 2026
+**Versie 0.8 – concept** · 8 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -100,9 +100,76 @@ vaste opstartvolgorde, en elke component moet een tijdelijk afwezige broker verd
 5. Is de broker onbereikbaar, dan **gooit een reader de metingen weg** en blijft hij
    proberen te verbinden. Na herstel gaat hij verder met de dan ontvangen waarden.
 6. systemd zorgt dat de broker vóór de overige services start.
-7. **[OPEN-22]** MQTT-clientbibliotheek (de standaardbibliotheek heeft er geen; voor de
-   hand ligt `paho-mqtt`).
-8. **[OPEN-23]** Topic-indeling en berichtformaat (bijv. `brms/<sensor_id>/<grootheid>`, JSON).
+7. MQTT-clientbibliotheek: zie §3.2. Topics en berichtformaat: zie §3.3.
+
+### 3.2 MQTT-clientbibliotheek (besluit OPEN-22)
+
+**Aanleiding.** De standaardbibliotheek van Python bevat geen MQTT-client; er moest een
+bibliotheek gekozen worden.
+
+**Redenering.** Het JSEM-project gebruikt `paho-mqtt` 2.1.0 rechtstreeks, met één eigen
+wrappermodule (`packages/interface/bus.py`) waar al het MQTT-verkeer doorheen loopt. Net
+als bij Mosquitto (§3.1) weegt dezelfde technologie, versie en ervaring als in JSEM zwaar.
+`paho-mqtt` werkt met een eigen netwerkthread en callbacks, niet met asyncio. In de
+asyncio-services (§5.2.1) wordt dat opgevangen in één klein busmodule: paho's thread geeft
+ontvangen berichten door aan de asyncio-loop. Daarmee blijft de thread binnen dat ene
+module en zien de overige componenten alleen asyncio. Het web (Flask, geen asyncio)
+gebruikt hetzelfde busmodule synchroon.
+
+**Verworpen alternatieven.**
+- *`aiomqtt` (asyncio-laag op paho-mqtt).* Sluit direct aan op asyncio, maar is een tweede
+  pakket en wijkt af van JSEM.
+- *`gmqtt` / `amqtt`.* Minder gebruikt en minder onderhouden.
+- *Eigen MQTT-client.* Onnodig risico.
+
+**Specificatie.**
+1. **`paho-mqtt==2.1.0`**, vastgepind, zelfde versie als JSEM.
+2. Eén eigen **busmodule** in BRMS waar al het MQTT-verkeer doorheen loopt, met een
+   asyncio-koppeling voor de asyncio-services en synchroon gebruik voor het web. JSEM's
+   `bus.py` dient als voorbeeld, maar wordt niet ongezien overgenomen.
+
+### 3.3 Topics en berichtformaat (besluit OPEN-23)
+
+**Aanleiding.** Vastgesteld moest worden welke berichten over de broker gaan, onder welke
+topics en in welk formaat.
+
+**Redenering.** Er zijn drie soorten berichten: metingen (§5.2.1), metadata van opnames
+(§5.7) en opdrachten (poll-nu, verwijderen; §5.2.1, §5.6). Een hiërarchische topic maakt
+filteren eenvoudig (`mosquitto_sub -t 'brms/meting/+/temperatuur'`). Een bericht dat zelf
+compleet is, hoeft door een afnemer niet uit de topic te worden afgeleid; de kleine
+redundantie neemt dat voordeel niet weg.
+
+Retain (de broker bewaart het laatste bericht per topic) is voor opdrachten gevaarlijk:
+een poll-nu of verwijderopdracht zou bij elke herverbinding opnieuw worden uitgevoerd. Voor
+metingen is het niet nodig – het web haalt actuele waarden uit SQLite – en een bewaarde,
+verouderde meting kan de alarmlaag na een herstart misleiden.
+
+Een verloren opnamebericht laat een bestand op schijf achter dat niet in de database
+staat; daarom QoS 1.
+
+**Verworpen alternatieven.**
+- *Eén topic voor alle metingen.* Filteren per sensor of grootheid kan dan alleen door de
+  inhoud te ontleden.
+- *Alleen de topic als drager van sensor-ID en grootheid.* Elke afnemer moet dan de topic
+  ontleden.
+- *Retain op metingen of opdrachten.* Zie redenering.
+- *Eenheid in elk bericht.* Overbodig als elke grootheid één vaste eenheid heeft.
+
+**Specificatie.**
+
+| Bericht | Topic | Inhoud (JSON, UTF-8) | QoS |
+|---|---|---|---|
+| Meting | `brms/meting/<sensor_id>/<grootheid>` | `{"ts", "sensor_id", "grootheid", "waarde", "soort"}` | 1 voor toestand, 0 voor doorlopend en toename |
+| Opname | `brms/opname/<camera_id>` | `{"ts", "camera_id", "type", "duur", "bestand", "bytes", "aanleiding"}` | 1 |
+| Opdracht | `brms/opdracht/<doel>/<actie>`, bijv. `brms/opdracht/camera/poll-nu`, `brms/opdracht/shelly/poll-nu`, `brms/opdracht/opslag/verwijder` | afhankelijk van de actie, bijv. `{"type": "video", "aanleiding": "alarm:beweging"}` | 1 |
+
+1. Elk bericht is **compleet**: ook wat in de topic staat, staat in de inhoud.
+2. **Geen retain**, voor geen enkel bericht.
+3. `ts` is een **geheel getal**, Unix-seconden UTC, zoals in de database (§5.3.1).
+4. `sensor_id` is de vaste ID uit de configuratie (bijv. het MAC-adres met dubbele punten,
+   toegestaan in MQTT-topics).
+5. Elke grootheid heeft **één vaste eenheid** (bijv. °C, %, V, A, dBm, mG); berichten
+   bevatten geen eenheid. **[OPEN-25]** Tabel van grootheden: namen, eenheden en soort.
 
 ---
 
@@ -176,7 +243,8 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
 - *Pull-interface (`read()` per interval).* Past niet bij BLE-push; de alarmlaag zou niet
   elke waarde zien.
 - *Een scanner per sensortype.* Conflicteert op de ene adapter.
-- *Threads in plaats van asyncio.* `bleak` vereist asyncio toch al.
+- *Threads in plaats van asyncio.* `bleak` vereist asyncio toch al. (De netwerkthread van
+  `paho-mqtt` blijft binnen het busmodule, §3.2.)
 - *aiohttp/httpx voor de Shelly-polls.* Extra afhankelijkheid (P3); de standaardbibliotheek
   volstaat.
 
@@ -195,7 +263,7 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
    - `soort`: doorlopend, toestand of toename, vast per grootheid (§5.3.2);
    - alleen eenvoudige velden (getal, tekst), zodat het bericht direct als JSON te versturen is.
 5. Readers zijn asyncio-gebaseerd, **zonder extra bibliotheken** naast `bleak` en de
-   MQTT-client ([OPEN-22]).
+   `paho-mqtt` (§3.2).
 6. Elke **pollende** reader (Shelly, camera) heeft een **poll-nu**-ingang: een MQTT-opdracht
    die direct een poll uitvoert, los van het interval. Alarmlaag, web en gebruiker kunnen
    die opdracht geven. De BLE-reader heeft geen poll-nu.
@@ -657,9 +725,10 @@ bereikbaar; metingen gaan wel door (P4). **[OPEN-18]** Moet uitval van BRMS zelf
 | 19 | Uitrol van code en updates | §10 |
 | 20 | ~~Bewaartermijn van stills~~ – **besloten in v0.5**: foto's 2 weken, video's tot de gebruiker ze verwijdert, met maximale ruimte | §5.7 |
 | 21 | Maatregelen op OS-niveau tegen flashslijtage | §7 |
-| 22 | MQTT-clientbibliotheek | §3.1 |
-| 23 | MQTT-topic-indeling en berichtformaat | §3.1 |
+| 22 | ~~MQTT-clientbibliotheek~~ – **besloten in v0.8**: `paho-mqtt==2.1.0` direct, met eigen busmodule | §3.2 |
+| 23 | ~~MQTT-topic-indeling en berichtformaat~~ – **besloten in v0.8**: `brms/meting`, `brms/opname`, `brms/opdracht`, complete JSON-berichten, geen retain | §3.3 |
 | 24 | Opnamemethode camera (snapshot/RTSP, ffmpeg) | §5.7 |
+| 25 | Tabel van grootheden: namen, eenheden en soort | §3.3 |
 
 Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/eSIM.
 
@@ -675,4 +744,5 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.4 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-1 besloten (§3.1): losse services met lokale Mosquitto-broker (geen persistence, QoS 1 toestanden / 0 doorlopend, weggooien bij onbereikbare broker). OPEN-4 besloten (§5.2.1): één BLE-reader met decoders, één Shelly-reader, alleen geconfigureerde apparaten, asyncio. OPEN-22 en OPEN-23 toegevoegd. Systeemoverzicht (§3) en §6 bijgewerkt. |
 | 0.5 | 2026-11-08 | Claude Code, Opus 5.5 | Poll-nu voor pollende readers, niet voor BLE (§5.2.1). Camera uitgewerkt (§5.7): altijd aan (relais vervalt), foto elke 3 min / 2 weken, video 120 s op poll-nu / tot handmatig verwijderd, maximale videoruimte; OPEN-20 besloten, OPEN-24 toegevoegd. Tabel `still` → `opname` (§5.3.1). Derde soort "toename" voor de Ruuvi-bewegingsteller; versnelling X/Y/Z opgeslagen (§5.3.2). Bewegingsalarm met rustperiode 10 min (§5.5.1). Drempels en instellingen in configuratiebestand (§5.4). Verwijderen van opnames via web → opslag-service (§5.6). Back-up van opnames instelbaar (§7). |
 | 0.6 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-16 besloten (§7.1): wekelijkse back-up naar OneDrive (eigen Microsoft 365-account) met `rclone copy`, onversleuteld; consistente databasekopie; opnames instelbaar; back-up-interval korter dan bewaartermijn foto's. |
-| **0.7** | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-12 besloten (§5.4.1): TOML via `tomllib`, één bestand `/etc/brms/brms.toml` buiten git en los van de code, wijzigen door herstart van de service, configuratie gecontroleerd bij start en met `brms check-config`. |
+| 0.7 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-12 besloten (§5.4.1): TOML via `tomllib`, één bestand `/etc/brms/brms.toml` buiten git en los van de code, wijzigen door herstart van de service, configuratie gecontroleerd bij start en met `brms check-config`. |
+| **0.8** | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-22 besloten (§3.2): `paho-mqtt==2.1.0` direct, zoals JSEM, met eigen busmodule als koppeling naar asyncio. OPEN-23 besloten (§3.3): topics `brms/meting`, `brms/opname`, `brms/opdracht`; complete JSON-berichten; geen retain; QoS per berichtsoort. OPEN-25 toegevoegd (tabel van grootheden). §5.2.1 bijgewerkt. |
