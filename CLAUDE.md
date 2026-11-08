@@ -38,7 +38,8 @@ Energie: systeem ca. 11 W (~21 Ah/dag). Walstroom aanwezig maar kan wegvallen; a
 - Mobiel internet zit achter CGNAT → **Tailscale** op de Pi (key expiry uit), subnet-route
   voor router en camera. Niets open op internet.
 - Noodingang: Teltonika RMS (router beheren/herstarten) + Pi-herstart via router-DO.
-- Hostnaam Pi: `boot` (via Tailscale MagicDNS bereikbaar).
+- Hostnaam Pi: `BRMS` (via Tailscale MagicDNS bereikbaar als `brms`).
+- Test-/ontwikkel-Pi 4 thuis: 192.168.178.114, user `jandirk`, SSH-alias `brms` (sleutel `~/.ssh/id_ed25519`).
 
 ## Software-architectuur
 - **Logger**: Python-service (systemd, `Restart=always`), leest periodiek:
