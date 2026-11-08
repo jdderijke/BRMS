@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.9 – concept** · 8 november 2026
+**Versie 0.10 – concept** · 8 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -185,12 +185,56 @@ zitten verspreid over kajuit, vooronder, motorruim en buiten.
 **Verworpen.** Ingebouwde Bluetooth – bereik te beperkt (wel bruikbaar voor tests thuis).
 **Specificatie.** BLE via een USB-dongle met externe antenne. **[OPEN-2]** Welke dongle.
 
-### 4.2 Klok: DS3231 RTC
+### 4.2 Klok en tijd (besluit OPEN-3)
 
-**Redenering.** De Pi 4 heeft geen RTC. Na stroomuitval zonder internet is de tijd fout,
-en daarmee de tijdstempels van metingen.
-**Specificatie.** DS3231 via I2C. Alle tijdstempels in UTC. **[OPEN-3]** Gedrag zolang de
-tijd na opstarten nog niet betrouwbaar is.
+**Aanleiding.** De Pi 4 heeft geen RTC. Vastgesteld moest worden waar de tijd vandaan komt
+en wat BRMS doet zolang de tijd na het opstarten nog niet betrouwbaar is. Een DS3231 is in
+bezit, maar past niet zonder meer in de behuizing van de Pi.
+
+**Redenering.** Zonder RTC zet `systemd-timesyncd` de klok na het opstarten op de laatst
+opgeslagen tijd en corrigeert pas na synchronisatie. Na een stroomuitval van enkele uren
+loopt de klok dan uren achter. Nieuwe metingen zouden tijdstempels krijgen die al in de
+database staan (botsende primaire sleutel, door elkaar lopende grafieken), gevolgd door een
+sprong vooruit zodra de tijd binnenkomt.
+
+Niet alles heeft echte tijd nodig:
+- De **alarmlaag** werkt met tijdsduren ("langdurig", rustperiode, "sensor stil"). Die zijn
+  te meten met een monotone klok (loopt alleen vooruit sinds het opstarten), zodat alarmen
+  vanaf de eerste seconde werken, ongeacht de kloktijd.
+- **Opslag en camera** leggen tijdstempels vast en hebben wél echte tijd nodig.
+
+De router (RUT241) kan de tijd van het mobiele netwerk overnemen (operator time / NITZ) en
+via NTP synchroniseren, en kan als NTP-server dienen voor het LAN. Een onbetrouwbare tijd
+ontstaat dan alleen als Pi én router zonder stroom zijn geweest (ze delen het 12V-net,
+bijvoorbeeld na afschakelen door de BatteryProtect): de router heeft dan ruwweg 1–2 minuten
+nodig om het netwerk te vinden en de tijd te ontvangen. Zonder mobiele dekking komt er
+geen tijd – maar dan kunnen er ook geen meldingen uit en is de boot niet bereikbaar. Het
+verlies beperkt zich tot een gat van enkele minuten in de opslag na een volledige
+stroomuitval; dat past bij het uitgangspunt dat metingen worden weggegooid zolang iets
+niet gereed is (§3.1). Minder hardware weegt zwaarder (P1).
+
+**Verworpen alternatieven.**
+- *DS3231 verplicht.* Maakt de tijd direct na opstarten betrouwbaar, maar past niet zonder
+  meer in de behuizing; het voordeel is beperkt tot de eerste minuten na een volledige
+  stroomuitval. Blijft een optie (zie specificatie).
+- *Direct starten met de klok zoals die is.* Botsende en verkeerde tijdstempels.
+- *Alle services laten wachten op tijdsynchronisatie (`time-sync.target`).* Zonder
+  internet of netwerktijd starten dan ook de alarmen niet.
+- *Metingen bufferen en later terug-dateren.* Complex en foutgevoelig.
+
+**Specificatie.**
+1. **De router is de tijdbron.** RutOS: tijdsynchronisatie via de provider (operator
+   station) en NTP; de router als NTP-server voor het LAN.
+2. Op de Pi gebruikt `systemd-timesyncd` de **router als eerste NTP-server**, met de
+   publieke NTP-pool als reserve.
+3. De **alarmlaag** gebruikt voor alle tijdsduren een **monotone klok**.
+4. **Opslag en camera** schrijven pas als de systeemklok **gesynchroniseerd** is (status
+   "System clock synchronized" van `timedatectl`). Daarvóór ontvangen metingen en opnames
+   worden niet opgeslagen.
+5. Alle tijdstempels in UTC.
+6. Een **DS3231 is optioneel** (in bezit). Wordt hij later geplaatst (bijv. een platte
+   module op de GPIO-pinnen of met een kort kabeltje buiten de behuizing), dan is de tijd
+   direct na opstarten goed en verandert er verder niets aan het ontwerp.
 
 ### 4.3 Voeding
 
@@ -259,7 +303,7 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
 4. Readers passen de **correcties uit de configuratie** toe en publiceren daarna elke
    ontvangen waarde via MQTT (§3.1) als
    `Meting(ts, sensor_id, grootheid, waarde, soort)`:
-   - `ts`: ontvangsttijd op de Pi, Unix-tijd UTC (een advertentie heeft zelf geen tijd; zie [OPEN-3]);
+   - `ts`: ontvangsttijd op de Pi, Unix-tijd UTC (een advertentie heeft zelf geen tijd; zie §4.2);
    - `soort`: doorlopend, toestand of toename, vast per grootheid (§5.3.2);
    - alleen eenvoudige velden (getal, tekst), zodat het bericht direct als JSON te versturen is.
 5. Readers zijn asyncio-gebaseerd, **zonder extra bibliotheken** naast `bleak` en de
@@ -808,7 +852,7 @@ bereikbaar; metingen gaan wel door (P4). **[OPEN-18]** Moet uitval van BRMS zelf
 |---|---|---|
 | 1 | ~~Eén proces of aparte services~~ – **besloten in v0.4**: losse services, lokale Mosquitto ertussen | §3.1 |
 | 2 | Welke USB-BLE-dongle | §4.1 |
-| 3 | Gedrag zolang de systeemtijd nog niet betrouwbaar is | §4.2 |
+| 3 | ~~Gedrag zolang de systeemtijd nog niet betrouwbaar is~~ – **besloten in v0.10**: router als tijdbron, alarmen op monotone klok, opslag wacht op synchronisatie | §4.2 |
 | 4 | ~~Interface van een reader~~ – **besloten in v0.4**: één BLE-reader met decoders, één Shelly-reader, push via MQTT | §5.2.1 |
 | 5 | Ruuvi: `ruuvitag-sensor` of eigen decoder | §5.2 |
 | 6 | ~~Victron: BLE of VE.Direct-USB~~ – **besloten in v0.9**: BLE Instant Readout | §5.2.2 |
@@ -848,4 +892,5 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.6 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-16 besloten (§7.1): wekelijkse back-up naar OneDrive (eigen Microsoft 365-account) met `rclone copy`, onversleuteld; consistente databasekopie; opnames instelbaar; back-up-interval korter dan bewaartermijn foto's. |
 | 0.7 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-12 besloten (§5.4.1): TOML via `tomllib`, één bestand `/etc/brms/brms.toml` buiten git en los van de code, wijzigen door herstart van de service, configuratie gecontroleerd bij start en met `brms check-config`. |
 | 0.8 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-22 besloten (§3.2): `paho-mqtt==2.1.0` direct, zoals JSEM, met eigen busmodule als koppeling naar asyncio. OPEN-23 besloten (§3.3): topics `brms/meting`, `brms/opname`, `brms/opdracht`; complete JSON-berichten; geen retain; QoS per berichtsoort. OPEN-25 toegevoegd (tabel van grootheden). §5.2.1 bijgewerkt. |
-| **0.9** | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-6 en OPEN-7 besloten (§5.2.2): BMV-700, 3× MPPT (2× 75/15 met VE.Direct-dongle, 100/30 SmartSolar) en MultiPlus (VE.Bus Smart dongle) via BLE Instant Readout. Walstroom via MultiPlus in plaats van Shelly; OPEN-8 vervallen; Shelly alleen nog voor bilge. OPEN-25 besloten (§5.3.3): tabel van grootheden. §5.3.2, §5.5 bijgewerkt. |
+| 0.9 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-6 en OPEN-7 besloten (§5.2.2): BMV-700, 3× MPPT (2× 75/15 met VE.Direct-dongle, 100/30 SmartSolar) en MultiPlus (VE.Bus Smart dongle) via BLE Instant Readout. Walstroom via MultiPlus in plaats van Shelly; OPEN-8 vervallen; Shelly alleen nog voor bilge. OPEN-25 besloten (§5.3.3): tabel van grootheden. §5.3.2, §5.5 bijgewerkt. |
+| **0.10** | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-3 besloten (§4.2): router (RUT241) als tijdbron via operator time en NTP, Pi synchroniseert via router; alarmlaag op monotone klok; opslag en camera schrijven pas na tijdsynchronisatie; DS3231 optioneel. |

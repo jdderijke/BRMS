@@ -18,7 +18,7 @@ Het systeem draait maanden **onbeheerd**: betrouwbaarheid en eenvoud gaan boven 
 | Computer | Raspberry Pi 4B (Pi 3B als testbank) | In bezit |
 | OS | Raspberry Pi OS Lite 64-bit, headless, SSH met sleutel | — |
 | Opslag | Raspberry Pi Flash Drive 256 GB (USB 3); tijdelijk SanDisk 32 GB USB-stick | Besteld |
-| Klok | DS3231 RTC-module (I2C) – Pi 4 heeft geen RTC | Nog kopen |
+| Klok | Tijd via router (RUT241, operator time + NTP), zie ARCHITECTURE.md §4.2. DS3231 RTC-module optioneel (past niet zonder meer in behuizing) | DS3231 in bezit |
 | Router | Teltonika RUT241 eSIM (4G Cat 4, 9–30 VDC, RutOS, RMS, 1 DI/1 DO, wifi 2,4 GHz) | Besteld |
 | Bluetooth | USB-BLE-dongle met antenne (ingebouwde BT Pi 4 heeft beperkt bereik) | Nog kopen |
 | Test-sensoren | 3× Xiaomi Monitor 3 (MJWSD05MMC), pvvx-firmware, advertising **BTHome v2** | Besteld |
