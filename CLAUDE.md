@@ -52,9 +52,10 @@ Er wordt niets gebouwd dat daar niet in staat.
 - Eerst werkend en eenvoudig; daarna uitbreiden.
 
 ## Eerste stap
-Python-script dat de 3 Xiaomi Monitor 3's (pvvx, BTHome v2) via BLE uitleest met `bleak`,
-de waarden (temperatuur, luchtvochtigheid, batterij, RSSI) decodeert en in SQLite opslaat.
-Daarna: RuuviTag- en Victron-reader, Flask-pagina, ntfy-alarmen, systemd-service.
+Eerste bouwstap (pas na expliciete opdracht): de 3 Xiaomi Monitor 3's (pvvx, BTHome v2) door de keten
+volgens ARCHITECTURE.md – BLE-reader met BTHome-decoder → MQTT (Mosquitto) → opslag-service →
+SQLite (tabel `meting`): temperatuur, vocht, batterijspanning, RSSI.
+Daarna: Ruuvi- en Victron-decoder, Shelly-reader (bilge), alarmlaag met ntfy, web, camera.
 
 ## Open punten
 - Accutype (bij LiFePO4: niet laden onder 0 °C – BMS/lader regelt dit; geen eigen accutemperatuurmeting gepland).
