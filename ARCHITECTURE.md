@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.5 – concept** · 8 november 2026
+**Versie 0.6 – concept** · 8 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -519,13 +519,53 @@ registreert per 5 minuten (§5.3.2) → web leest uit SQLite.
 | Router-DO → relais → Pi-herstart | Pi onbereikbaar terwijl router werkt |
 | Teltonika RMS | Router beheren/herstarten op afstand |
 | SQLite WAL | Datacorruptie bij stroomuitval |
-| Periodieke back-up SQLite naar thuis via Tailscale | Verlies van de opslag |
+| Wekelijkse back-up naar OneDrive (§7.1) | Verlies van de opslag |
 
 **[OPEN-21]** Maatregelen op OS-niveau tegen flashslijtage (o.a. journald-logs, swap,
 caches). Het schrijfvolume van de database zelf is verwaarloosbaar (§5.3.2).
-Of foto's en video's in de back-up worden meegenomen is instelbaar in de configuratie
-(§5.4), omdat foto's alleen al ~4,5 GB per maand aan mobiele data kunnen kosten.
-**[OPEN-16]** Back-up: frequentie, methode, bestemming.
+### 7.1 Back-up (besluit OPEN-16)
+
+**Aanleiding.** Vastgesteld moest worden hoe vaak, hoe en waarheen een back-up wordt gemaakt.
+
+**Redenering.** Een back-up naar een machine thuis vereist een machine die altijd aan staat.
+Cloudopslag heeft dat niet nodig en staat direct buiten de boot. Microsoft 365 is aanwezig
+(1 TB OneDrive), ruim genoeg voor database, foto's en video's. `rclone` ondersteunt OneDrive
+stabiel en kan na eenmalige autorisatie op de pc (`rclone authorize`) maanden onbeheerd
+werken; het token wordt bij gebruik vanzelf vernieuwd. Het raakt P4 niet: de back-up is
+geen onderdeel van de kernfunctie.
+
+`rclone copy` kopieert alleen nieuwe of gewijzigde bestanden; foto's en video's die al in
+OneDrive staan gaan niet opnieuw over de lijn. De database is één bestand dat steeds
+verandert en gaat elke keer volledig mee (na een jaar ~150 MB per back-up); Microsoft 365
+bewaart eerdere versies van dat bestand. Een draaiende WAL-database rechtstreeks kopiëren is
+onbetrouwbaar; er is eerst een consistente kopie nodig.
+
+Eén keer per week is voldoende. Gevolg: bij uitval van de flashdrive gaat hooguit een week
+aan data verloren. Omdat foto's lokaal 2 weken bewaard blijven, is elke foto bij minstens
+één back-up aanwezig – mits het back-up-interval korter blijft dan die bewaartermijn.
+
+Foto's alleen al kunnen ~4,5 GB per maand aan mobiele data kosten; daarom is het meenemen
+van opnames instelbaar.
+
+**Verworpen alternatieven.**
+- *Naar een machine thuis via Tailscale (pull of push).* Vereist een machine die altijd aan staat.
+- *iCloud Drive.* Ondersteuning in `rclone` is relatief nieuw, en de sessie vraagt periodiek
+  opnieuw tweestapsverificatie – niet onbeheerd te gebruiken.
+- *Spiegelen (`rclone sync`).* Wat op de boot verwijderd wordt (ook per ongeluk) verdwijnt
+  dan ook uit de back-up.
+- *Apart Microsoft-account voor BRMS.* Zou de schade beperken als de Pi gestolen wordt (het
+  token geeft toegang tot de hele OneDrive). Bewust niet gekozen; het risico is geaccepteerd.
+- *Versleutelen met `rclone crypt`.* Niet nodig geacht.
+- *Dagelijks.* Niet nodig; wekelijks is voldoende.
+
+**Specificatie.**
+1. **Eén keer per week** een back-up naar **OneDrive** (eigen Microsoft 365-account) met
+   **`rclone copy`** (kopiëren, niet spiegelen), onversleuteld.
+2. De database wordt eerst als **consistente kopie** weggeschreven en die kopie gaat mee.
+3. Foto's en video's gaan mee als dat in de configuratie aanstaat (§5.4); alleen nieuwe
+   bestanden worden overgezet.
+4. Het back-up-interval moet korter zijn dan de bewaartermijn van foto's (§5.7).
+5. Hooguit een week dataverlies bij uitval van de opslag is geaccepteerd.
 **[OPEN-17]** Wat bewaakt de watchdog precies (alleen kernel, of ook of de logger leeft)?
 
 ---
@@ -575,7 +615,7 @@ bereikbaar; metingen gaan wel door (P4). **[OPEN-18]** Moet uitval van BRMS zelf
 | 13 | Alarmdetails: drempels, duur, hysterese, herhaling, herstel | §5.5 |
 | 14 | ntfy.sh of zelf gehost | §5.5 |
 | 15 | Authenticatie op webinterface | §5.6 |
-| 16 | Back-up: frequentie, methode, bestemming | §7 |
+| 16 | ~~Back-up~~ – **besloten in v0.6**: wekelijks naar OneDrive met `rclone copy` | §7.1 |
 | 17 | Reikwijdte van de watchdog | §7 |
 | 18 | Detectie thuis als BRMS zelf uitvalt | §8 |
 | 19 | Uitrol van code en updates | §10 |
@@ -597,4 +637,5 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.2 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-9 besloten: generieke tabel `meting`; stills als bestand met tabel `still` (§5.3.1), met aanleiding, redenering en verworpen alternatieven. OPEN-20 toegevoegd; OPEN-16 uitgebreid met stills. |
 | 0.3 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-10 besloten (§5.3.2): ontvangen, alarmeren en opslaan losgekoppeld; opslag per 5 min als gemiddelde voor doorlopende grootheden, toestanden nooit gemiddeld maar bij verandering; Shelly-poll 30 s. OPEN-21 toegevoegd (flashslijtage door OS). §5.2, §6 bijgewerkt. |
 | 0.4 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-1 besloten (§3.1): losse services met lokale Mosquitto-broker (geen persistence, QoS 1 toestanden / 0 doorlopend, weggooien bij onbereikbare broker). OPEN-4 besloten (§5.2.1): één BLE-reader met decoders, één Shelly-reader, alleen geconfigureerde apparaten, asyncio. OPEN-22 en OPEN-23 toegevoegd. Systeemoverzicht (§3) en §6 bijgewerkt. |
-| **0.5** | 2026-11-08 | Claude Code, Opus 5.5 | Poll-nu voor pollende readers, niet voor BLE (§5.2.1). Camera uitgewerkt (§5.7): altijd aan (relais vervalt), foto elke 3 min / 2 weken, video 120 s op poll-nu / tot handmatig verwijderd, maximale videoruimte; OPEN-20 besloten, OPEN-24 toegevoegd. Tabel `still` → `opname` (§5.3.1). Derde soort "toename" voor de Ruuvi-bewegingsteller; versnelling X/Y/Z opgeslagen (§5.3.2). Bewegingsalarm met rustperiode 10 min (§5.5.1). Drempels en instellingen in configuratiebestand (§5.4). Verwijderen van opnames via web → opslag-service (§5.6). Back-up van opnames instelbaar (§7). |
+| 0.5 | 2026-11-08 | Claude Code, Opus 5.5 | Poll-nu voor pollende readers, niet voor BLE (§5.2.1). Camera uitgewerkt (§5.7): altijd aan (relais vervalt), foto elke 3 min / 2 weken, video 120 s op poll-nu / tot handmatig verwijderd, maximale videoruimte; OPEN-20 besloten, OPEN-24 toegevoegd. Tabel `still` → `opname` (§5.3.1). Derde soort "toename" voor de Ruuvi-bewegingsteller; versnelling X/Y/Z opgeslagen (§5.3.2). Bewegingsalarm met rustperiode 10 min (§5.5.1). Drempels en instellingen in configuratiebestand (§5.4). Verwijderen van opnames via web → opslag-service (§5.6). Back-up van opnames instelbaar (§7). |
+| **0.6** | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-16 besloten (§7.1): wekelijkse back-up naar OneDrive (eigen Microsoft 365-account) met `rclone copy`, onversleuteld; consistente databasekopie; opnames instelbaar; back-up-interval korter dan bewaartermijn foto's. |
