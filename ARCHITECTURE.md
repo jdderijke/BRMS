@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.10 – concept** · 8 november 2026
+**Versie 0.11 – concept** · 8 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -840,9 +840,70 @@ bereikbaar; metingen gaan wel door (P4). **[OPEN-18]** Moet uitval van BRMS zelf
 ## 10. Ontwikkeling en uitrol
 
 - Ontwikkelen in PyCharm op Windows; testen op de test-Pi 4 thuis (zelfde OS).
-- Uitrol als systemd-service(s) uit `deploy/systemd/`.
-- **[OPEN-19]** Hoe code op de Pi komt (git pull, of iets anders) en hoe updates aan boord
-  worden uitgerold.
+- Uitrol als systemd-services uit `deploy/systemd/`.
+
+### 10.1 Uitrol en updates (besluit OPEN-19)
+
+**Aanleiding.** Vastgesteld moest worden hoe de code op de (test-)Pi komt, hoe updates aan
+boord worden uitgerold, en hoe de installatie op de Pi is ingedeeld.
+
+**Redenering.** De code staat in een privérepo op GitHub. De boot-Pi draait onbeheerd en is
+alleen via Tailscale bereikbaar; een update mag niets breken en moet terug te draaien zijn.
+Met git op de Pi hoort elke installatie bij één commit en is teruggaan één commando. Een
+deploy key geeft de Pi alleen leesrechten op deze ene repo; bij diefstal van de Pi is
+alleen de BRMS-code leesbaar.
+
+Updates worden met de hand gestart. Daarmee kan ook de boot-Pi gewoon `main` volgen: de
+gebruiker kiest zelf het moment, nadat `main` op de test-Pi goed draait. Voorwaarde is dat
+tussen "getest" en "bijgewerkt aan boord" niets meer naar `main` gaat; met één ontwikkelaar
+is dat overzichtelijk. Eén spoor is eenvoudiger dan versietags (P1).
+
+Een eigen systeemgebruiker beperkt de services tot de rechten die ze nodig hebben. De
+indeling volgt de Linux-conventie: code, configuratie en data gescheiden, zodat een
+code-update configuratie en data nooit raakt.
+
+Automatische OS-updates kunnen ongemerkt iets breken (CLAUDE.md); er staat niets open op
+internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken is klein.
+
+**Verworpen alternatieven.**
+- *Kopiëren vanaf de pc (rsync / PyCharm-deployment).* Wat draait is niet te herleiden tot
+  een commit; niet-gecommitte wijzigingen kunnen meegaan.
+- *Als pakket (wheel) bouwen en installeren.* Extra stap bij elke update.
+- *Docker.* Zwaar; een extra laag die moet blijven werken (P1).
+- *Boot-Pi alleen op versietags.* Markeert expliciet "getest", maar is bij handmatige
+  updates niet nodig; tags blijven mogelijk als mijlpaal.
+- *Services als gebruiker `jandirk`.* Meer rechten dan nodig.
+- *Automatische OS-updates (unattended-upgrades).* Zie redenering.
+
+**Specificatie.**
+1. De Pi haalt de code met **git** uit de GitHub-repo, met een **deploy key** (alleen
+   leesrechten, alleen deze repo).
+2. **Test-Pi en boot-Pi volgen beide `main`.** Een update aan boord gebeurt pas als `main`
+   op de test-Pi goed draait.
+3. Updates via **`deploy/update.sh`**:
+   1. de huidige commit wegschrijven (voor teruggaan);
+   2. `git fetch` en `main` uitchecken;
+   3. `pip install -r requirements.txt` in de venv (vastgepinde versies);
+   4. `brms check-config` (§5.4.1) – bij een fout stopt de update en draait de oude
+      versie door;
+   5. de services herstarten.
+
+   **`deploy/update.sh --terug`** gaat terug naar de weggeschreven vorige commit.
+4. Indeling op de Pi:
+
+   | Wat | Waar |
+   |---|---|
+   | Code en venv | `/opt/brms` |
+   | Configuratie | `/etc/brms/brms.toml` (§5.4.1) |
+   | Database en opnames | `/var/lib/brms` |
+   | Logs | journald |
+
+5. De services draaien als eigen systeemgebruiker **`brms`**, met alleen de benodigde
+   rechten (o.a. Bluetooth, schrijven in `/var/lib/brms`).
+6. Systeempakketten via apt (Mosquitto, rclone, later ffmpeg). Een eenmalig
+   **`deploy/install.sh`** richt de Pi in: gebruiker, mappen, venv, systemd-units en deploy key.
+7. **Geen automatische OS-updates.** OS, Tailscale en router-firmware worden met de hand
+   bijgewerkt: eerst de test-Pi, daarna de boot-Pi.
 
 ---
 
@@ -868,7 +929,7 @@ bereikbaar; metingen gaan wel door (P4). **[OPEN-18]** Moet uitval van BRMS zelf
 | 16 | ~~Back-up~~ – **besloten in v0.6**: wekelijks naar OneDrive met `rclone copy` | §7.1 |
 | 17 | Reikwijdte van de watchdog | §7 |
 | 18 | Detectie thuis als BRMS zelf uitvalt | §8 |
-| 19 | Uitrol van code en updates | §10 |
+| 19 | ~~Uitrol van code en updates~~ – **besloten in v0.11**: git met deploy key, beide Pi's volgen `main`, `update.sh` met terugdraaien | §10.1 |
 | 20 | ~~Bewaartermijn van stills~~ – **besloten in v0.5**: foto's 2 weken, video's tot de gebruiker ze verwijdert, met maximale ruimte | §5.7 |
 | 21 | Maatregelen op OS-niveau tegen flashslijtage | §7 |
 | 22 | ~~MQTT-clientbibliotheek~~ – **besloten in v0.8**: `paho-mqtt==2.1.0` direct, met eigen busmodule | §3.2 |
@@ -893,4 +954,5 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.7 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-12 besloten (§5.4.1): TOML via `tomllib`, één bestand `/etc/brms/brms.toml` buiten git en los van de code, wijzigen door herstart van de service, configuratie gecontroleerd bij start en met `brms check-config`. |
 | 0.8 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-22 besloten (§3.2): `paho-mqtt==2.1.0` direct, zoals JSEM, met eigen busmodule als koppeling naar asyncio. OPEN-23 besloten (§3.3): topics `brms/meting`, `brms/opname`, `brms/opdracht`; complete JSON-berichten; geen retain; QoS per berichtsoort. OPEN-25 toegevoegd (tabel van grootheden). §5.2.1 bijgewerkt. |
 | 0.9 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-6 en OPEN-7 besloten (§5.2.2): BMV-700, 3× MPPT (2× 75/15 met VE.Direct-dongle, 100/30 SmartSolar) en MultiPlus (VE.Bus Smart dongle) via BLE Instant Readout. Walstroom via MultiPlus in plaats van Shelly; OPEN-8 vervallen; Shelly alleen nog voor bilge. OPEN-25 besloten (§5.3.3): tabel van grootheden. §5.3.2, §5.5 bijgewerkt. |
-| **0.10** | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-3 besloten (§4.2): router (RUT241) als tijdbron via operator time en NTP, Pi synchroniseert via router; alarmlaag op monotone klok; opslag en camera schrijven pas na tijdsynchronisatie; DS3231 optioneel. |
+| 0.10 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-3 besloten (§4.2): router (RUT241) als tijdbron via operator time en NTP, Pi synchroniseert via router; alarmlaag op monotone klok; opslag en camera schrijven pas na tijdsynchronisatie; DS3231 optioneel. |
+| **0.11** | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-19 besloten (§10.1): uitrol via git met deploy key; test- en boot-Pi volgen `main`; `deploy/update.sh` met config-controle en `--terug`; indeling `/opt/brms`, `/etc/brms`, `/var/lib/brms`; systeemgebruiker `brms`; `deploy/install.sh`; geen automatische OS-updates. |

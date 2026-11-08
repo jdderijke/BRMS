@@ -2,7 +2,7 @@
 # bevat o.a. de Victron-encryptiesleutel).
 
 [database]
-path = "data/brms.db"
+path = "/var/lib/brms/brms.db"
 
 # Eén blok per sensor: MAC-adres -> naam/locatie, optionele correcties.
 [[sensor]]
