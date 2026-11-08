@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Lokale data en configuratie (bevat geheimen)
+data/*
+!data/.gitkeep
+config/brms.toml
+
+# PyCharm: gebruikersspecifiek
+.idea/workspace.xml
+.idea/shelf/
+.idea/usage.statistics.xml

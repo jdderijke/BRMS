@@ -1,0 +1,13 @@
+# Voorbeeldconfiguratie. Kopieer naar config/brms.toml (staat niet in git:
+# bevat o.a. de Victron-encryptiesleutel).
+
+[database]
+path = "data/brms.db"
+
+# Eén blok per sensor: MAC-adres -> naam/locatie, optionele correcties.
+[[sensor]]
+mac = "A4:C1:38:00:00:01"
+type = "bthome"
+naam = "kajuit"
+offset_temperatuur = 0.0
+offset_luchtvochtigheid = 0.0
