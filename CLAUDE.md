@@ -27,9 +27,9 @@ Het systeem draait maanden **onbeheerd**: betrouwbaarheid en eenvoud gaan boven 
 | Zonnepaneel | 50 Wp; type laadregelaar **nog onbekend** | Open |
 | Walstroom | Shelly aan 230V-kant (offline = walstroom weg), lokale HTTP-API; evt. ook op DI van router | Gepland |
 | Bilge | Shelly Plus Uni (12V) met vlottercontact, lokale API | Gepland |
-| Camera | IP-camera wifi 2,4 GHz, RTSP/ONVIF, 12V, op aanvraag streamen | Later |
+| Camera | IP-camera wifi 2,4 GHz, RTSP/ONVIF, 12V, altijd aan (zie ARCHITECTURE.md §5.7) | Later |
 | Voeding | 12V boordnet → zekering → BatteryProtect → DC-DC 12→5V 3A | Nog kopen |
-| Relais | GPIO-relais (camera uit bij walstroomuitval); router-DO → relais voor Pi-herstart | Gepland |
+| Relais | Router-DO → relais voor Pi-herstart | Gepland |
 
 Energie: systeem ca. 11 W (~21 Ah/dag). Walstroom aanwezig maar kan wegvallen; accu overbrugt ca. 5 dagen.
 
