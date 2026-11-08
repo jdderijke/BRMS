@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.11 – concept** · 8 november 2026
+**Versie 0.12 – concept** · 8 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -314,8 +314,8 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
 
 | Reader | Bron | Methode | Status |
 |---|---|---|---|
-| BTHome v2 | Xiaomi Monitor 3 (pvvx) | BLE-advertenties, `bleak` | Eerste stap |
-| Ruuvi | RuuviTag (Pro) | BLE-advertenties; **[OPEN-5]** `ruuvitag-sensor` of eigen decoder op `bleak` | Gepland |
+| BTHome v2 | Xiaomi Monitor 3 (pvvx) | BLE-advertenties, eigen decoder (§5.2.3) | Eerste stap |
+| Ruuvi | RuuviTag (Pro) | BLE-advertenties, eigen decoder (§5.2.3) | Gepland |
 | Victron | BMV-700, 3× MPPT, MultiPlus | BLE Instant Readout, decoder in de BLE-reader (§5.2.2) | Gepland |
 | Shelly | Bilge | Lokale HTTP-API | Gepland |
 | Camera | IP-camera dek | Foto per interval, video op poll-nu (§5.7) | Later |
@@ -377,6 +377,36 @@ en betekent stilte gewoon "sensor stil". Er is geen werk aan de 230V-kant nodig.
    met de echte MultiPlus bevestigd.
 5. De Shelly-reader (§5.2.1) wordt alleen nog gebruikt voor de **bilge** (Shelly Plus Uni).
 6. OPEN-8 vervalt.
+
+#### 5.2.3 Decoders: eigen code of bibliotheek (besluit OPEN-5)
+
+**Aanleiding.** Voor de decoderstap in de keten (ontvangen → decoderen → correctie →
+MQTT, §5.2.1) moest per sensortype gekozen worden: zelf schrijven of een bestaande
+bibliotheek gebruiken.
+
+**Redenering.** RuuviTag (Pro) zendt dataformaat 5 (RAWv2) uit: een vaste, openbaar
+gedocumenteerde reeks van 24 bytes. BTHome v2 (pvvx) is eveneens openbaar en onversleuteld.
+Een eigen decoder is voor beide klein, is precies de zuivere functie die §5.2.1 vraagt, en
+voegt geen afhankelijkheden toe (P3). Ruuvi publiceert officiële testvectoren, waarmee de
+decoder exact te toetsen is. Victron-gegevens zijn versleuteld (AES) en kennen veel
+recordtypes; daar is een bestaande bibliotheek de veiligere keuze.
+
+**Verworpen alternatieven.**
+- *`ruuvitag-sensor`.* Bevat een eigen scanner en extra afhankelijkheden voor functies die
+  BRMS niet gebruikt.
+- *`bthome-ble`.* Zelfde bezwaar; voor wat pvvx uitzendt is een eigen decoder eenvoudig.
+- *Eigen Victron-decoder.* Versleuteling en veel recordtypes; meer risico dan nut.
+
+**Specificatie.**
+1. Principe: **eenvoudige, openbare formaten krijgen een eigen decoder; versleutelde of
+   complexe formaten gebruiken een bibliotheek.**
+2. **Ruuvi** (formaat 5) en **BTHome v2**: eigen decoder. De Ruuvi-decoder wordt getest met
+   de officiële testvectoren van Ruuvi.
+3. **Victron**: `victron-ble`, alleen als decoder (§5.2.2).
+4. Waarden die een sensor als "ongeldig" uitzendt (bijv. luchtdruk bij een Ruuvi Pro
+   3-in-1) worden niet gepubliceerd.
+5. De BLE-reader houdt per Ruuvi de vorige tellerstand bij en publiceert de toename
+   (§5.3.2); de ruwe tellerstand wordt niet gepubliceerd.
 
 ### 5.3 Opslag
 
@@ -915,7 +945,7 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
 | 2 | Welke USB-BLE-dongle | §4.1 |
 | 3 | ~~Gedrag zolang de systeemtijd nog niet betrouwbaar is~~ – **besloten in v0.10**: router als tijdbron, alarmen op monotone klok, opslag wacht op synchronisatie | §4.2 |
 | 4 | ~~Interface van een reader~~ – **besloten in v0.4**: één BLE-reader met decoders, één Shelly-reader, push via MQTT | §5.2.1 |
-| 5 | Ruuvi: `ruuvitag-sensor` of eigen decoder | §5.2 |
+| 5 | ~~Ruuvi: `ruuvitag-sensor` of eigen decoder~~ – **besloten in v0.12**: eigen decoder (ook BTHome) | §5.2.3 |
 | 6 | ~~Victron: BLE of VE.Direct-USB~~ – **besloten in v0.9**: BLE Instant Readout | §5.2.2 |
 | 7 | ~~Type laadregelaar zonnepaneel~~ – **besloten in v0.9**: 3× Victron MPPT via BLE | §5.2.2 |
 | 8 | ~~Wanneer geldt de walstroom-Shelly als offline~~ – **vervallen in v0.9**: walstroom via MultiPlus | §5.2.2 |
@@ -955,4 +985,5 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.8 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-22 besloten (§3.2): `paho-mqtt==2.1.0` direct, zoals JSEM, met eigen busmodule als koppeling naar asyncio. OPEN-23 besloten (§3.3): topics `brms/meting`, `brms/opname`, `brms/opdracht`; complete JSON-berichten; geen retain; QoS per berichtsoort. OPEN-25 toegevoegd (tabel van grootheden). §5.2.1 bijgewerkt. |
 | 0.9 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-6 en OPEN-7 besloten (§5.2.2): BMV-700, 3× MPPT (2× 75/15 met VE.Direct-dongle, 100/30 SmartSolar) en MultiPlus (VE.Bus Smart dongle) via BLE Instant Readout. Walstroom via MultiPlus in plaats van Shelly; OPEN-8 vervallen; Shelly alleen nog voor bilge. OPEN-25 besloten (§5.3.3): tabel van grootheden. §5.3.2, §5.5 bijgewerkt. |
 | 0.10 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-3 besloten (§4.2): router (RUT241) als tijdbron via operator time en NTP, Pi synchroniseert via router; alarmlaag op monotone klok; opslag en camera schrijven pas na tijdsynchronisatie; DS3231 optioneel. |
-| **0.11** | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-19 besloten (§10.1): uitrol via git met deploy key; test- en boot-Pi volgen `main`; `deploy/update.sh` met config-controle en `--terug`; indeling `/opt/brms`, `/etc/brms`, `/var/lib/brms`; systeemgebruiker `brms`; `deploy/install.sh`; geen automatische OS-updates. |
+| 0.11 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-19 besloten (§10.1): uitrol via git met deploy key; test- en boot-Pi volgen `main`; `deploy/update.sh` met config-controle en `--terug`; indeling `/opt/brms`, `/etc/brms`, `/var/lib/brms`; systeemgebruiker `brms`; `deploy/install.sh`; geen automatische OS-updates. |
+| **0.12** | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-5 besloten (§5.2.3): eigen decoders voor Ruuvi (formaat 5, getest met officiële testvectoren) en BTHome v2; Victron via `victron-ble`; ongeldige waarden niet gepubliceerd; toename bewegingsteller in de reader. |
