@@ -23,6 +23,12 @@ class NepBus:
         self.q = asyncio.Queue()
         return self.q
 
+    def abonneer(self, topic, qos, callback):
+        pass  # trace-opdrachten: niet gebruikt in deze test
+
+    def publiceer(self, topic, payload, qos=0):
+        return True
+
 
 async def _draai(pad, berichten, klok_ok):
     cfg = Config(MqttConfig(), OpslagConfig(pad), {})

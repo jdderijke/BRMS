@@ -85,6 +85,16 @@ class Bus:
         info = self._client.publish(m.topic(), m.naar_json(), qos=qos, retain=False)
         return info.rc == mqtt.MQTT_ERR_SUCCESS
 
+    def publiceer(self, topic: str, payload: str, qos: int = 0) -> bool:
+        """Publiceert een willekeurig bericht (trace, opdracht). Nooit retain (§3.3).
+
+        Geeft False terug als de broker niet bereikbaar is; het bericht is dan weggegooid.
+        """
+        if not self.verbonden:
+            return False
+        info = self._client.publish(topic, payload, qos=qos, retain=False)
+        return info.rc == mqtt.MQTT_ERR_SUCCESS
+
     # --- abonneren ----------------------------------------------------------------
     def abonneer(self, topic: str, qos: int, callback) -> None:
         """Abonneert op een topic (wildcards toegestaan, bijv. 'brms/meting/#').

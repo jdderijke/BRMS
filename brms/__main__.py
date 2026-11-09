@@ -6,9 +6,11 @@ Op de Pi installeert deploy/install.sh een korte opdracht `brms` die hetzelfde d
 Zonder --config wordt config/brms.toml in de projectmap gelezen.
 
 Opdrachten:
-  check-config   configuratie controleren, bijv. vóór een herstart (§5.4.1)
-  ble-reader     de BLE-reader-service starten (§5.2.1)
-  opslag         de opslag-service starten (§5.3)
+  check-config        configuratie controleren, bijv. vóór een herstart (§5.4.1)
+  ble-reader          de BLE-reader-service starten (§5.2.1)
+  opslag              de opslag-service starten (§5.3)
+  monitor [sensor..]  monitor in tmux: busverkeer, of met sensor(en) de trace (§10.2)
+  monitor-vak [..]    (intern) het vak onderin dat 'monitor' in tmux start
 
 De services worden normaal door systemd gestart (deploy/systemd/), niet met de hand.
 """
@@ -63,15 +65,41 @@ async def _service(naam: str, cfg: config.Config) -> None:
         bus.stop()
 
 
+def _monitor(args) -> int:
+    """Monitor (§10.2): configuratie lezen voor de namen, sensoren opzoeken, en dan óf de
+    tmux-sessie openen (monitor) óf het vak zelf draaien (monitor-vak, in tmux)."""
+    from brms import monitor
+
+    try:
+        cfg = config.lees(args.config)
+        sensoren = monitor.zoek_sensoren(args.sensoren, cfg)
+    except config.ConfigFout as e:
+        print("configuratiefout:", file=sys.stderr)
+        for f in e.fouten:
+            print(f"  - {f}", file=sys.stderr)
+        return 1
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 1
+    if args.opdracht == "monitor":
+        return monitor.open_sessie(args.sensoren, args.config)
+    return monitor.draai_vak(cfg, sensoren)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="brms", description=f"BRMS {VERSION}")
     p.add_argument("--config", default=config.STANDAARD_PAD, help="pad naar brms.toml")
     p.add_argument("--debug", action="store_true", help="uitgebreide logging")
-    p.add_argument("opdracht", choices=("check-config", "ble-reader", "opslag"))
+    p.add_argument("opdracht",
+                   choices=("check-config", "ble-reader", "opslag", "monitor", "monitor-vak"))
+    p.add_argument("sensoren", nargs="*", help="bij monitor: naam of ID van sensor(en) voor trace")
     args = p.parse_args(argv)
 
     if args.opdracht == "check-config":
         return _check_config(args.config)
+
+    if args.opdracht in ("monitor", "monitor-vak"):
+        return _monitor(args)
 
     # Logging naar stderr; onder systemd komt dat in journald, dat zelf tijd en
     # servicenaam toevoegt. Daarom hier alleen niveau, module en bericht.

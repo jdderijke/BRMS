@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.15 – concept** · 9 november 2026
+**Versie 0.16 – concept** · 9 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -161,7 +161,8 @@ staat; daarom QoS 1.
 |---|---|---|---|
 | Meting | `brms/meting/<sensor_id>/<grootheid>` | `{"ts", "sensor_id", "grootheid", "waarde", "soort"}` | 1 voor toestand, 0 voor doorlopend en toename |
 | Opname | `brms/opname/<camera_id>` | `{"ts", "camera_id", "type", "duur", "bestand", "bytes", "aanleiding"}` | 1 |
-| Opdracht | `brms/opdracht/<doel>/<actie>`, bijv. `brms/opdracht/camera/poll-nu`, `brms/opdracht/shelly/poll-nu`, `brms/opdracht/opslag/verwijder` | afhankelijk van de actie, bijv. `{"type": "video", "aanleiding": "alarm:beweging"}` | 1 |
+| Opdracht | `brms/opdracht/<doel>/<actie>`, bijv. `brms/opdracht/camera/poll-nu`, `brms/opdracht/shelly/poll-nu`, `brms/opdracht/opslag/verwijder`, `brms/opdracht/trace/aan` | afhankelijk van de actie, bijv. `{"type": "video", "aanleiding": "alarm:beweging"}` | 1 |
+| Trace (v0.16) | `brms/trace/<sensor_id>` | `{"ts", "sensor_id", "dienst", "stap", "tekst"}` – alleen zolang trace voor die sensor aanstaat (§10.2) | 0 |
 
 1. Elk bericht is **compleet**: ook wat in de topic staat, staat in de inhoud.
 2. **Geen retain**, voor geen enkel bericht.
@@ -312,6 +313,9 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
 6. Elke **pollende** reader (Shelly, camera) heeft een **poll-nu**-ingang: een MQTT-opdracht
    die direct een poll uitvoert, los van het interval. Alarmlaag, web en gebruiker kunnen
    die opdracht geven. De BLE-reader heeft geen poll-nu.
+7. Elke reader heeft een **trace-uitgang** (v0.16, §10.2): staat trace voor een sensor aan,
+   dan publiceert de reader per ontvangst wat hij in elke stap doet (ruw, gedecodeerd,
+   gecorrigeerd, gepubliceerd). Standaard staat trace uit.
 
 | Reader | Bron | Methode | Status |
 |---|---|---|---|
@@ -1038,6 +1042,61 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
 7. **Geen automatische OS-updates.** OS, Tailscale en router-firmware worden met de hand
    bijgewerkt: eerst de test-Pi, daarna de boot-Pi.
 
+### 10.2 Beheerhulpmiddel: monitor met trace (v0.16)
+
+**Aanleiding.** Bij het ijken en testen moet één meting door de hele keten te volgen zijn:
+de ruwe gegevens zoals de reader ze ontvangt, de decodering (ruwe getallen en schaal), de
+correctie, het MQTT-bericht, en wat de opslag ermee doet tot en met de regel in de database.
+Dat moet kunnen terwijl de gebruiker in dezelfde ssh-sessie gewoon doorwerkt.
+
+**Redenering.** Op de bus is alleen het MQTT-bericht zichtbaar; de andere stappen gebeuren
+binnen de reader en de opslag-service. Die moeten dus zelf laten zien wat ze doen. Via de
+bus, op een eigen topic, past dat in de bestaande opzet (§3.1): de monitor is gewoon een
+extra afnemer, en het werkt voor elke reader op dezelfde manier – BLE (BTHome, Ruuvi,
+Victron), Shelly, GPIO. Alleen op aanvraag en per sensor: aan boord komen straks tientallen
+metingen per seconde binnen, en traceberichten die niemand bekijkt zijn verspilling. Een
+vaste looptijd voorkomt dat trace per ongeluk blijft aanstaan.
+
+Een databaseregel is geen kopie van één bericht: per interval worden alle waarden
+samengevoegd (§5.3.2). De keten van één bericht eindigt daarom bij "opgenomen in het
+interval"; bij het opslagmoment volgt de databaseregel met het aantal samengevoegde waarden.
+
+Een vast vak onder in het scherm terwijl de shell erboven doorloopt, kan het best met
+`tmux` (vensterverdeling in de terminal). Zelf een vast gebied bijhouden met
+escape-codes is breekbaar (venstergrootte, programma's als `nano` en `less`).
+
+**Verworpen alternatieven.**
+- *Trace altijd aan.* Permanent veel extra berichten, ook als niemand kijkt.
+- *Trace via logging (journald) en de monitor leest het log.* Minder gestructureerd, en het
+  log op flash groeit mee (P7).
+- *Volledige console zoals in JSEM (`tools/busmonitor`).* Meer dan nodig: BRMS heeft geen
+  nodes die vanuit een console gestart en gestopt worden.
+
+**Specificatie.**
+1. Opdracht **`brms monitor [sensor ...]`** (sensor = naam uit de configuratie of
+   sensor-ID). Start of hervat een tmux-sessie: bovenin de shell, onderin een vak van
+   ongeveer 20 regels met de laatste berichten. De ssh-sessie mag wegvallen; opnieuw
+   `brms monitor` brengt terug in dezelfde sessie.
+2. Zonder sensor toont de monitor het verkeer op de bus (metingen en opdrachten), met naam
+   uit de configuratie en eenheid uit de tabel van grootheden. Met sensor zet hij trace aan
+   voor die sensor(en) en toont hij per meting de keten.
+3. **Trace aanzetten:** opdracht `brms/opdracht/trace/aan` met
+   `{"sensor_ids": [...], "duur": 600}`; uitzetten met `brms/opdracht/trace/uit`. Trace gaat
+   na `duur` seconden vanzelf uit; de monitor vernieuwt de opdracht elke minuut zolang hij
+   draait en zet trace uit bij afsluiten. Alle readers en de opslag luisteren mee.
+4. **Stappen** in een tracebericht (`stap`):
+   | Stap | Dienst | Inhoud |
+   |---|---|---|
+   | `ruw` | reader | de ontvangen gegevens: bytes (BLE), JSON-antwoord (Shelly), pinstand (GPIO); bij Victron ook ontsleuteld |
+   | `gedecodeerd` | reader | per grootheid: ruw getal, schaalfactor, resultaat |
+   | `gecorrigeerd` | reader | per grootheid: waarde, offset uit de configuratie, resultaat |
+   | `gepubliceerd` | reader | topic en inhoud van het MQTT-bericht, of "weggegooid" |
+   | `opgenomen` | opslag | in welk interval, en het tussenresultaat (aantal, gemiddelde/som, toestandsverandering) |
+   | `opgeslagen` | opslag | de regel(s) in de database bij het opslagmoment, met het aantal samengevoegde waarden; of "weggegooid" (klok niet gesynchroniseerd) |
+5. De monitor **publiceert alleen trace-opdrachten**; verder luistert hij alleen. Hij hoort
+   niet bij het draaiende systeem: BRMS werkt zonder monitor precies hetzelfde.
+6. `tmux` wordt door `deploy/install.sh` geïnstalleerd.
+
 ---
 
 ## 11. Open vragen
@@ -1092,4 +1151,5 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.12 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-5 besloten (§5.2.3): eigen decoders voor Ruuvi (formaat 5, getest met officiële testvectoren) en BTHome v2; Victron via `victron-ble`; ongeldige waarden niet gepubliceerd; toename bewegingsteller in de reader. |
 | 0.13 | 2026-11-09 | Claude Code, Opus 5.5 | OPEN-13 besloten (§5.5.2): duur, hysterese, herstelmelding, herinnering zolang actief, geen bevestiging, alarmtoestand niet bewaard over herstart, alarmen per sensor, ntfy-prioriteiten, standaardwaarden. Alarm "sensorbatterij laag" toegevoegd (§5.5). |
 | 0.14 | 2026-11-09 | Claude Code, Opus 5.5 | Bilge uitgewerkt (§5.2.4): Shelly Plus Uni op 12 V met hoogwatervlotter (`bilge`) en pompspanning (nieuwe grootheid `bilgepomp`); bilge-Shelly elke 2 s gepolld, poll-interval per Shelly instelbaar. Alarmen "bilgepomp lang" en "bilgepomp vaak" toegevoegd (§5.5, §5.5.2). |
-| **0.15** | 2026-11-09 | Claude Code, Opus 5.5 | Indeling op de Pi herzien (§10.1, §5.4.1): alles in `~/BRMS` zoals op de pc (`config/brms.toml`, `data/`, `.venv`); services als `jandirk` in plaats van systeemgebruiker `brms`; `sqlite3` en `mosquitto-clients` als beheerhulpmiddelen. |
+| 0.15 | 2026-11-09 | Claude Code, Opus 5.5 | Indeling op de Pi herzien (§10.1, §5.4.1): alles in `~/BRMS` zoals op de pc (`config/brms.toml`, `data/`, `.venv`); services als `jandirk` in plaats van systeemgebruiker `brms`; `sqlite3` en `mosquitto-clients` als beheerhulpmiddelen. |
+| **0.16** | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |

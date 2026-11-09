@@ -64,10 +64,11 @@ echo "== 1. Systeempakketten"
 # mosquitto-clients:  mosquitto_sub/_pub om metingen live te volgen en te testen
 # sqlite3:            de database bekijken (altijd met -readonly; de opslag-service is de
 #                     enige schrijver, §3.1)
+# tmux:               vensterverdeling voor 'brms monitor' (§10.2)
 # git:                code ophalen (§10.1)
 # python3-venv:       eigen Python-omgeving, los van de systeem-Python (§5.1)
 sudo apt-get update -q
-sudo apt-get install -y -q mosquitto mosquitto-clients sqlite3 git python3-venv
+sudo apt-get install -y -q mosquitto mosquitto-clients sqlite3 tmux git python3-venv
 
 # -----------------------------------------------------------------------------
 echo "== 2. Groep bluetooth"
@@ -180,4 +181,5 @@ echo "Klaar."
 echo "  Status:    systemctl status 'brms-*'"
 echo "  Logs:      journalctl -u 'brms-*' -f"
 echo "  Live:      mosquitto_sub -v -t 'brms/meting/#'"
+echo "  Monitor:   brms monitor            (met sensornaam: trace van de hele keten)"
 echo "  Database:  sqlite3 -readonly $BRMS/data/brms.db"

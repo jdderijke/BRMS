@@ -106,8 +106,9 @@ class Aggregator:
     def __init__(self):
         # Doorlopend: lopende som en aantal, voor het gemiddelde.
         self._som: dict[tuple[str, str], list[float]] = {}
-        # Toename: lopende som.
+        # Toename: lopende som en aantal (het aantal alleen voor trace).
         self._toename: dict[tuple[str, str], float] = {}
+        self._toename_n: dict[tuple[str, str], int] = {}
         # Toestand: laatst bekende waarde. Blijft bewaard over intervallen heen, zodat een
         # verandering ook herkend wordt als die in een later interval valt.
         self._toestand: dict[tuple[str, str], float] = {}
@@ -116,7 +117,12 @@ class Aggregator:
         # Veranderingsrijen van toestanden, met het exacte tijdstip.
         self._wijzigingen: list[Rij] = []
 
-    def voeg_toe(self, m: Meting) -> None:
+    def voeg_toe(self, m: Meting) -> bool:
+        """Neemt een meting op in het lopende interval.
+
+        Geeft True terug als het een toestand is die veranderde (dan komt er een rij met
+        het exacte tijdstip); anders False. Alleen gebruikt voor trace.
+        """
         sleutel = (m.sensor_id, m.grootheid)
         # De soort komt uit de tabel in de code, niet uit het bericht (§5.3.2).
         soort = grootheden.soort(m.grootheid)
@@ -126,12 +132,36 @@ class Aggregator:
             s[1] += 1
         elif soort == grootheden.TOENAME:
             self._toename[sleutel] = self._toename.get(sleutel, 0.0) + m.waarde
+            self._toename_n[sleutel] = self._toename_n.get(sleutel, 0) + 1
         else:  # toestand
+            self._toestand_gezien.add(sleutel)
             # De eerste waarde na het starten telt ook als verandering.
             if self._toestand.get(sleutel) != m.waarde:
                 self._wijzigingen.append((m.ts, m.sensor_id, m.grootheid, m.waarde))
                 self._toestand[sleutel] = m.waarde
-            self._toestand_gezien.add(sleutel)
+                return True
+        return False
+
+    def beschrijf(self, m: Meting, veranderd: bool) -> str:
+        """Tussenstand voor deze grootheid in het lopende interval (voor trace, §10.2)."""
+        sleutel = (m.sensor_id, m.grootheid)
+        soort = grootheden.soort(m.grootheid)
+        if soort == grootheden.DOORLOPEND:
+            som, n = self._som[sleutel]
+            return f"{m.grootheid:<17} {m.waarde:g} → nu {n} waarden, gemiddelde {som / n:.4g}"
+        if soort == grootheden.TOENAME:
+            return (f"{m.grootheid:<17} +{m.waarde:g} → nu {self._toename_n[sleutel]} waarden, "
+                    f"som {self._toename[sleutel]:g}")
+        if veranderd:
+            return f"{m.grootheid:<17} {m.waarde:g} → VERANDERD: rij met exact tijdstip {m.ts}"
+        return f"{m.grootheid:<17} {m.waarde:g} → ongewijzigd"
+
+    def aantallen(self) -> dict[tuple[str, str], int]:
+        """Aantal opgenomen waarden per (sensor_id, grootheid) in het lopende interval,
+        voor doorlopende grootheden en toenames (voor trace bij het opslagmoment)."""
+        n = {k: int(v[1]) for k, v in self._som.items()}
+        n.update(self._toename_n)
+        return n
 
     def leeg(self, ts: int) -> list[Rij]:
         """Geeft alle rijen voor opslagmoment `ts` en begint een nieuw interval.
@@ -146,6 +176,7 @@ class Aggregator:
         rijen += [(ts, s, g, self._toestand[(s, g)]) for (s, g) in self._toestand_gezien]
         self._som.clear()
         self._toename.clear()
+        self._toename_n.clear()
         self._toestand_gezien.clear()
         self._wijzigingen.clear()
         return rijen
@@ -174,13 +205,42 @@ def volgend_moment(nu: float) -> int:
     return (int(nu) // INTERVAL + 1) * INTERVAL
 
 
+def _trace_opslag(tracer, rijen: list[Rij], aantallen: dict, moment: int, resultaat: str) -> None:
+    """Meldt per getraceerde sensor welke rijen bij dit opslagmoment zijn weggeschreven
+    (of weggegooid), met het aantal samengevoegde waarden (§10.2, stap 'opgeslagen')."""
+    tijd = time.strftime("%H:%M:%S", time.localtime(moment))
+    per_sensor: dict[str, list[str]] = {}
+    for ts, sid, g, w in rijen:
+        if not tracer.actief(sid):
+            continue
+        n = aantallen.get((sid, g))
+        if ts != moment:
+            uitleg = "toestandsverandering (exact tijdstip)"
+        elif n is None:
+            uitleg = "actuele toestand"
+        elif grootheden.soort(g) == grootheden.TOENAME:
+            uitleg = f"som van {n} waarden"
+        else:
+            uitleg = f"gemiddelde van {n} waarden"
+        regel_tijd = time.strftime("%H:%M:%S", time.localtime(ts))
+        per_sensor.setdefault(sid, []).append(f"{regel_tijd}  {g:<17} {w:g}   ({uitleg})")
+    for sid, regels in per_sensor.items():
+        tekst = f"opslagmoment {tijd}: {resultaat}\n" + "\n".join(regels)
+        tracer.stuur(sid, "opgeslagen", tekst)
+
+
 async def draai(config: Config, bus, stop: asyncio.Event, klok_ok=klok_gesynchroniseerd) -> None:
     """Hoofdlus van de opslag-service; loopt tot `stop` gezet wordt.
 
     klok_ok is te vervangen in tests (op Windows is er geen timedatectl).
     """
+    from brms.trace import Tracer
+
     db = Database(config.opslag.database)
     agg = Aggregator()
+    # Luistert naar trace-opdrachten van de monitor (§10.2); standaard staat trace uit.
+    tracer = Tracer(bus, "opslag")
+    tracer.start()
     # Alle metingen van alle readers. QoS 1, zodat toestanden (met QoS 1 gepubliceerd)
     # ook met QoS 1 worden afgeleverd.
     q = bus.wachtrij(f"{TOPIC_PREFIX}/#", qos=1)
@@ -197,18 +257,23 @@ async def draai(config: Config, bus, stop: asyncio.Event, klok_ok=klok_gesynchro
 
             # Opslagmoment bereikt: verzamelde rijen wegschrijven.
             if nu >= moment:
+                aantallen = agg.aantallen()  # vóór leeg(), alleen nodig voor trace
                 rijen = agg.leeg(moment)
                 if rijen:
                     if klok_ok():
                         try:
                             db.schrijf(rijen)
                             log.debug("%d rijen opgeslagen", len(rijen))
+                            resultaat = "weggeschreven naar de database"
                         except sqlite3.Error:
                             # Bijv. schijf vol. Loggen en doorgaan; de volgende keer
                             # lukt het misschien wel.
                             log.exception("schrijven naar database mislukt; %d rijen verloren", len(rijen))
+                            resultaat = "FOUT bij schrijven – rijen verloren"
                     else:
                         log.warning("klok niet gesynchroniseerd; %d rijen weggegooid", len(rijen))
+                        resultaat = "WEGGEGOOID (klok niet gesynchroniseerd, §4.2)"
+                    _trace_opslag(tracer, rijen, aantallen, moment, resultaat)
                 moment = volgend_moment(nu)
                 continue
 
@@ -222,9 +287,17 @@ async def draai(config: Config, bus, stop: asyncio.Event, klok_ok=klok_gesynchro
             # Bericht controleren en verzamelen. Een ongeldig bericht wordt gelogd en
             # overgeslagen; het mag de service niet laten stoppen.
             try:
-                agg.voeg_toe(Meting.van_json(payload))
+                m = Meting.van_json(payload)
             except ValueError as e:
                 log.warning("ongeldig bericht op %s genegeerd: %s", topic, e)
+                continue
+            veranderd = agg.voeg_toe(m)
+
+            # Trace (§10.2, stap 'opgenomen'): de tussenstand in het lopende interval.
+            stap = tracer.voor(m.sensor_id)
+            if stap:
+                tot = time.strftime("%H:%M", time.localtime(moment))
+                stap("opgenomen", f"interval tot {tot}: {agg.beschrijf(m, veranderd)}")
     finally:
         db.sluit()
         log.info("opslag gestopt")

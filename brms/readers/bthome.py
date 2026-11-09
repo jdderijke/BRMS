@@ -29,6 +29,8 @@ Dit is een zuivere functie: bytes in, waarden uit. Daardoor is hij te testen zon
 Bluetooth en zonder Pi (tests/test_bthome.py).
 """
 
+from dataclasses import dataclass
+
 # Volledige 128-bit schrijfwijze van UUID 0xFCD2 zoals bleak de service data aanlevert.
 FCD2_UUID = "0000fcd2-0000-1000-8000-00805f9b34fb"
 
@@ -81,6 +83,17 @@ _GROOTHEID: dict[int, tuple[str, float, int]] = {
 }
 
 
+@dataclass(frozen=True)
+class Object:
+    """Eén gedecodeerd object, met de tussenstappen (voor trace, §10.2)."""
+    grootheid: str
+    object_id: int
+    ruw: bytes      # de bytes van de waarde zoals ze in het bericht staan (little-endian)
+    getal: int      # die bytes als geheel getal
+    factor: float   # schaalfactor uit de BTHome-specificatie
+    waarde: float   # getal x factor, afgerond
+
+
 def decodeer(data: bytes) -> dict[str, float]:
     """Decodeert BTHome v2 service data naar {grootheid: waarde}.
 
@@ -90,6 +103,11 @@ def decodeer(data: bytes) -> dict[str, float]:
       zijn wel geldig en worden teruggegeven.
     - BTHomeFout bij een leeg, versleuteld, verkeerde-versie of afgebroken bericht.
     """
+    return {o.grootheid: o.waarde for o in decodeer_objecten(data)}
+
+
+def decodeer_objecten(data: bytes) -> list[Object]:
+    """Als decodeer(), maar met de tussenstappen per object (voor trace)."""
     if not data:
         raise BTHomeFout("leeg bericht")
 
@@ -102,7 +120,7 @@ def decodeer(data: bytes) -> dict[str, float]:
     if versie != 2:
         raise BTHomeFout(f"BTHome-versie {versie} wordt niet ondersteund")
 
-    waarden: dict[str, float] = {}
+    objecten: list[Object] = []
     i = 1  # positie in het bericht; begint na de apparaatinformatie
     while i < len(data):
         # Object-ID lezen.
@@ -129,5 +147,6 @@ def decodeer(data: bytes) -> dict[str, float]:
         if obj in _GROOTHEID:
             naam, factor, decimalen = _GROOTHEID[obj]
             getal = int.from_bytes(ruw, "little", signed=signed)
-            waarden[naam] = round(getal * factor, decimalen)
-    return waarden
+            objecten.append(Object(naam, obj, bytes(ruw), getal, factor,
+                                   round(getal * factor, decimalen)))
+    return objecten
