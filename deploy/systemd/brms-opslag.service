@@ -1,0 +1,28 @@
+# systemd-service voor de opslag (ARCHITECTURE.md §3.1, §5.3).
+# Geïnstalleerd in /etc/systemd/system/ door deploy/install.sh en deploy/update.sh.
+
+[Unit]
+Description=BRMS opslag (MQTT -> SQLite)
+# Broker eerst starten (§3.1 punt 6). 'Wants': valt de broker weg, dan blijft de opslag
+# draaien en verbindt opnieuw zodra hij terug is.
+Wants=mosquitto.service
+After=mosquitto.service
+
+[Service]
+User=brms
+Group=brms
+Environment=PYTHONPATH=/opt/brms
+ExecStart=/opt/brms/venv/bin/python -m brms opslag
+# Altijd opnieuw starten na een crash of fout, na 5 s (§3.1 punt 1).
+Restart=always
+RestartSec=5
+
+# Beveiliging: alles read-only behalve /var/lib/brms, waar de database staat.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/brms
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

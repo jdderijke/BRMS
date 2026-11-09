@@ -1,0 +1,7 @@
+#!/bin/sh
+# Opdracht 'brms' (geïnstalleerd als /usr/local/bin/brms door deploy/install.sh).
+# Start de BRMS-code uit /opt/brms met de Python van de eigen venv, bijv.:
+#     brms check-config
+# PYTHONPATH zorgt dat Python het pakket 'brms' in /opt/brms vindt.
+export PYTHONPATH=/opt/brms
+exec /opt/brms/venv/bin/python -m brms "$@"
