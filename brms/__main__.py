@@ -10,6 +10,7 @@ Opdrachten:
   ble-reader          de BLE-reader-service starten (§5.2.1)
   opslag              de opslag-service starten (§5.3)
   monitor [sensor..]  monitor in tmux: busverkeer, of met sensor(en) de trace (§10.2)
+  monitor stop        het monitorvak sluiten; de shell blijft
   monitor-vak [..]    (intern) het vak onderin dat 'monitor' in tmux start
 
 De services worden normaal door systemd gestart (deploy/systemd/), niet met de hand.
@@ -69,6 +70,10 @@ def _monitor(args) -> int:
     """Monitor (§10.2): configuratie lezen voor de namen, sensoren opzoeken, en dan óf de
     tmux-sessie openen (monitor) óf het vak zelf draaien (monitor-vak, in tmux)."""
     from brms import monitor
+
+    # 'brms monitor stop': het vak sluiten. Hiervoor is geen configuratie nodig.
+    if args.opdracht == "monitor" and args.sensoren == ["stop"]:
+        return monitor.sluit_vak()
 
     try:
         cfg = config.lees(args.config)

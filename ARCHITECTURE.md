@@ -1081,6 +1081,8 @@ escape-codes is breekbaar (venstergrootte, programma's als `nano` en `less`).
    sensor-ID). Start of hervat een tmux-sessie: bovenin de shell, onderin een vak van
    ongeveer 20 regels met de laatste berichten. De ssh-sessie mag wegvallen; opnieuw
    `brms monitor` brengt terug in dezelfde sessie.
+   **`brms monitor stop`** (in de shell) sluit het vak en zet trace uit; de shell blijft.
+   Muisbediening staat aan: klikken kiest een vak, het scrollwiel bladert terug.
 2. Zonder sensor toont de monitor het verkeer op de bus (metingen en opdrachten), met naam
    uit de configuratie en eenheid uit de tabel van grootheden. Met sensor zet hij trace aan
    voor die sensor(en) en toont hij per meting de keten.

@@ -2,6 +2,7 @@
 
     brms monitor                 busverkeer (metingen en opdrachten) onderin het scherm
     brms monitor kajuit [...]    trace: per meting de hele keten voor deze sensor(en)
+    brms monitor stop            het monitorvak sluiten (trace uit); de shell blijft
 
 De monitor opent een tmux-sessie 'brms': bovenin de gewone shell, onderin een vak van
 ongeveer 20 regels met de laatste berichten. Wegvallen van de ssh-sessie is geen probleem:
@@ -9,10 +10,13 @@ opnieuw `brms monitor` brengt je terug in dezelfde sessie. Opnieuw `brms monitor
 andere sensoren vervangt het vak.
 
 tmux in het kort:
-    Ctrl-b  ↑ / ↓      wisselen tussen shell en vak
+    brms monitor stop  (in de shell) monitor stoppen; het vak sluit
+    muisklik           een vak kiezen; scrollwiel bladert terug (selecteren: met Shift)
+    Ctrl-b  ↑ / ↓      wisselen tussen shell en vak (zonder muis)
+    Ctrl-c             (in het vak zelf) monitor stoppen – let op: na het starten staat
+                       het toetsenbord in de shell bovenin, niet in het vak
     Ctrl-b  d          sessie loskoppelen (blijft draaien; terug met `brms monitor`)
     exit               (in de shell) sessie beëindigen
-    Ctrl-c             (in het vak) monitor stoppen; het vak sluit
 
 De monitor is geen onderdeel van het draaiende systeem: BRMS werkt zonder monitor precies
 hetzelfde. Hij publiceert alleen trace-opdrachten (aan/uit) en luistert verder alleen.
@@ -230,6 +234,9 @@ def open_sessie(argumenten: list[str], config_pad: str) -> int:
     if not _tmux("has-session", "-t", SESSIE):
         # Nieuwe sessie, losgekoppeld aangemaakt; daarna koppelen we eraan.
         _tmux("new-session", "-d", "-s", SESSIE, "-c", os.path.expanduser("~"))
+    # Muisbediening: klikken kiest een vak, het scrollwiel bladert terug. Tekst selecteren
+    # om te kopiëren gaat dan met Shift ingedrukt (in de meeste terminals).
+    _tmux("set-option", "-t", SESSIE, "mouse", "on")
     vak_id = _tmux("show-options", "-v", "-t", SESSIE, "@brms_vak", uitvoer=True)
     if vak_id and _tmux("display-message", "-p", "-t", vak_id, ""):
         # Het vak bestaat nog: de monitor erin vervangen door een nieuwe.
@@ -246,3 +253,22 @@ def open_sessie(argumenten: list[str], config_pad: str) -> int:
         return 0
     # Buiten tmux: dit proces vervangen door tmux, gekoppeld aan de sessie.
     os.execvp("tmux", ["tmux", "attach-session", "-t", SESSIE])
+
+
+def sluit_vak() -> int:
+    """`brms monitor stop`: sluit het monitorvak; de shell (en de tmux-sessie) blijft.
+
+    tmux stuurt de monitor bij het sluiten SIGHUP; draai_vak vangt dat op en zet de trace
+    netjes uit.
+    """
+    if shutil.which("tmux") is None or not _tmux("has-session", "-t", SESSIE):
+        print("Er draait geen monitor.")
+        return 0
+    vak_id = _tmux("show-options", "-v", "-t", SESSIE, "@brms_vak", uitvoer=True)
+    if not vak_id or not _tmux("display-message", "-p", "-t", vak_id, ""):
+        print("Er draait geen monitor.")
+        return 0
+    _tmux("kill-pane", "-t", vak_id)
+    _tmux("set-option", "-u", "-t", SESSIE, "@brms_vak")
+    print("Monitor gestopt; trace staat uit.")
+    return 0
