@@ -1094,6 +1094,13 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
    voor systemd. Een service-opdracht weigert te starten als systemd die service al draait
    (een tweede exemplaar botst op de broker en, bij de opslag, op de database), behalve met
    `--toch` voor testen.
+9. **`brms start`, `brms stop`, `brms herstart`** (v0.18) starten, stoppen of herstarten
+   alle BRMS-services tegelijk via systemd (met `sudo`). Welke services dat zijn, volgt uit
+   de units in `deploy/systemd/`, zodat een nieuwe service vanzelf meedoet. `start` en
+   `herstart` controleren eerst de configuratie: bij een fout gebeurt er niets en draait
+   de oude configuratie door. `stop` geldt tot de volgende herstart van de Pi (de services
+   blijven bij het opstarten automatisch starten). Mosquitto valt hierbuiten. Na afloop
+   tonen de opdrachten de status van elke service.
 
 ### 10.2 Beheerhulpmiddel: monitor met trace (v0.16)
 

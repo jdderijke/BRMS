@@ -12,6 +12,7 @@ Opdrachten:
   monitor [sensor..]  monitor in tmux: busverkeer, of met sensor(en) de trace (§10.2)
   monitor stop        het monitorvak sluiten; de shell blijft
   grootheden [type]   alle grootheden, of wat een sensortype levert (§5.4.2)
+  start | stop | herstart   alle BRMS-services via systemd (§10.1 punt 9)
   monitor-vak [..]    (intern) het vak onderin dat 'monitor' in tmux start
 
 De services worden normaal door systemd gestart (deploy/systemd/), niet met de hand.
@@ -39,6 +40,47 @@ def _check_config(cfg_pad: str) -> int:
         return 1
     print(f"Configuratie {cfg_pad} is in orde: {len(cfg.sensoren)} sensoren.")
     return 0
+
+
+def _services() -> list[str]:
+    """Alle BRMS-services: de namen van de units in deploy/systemd/ (bijv. brms-opslag).
+
+    Zo doet een nieuwe service (Shelly-reader, alarmlaag) vanzelf mee met start/stop/herstart
+    zodra zijn unit in deploy/systemd/ staat.
+    """
+    map_ = os.path.join(config.PROJECTMAP, "deploy", "systemd")
+    return sorted(f[:-len(".service")] for f in os.listdir(map_)
+                  if f.startswith("brms-") and f.endswith(".service"))
+
+
+def _beheer(actie: str, cfg_pad: str) -> int:
+    """brms start | stop | herstart: alle BRMS-services via systemd (§10.1 punt 9).
+
+    - start en herstart controleren eerst de configuratie; bij een fout gebeurt er niets
+      en draait de oude configuratie gewoon door.
+    - stop geldt tot de volgende herstart van de Pi: de services zijn 'enabled' en starten
+      bij het opstarten weer vanzelf.
+    - sudo vraagt zo nodig om het wachtwoord.
+    Na afloop wordt per service de status getoond.
+    """
+    services = _services()
+    if actie in ("start", "herstart"):
+        if _check_config(cfg_pad) != 0:
+            print("Niets gedaan; de services draaien (zo nodig) door met de oude configuratie.",
+                  file=sys.stderr)
+            return 1
+    systemctl_actie = {"start": "start", "stop": "stop", "herstart": "restart"}[actie]
+    print(f"{actie}: {', '.join(services)}")
+    r = subprocess.run(["sudo", "systemctl", systemctl_actie, *services])
+
+    # Status per service. 'is-active' geeft bijv. active, inactive, failed of activating.
+    for s in services:
+        status = subprocess.run(["systemctl", "is-active", s],
+                                capture_output=True, text=True).stdout.strip()
+        print(f"  {s:<20} {status}")
+    if actie == "stop":
+        print("Gestopt tot de volgende herstart van de Pi; weer starten met: brms start")
+    return r.returncode
 
 
 async def _service(naam: str, cfg: config.Config) -> None:
@@ -126,10 +168,14 @@ OPDRACHTEN = """opdrachten voor de beheerder:
   grootheden [type]      alle grootheden, of wat een sensortype levert
   monitor [sensor ...]   monitor onderin het scherm; met sensor: trace van de keten
   monitor stop           het monitorvak sluiten
+  start                  alle BRMS-services starten (na controle van de configuratie)
+  stop                   alle BRMS-services stoppen (tot de volgende herstart van de Pi)
+  herstart               configuratie controleren en alle services herstarten,
+                         bijv. na een wijziging van brms.toml
 
-services (worden door systemd gestart – niet met de hand):
-  ble-reader             BLE-reader      (sudo systemctl restart brms-ble-reader)
-  opslag                 opslag-service  (sudo systemctl restart brms-opslag)
+services (worden door systemd gestart – niet met de hand; gebruik brms herstart):
+  ble-reader             BLE-reader      (systemd-unit brms-ble-reader)
+  opslag                 opslag-service  (systemd-unit brms-opslag)
 """
 
 
@@ -158,8 +204,8 @@ def main(argv=None) -> int:
     p.add_argument("--toch", action="store_true",
                    help="een service toch met de hand starten naast die van systemd (voor testen)")
     p.add_argument("opdracht",
-                   choices=("check-config", "grootheden", "ble-reader", "opslag",
-                            "monitor", "monitor-vak"))
+                   choices=("check-config", "grootheden", "start", "stop", "herstart",
+                            "monitor", "ble-reader", "opslag", "monitor-vak"))
     p.add_argument("sensoren", nargs="*",
                    help="bij monitor: naam of ID van sensor(en) voor trace; "
                         "bij grootheden: sensortype")
@@ -170,6 +216,9 @@ def main(argv=None) -> int:
 
     if args.opdracht == "grootheden":
         return _grootheden(args.sensoren)
+
+    if args.opdracht in ("start", "stop", "herstart"):
+        return _beheer(args.opdracht, args.config)
 
     if args.opdracht in ("monitor", "monitor-vak"):
         return _monitor(args)
