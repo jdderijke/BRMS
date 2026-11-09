@@ -215,6 +215,20 @@ def _tmux(*args, uitvoer=False):
     return r.stdout.strip() if uitvoer else r.returncode == 0
 
 
+def _monitorvak() -> str | None:
+    """Het pane-ID van het monitorvak, of None als er geen (levend) monitorvak is.
+
+    Het ID staat in de sessie-optie @brms_vak. Of dat vak nog bestaat, wordt gecontroleerd
+    in de lijst van vakken die echt in de sessie zitten. (Niet met 'display-message -t':
+    tmux 3.5 meldt daarbij ook "gelukt" voor een vak dat al gesloten is.)
+    """
+    vak_id = _tmux("show-options", "-qv", "-t", SESSIE, "@brms_vak", uitvoer=True)
+    if not vak_id:
+        return None
+    vakken = _tmux("list-panes", "-s", "-t", SESSIE, "-F", "#{pane_id}", uitvoer=True).split()
+    return vak_id if vak_id in vakken else None
+
+
 def open_sessie(argumenten: list[str], config_pad: str) -> int:
     """Opent (of hervat) de tmux-sessie 'brms' met de shell boven en het vak onder.
 
@@ -237,8 +251,8 @@ def open_sessie(argumenten: list[str], config_pad: str) -> int:
     # Muisbediening: klikken kiest een vak, het scrollwiel bladert terug. Tekst selecteren
     # om te kopiëren gaat dan met Shift ingedrukt (in de meeste terminals).
     _tmux("set-option", "-t", SESSIE, "mouse", "on")
-    vak_id = _tmux("show-options", "-v", "-t", SESSIE, "@brms_vak", uitvoer=True)
-    if vak_id and _tmux("display-message", "-p", "-t", vak_id, ""):
+    vak_id = _monitorvak()
+    if vak_id:
         # Het vak bestaat nog: de monitor erin vervangen door een nieuwe.
         _tmux("respawn-pane", "-k", "-t", vak_id, vak)
     else:
@@ -264,8 +278,8 @@ def sluit_vak() -> int:
     if shutil.which("tmux") is None or not _tmux("has-session", "-t", SESSIE):
         print("Er draait geen monitor.")
         return 0
-    vak_id = _tmux("show-options", "-v", "-t", SESSIE, "@brms_vak", uitvoer=True)
-    if not vak_id or not _tmux("display-message", "-p", "-t", vak_id, ""):
+    vak_id = _monitorvak()
+    if not vak_id:
         print("Er draait geen monitor.")
         return 0
     _tmux("kill-pane", "-t", vak_id)
