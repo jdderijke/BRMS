@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.13 – concept** · 9 november 2026
+**Versie 0.14 – concept** · 9 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -296,7 +296,8 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
 1. **Eén BLE-reader** voor alle BLE-sensoren: één scanner die elke advertentie op basis van
    UUID/fabrikant-ID doorgeeft aan een **decoder** per sensortype (`brms/readers/`). Een
    decoder is een zuivere functie: bytes in, waarden uit.
-2. **Eén Shelly-reader** die alle Shelly's elke 30 s pollt, via de standaardbibliotheek
+2. **Eén Shelly-reader** die alle Shelly's pollt (interval per Shelly instelbaar, standaard
+   30 s; bilge 2 s, §5.2.4), via de standaardbibliotheek
    (`urllib`, uitgevoerd in een thread vanuit asyncio).
 3. Readers verwerken **alleen apparaten die in de configuratie staan**; al het andere wordt
    genegeerd.
@@ -317,7 +318,7 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
 | BTHome v2 | Xiaomi Monitor 3 (pvvx) | BLE-advertenties, eigen decoder (§5.2.3) | Eerste stap |
 | Ruuvi | RuuviTag (Pro) | BLE-advertenties, eigen decoder (§5.2.3) | Gepland |
 | Victron | BMV-700, 3× MPPT, MultiPlus | BLE Instant Readout, decoder in de BLE-reader (§5.2.2) | Gepland |
-| Shelly | Bilge | Lokale HTTP-API | Gepland |
+| Shelly | Bilge: hoogwatervlotter en pompspanning (Shelly Plus Uni) | Lokale HTTP-API (§5.2.4) | Gepland |
 | Camera | IP-camera dek | Foto per interval, video op poll-nu (§5.7) | Later |
 | GPIO | Waar nodig | — | Gepland |
 
@@ -377,6 +378,38 @@ en betekent stilte gewoon "sensor stil". Er is geen werk aan de 230V-kant nodig.
    met de echte MultiPlus bevestigd.
 5. De Shelly-reader (§5.2.1) wordt alleen nog gebruikt voor de **bilge** (Shelly Plus Uni).
 6. OPEN-8 vervalt.
+
+#### 5.2.4 Bilge (v0.14)
+
+**Aanleiding.** De bestaande vlotter is in gebruik door de bilgepomp en niet beschikbaar
+voor BRMS.
+
+**Redenering.** Twee signalen vullen elkaar aan. Een tweede vlotter, hoger dan het
+inschakelniveau van de pomp, gaat pas af als de pomp het niet bijhoudt of defect is: dan
+moet worden ingegrepen. Meten of de pomp draait geeft het vroegste signaal van een lek: de
+pomp draait vaker of langer. De Shelly Plus Uni kan beide: een digitale ingang voor een
+contact en een spanningsmeting (0–15 / 0–30 V DC), en wordt rechtstreeks uit het
+12V-boordnet gevoed (9–28 V DC, < 1 W); er komt geen 230 V in de bilge. Een pompbeurt kan
+korter zijn dan het standaard poll-interval van 30 s en zou dan gemist worden; vaker
+pollen via dezelfde lokale HTTP-API is de eenvoudigste oplossing (P1).
+
+**Verworpen alternatieven.**
+- *Bluetooth-waterdetector (bijv. SwitchBot Water Leak Detector).* Gemaakt voor een droge
+  vloer: meldt alleen "nat", klotsend water geeft valse meldingen, en het formaat is geen
+  BTHome (extra decoder).
+- *De bestaande pompvlotter meegebruiken.* In gebruik door de pomp.
+- *Shelly stuurt zelf een bericht bij verandering (webhook of eigen MQTT).* Vraagt een extra
+  ontvanger op de Pi; snel pollen volstaat.
+
+**Specificatie.**
+1. Eén **Shelly Plus Uni** op 12 V met:
+   - een **hoogwatervlotter** (tweede vlotter, boven het inschakelniveau van de pomp) op een
+     digitale ingang → grootheid `bilge`;
+   - de **spanning op de bilgepomp** via de spanningsmeting → grootheid `bilgepomp`
+     (1 = pomp krijgt spanning). De drempel (spanning → 0/1) staat in de configuratie. De
+     precieze aansluiting wordt bepaald zodra de Uni er is.
+2. De bilge-Shelly wordt elke **2 s** gepolld.
+3. Een **pompbeurt** is een overgang van `bilgepomp` 0 → 1; de alarmlaag telt de beurten.
 
 #### 5.2.3 Decoders: eigen code of bibliotheek (besluit OPEN-5)
 
@@ -559,14 +592,15 @@ flashdrive. Het OS zelf (logs, swap, caches) schrijft waarschijnlijk meer; dat i
   niet al in de toename zit, en vraagt een extra opslagregel (v0.5).
 
 **Specificatie.**
-1. Readers ontvangen zo vaak als de bron levert. Shelly's worden elke **30 s** gepolld.
+1. Readers ontvangen zo vaak als de bron levert. Shelly's worden standaard elke **30 s**
+   gepolld; de bilge-Shelly elke **2 s** (§5.2.4).
 2. De alarmlaag beoordeelt **elke ontvangen waarde**, onafhankelijk van de opslag.
 3. Elke grootheid heeft een vaste soort, vastgelegd in de reader:
 
    | Soort | Voorbeelden | Opslag |
    |---|---|---|
    | Doorlopend | temperatuur, vocht, spanning, stroom, SoC, RSSI, sensorbatterij, versnelling X/Y/Z | gemiddelde van de ontvangen waarden over **5 minuten** |
-   | Toestand (0/1) | bilgevlotter, walstroom aanwezig | nooit gemiddeld; een rij bij **elke verandering** met het exacte tijdstip, plus elke **5 minuten** de actuele toestand op dat moment |
+   | Toestand (0/1) | bilgevlotter, bilgepomp, walstroom aanwezig | nooit gemiddeld; een rij bij **elke verandering** met het exacte tijdstip, plus elke **5 minuten** de actuele toestand op dat moment |
    | Toename | beweging (toename van de Ruuvi-bewegingsteller) | **som** over 5 minuten |
 
    De ruwe bewegingsteller wordt niet opgeslagen; de Ruuvi-decoder levert de toename.
@@ -621,7 +655,8 @@ staat op één plek in de code (module `grootheden`); dit document bevat een kop
 | `zonnevermogen` | W | doorlopend | MPPT (3×) | vermogen van het paneel |
 | `laadstroom_zon` | A | doorlopend | MPPT (3×) | stroom van de MPPT naar de accu |
 | `walstroom` | 0/1 | toestand | MultiPlus | 1 = AC-ingang aanwezig |
-| `bilge` | 0/1 | toestand | Shelly Plus Uni | 1 = vlotter actief |
+| `bilge` | 0/1 | toestand | Shelly Plus Uni | 1 = hoogwatervlotter actief (§5.2.4) |
+| `bilgepomp` | 0/1 | toestand | Shelly Plus Uni | 1 = bilgepomp krijgt spanning (§5.2.4) |
 
 **[OPEN-11]** Bewaartermijn / downsampling van oude data.
 
@@ -692,7 +727,9 @@ alarmen – laat uitvallen; daarom wordt de configuratie gecontroleerd vóór ge
 | Accu laag | SoC onder drempel, bijv. 50 % |
 | Vocht | Luchtvochtigheid langdurig > 80 % |
 | Vorst | Temperatuur < 2 °C |
-| Bilge | Vlotter actief |
+| Bilge | Hoogwatervlotter actief (§5.2.4) |
+| Bilgepomp lang | Pomp draait aan één stuk langer dan drempel |
+| Bilgepomp vaak | Aantal pompbeurten binnen een tijdvenster boven drempel |
 | Sensor stil | Sensor levert geen data meer |
 | Sensorbatterij laag | `batterijspanning` onder drempel |
 | Beweging | Toename van de Ruuvi-bewegingsteller ≥ N binnen T seconden (instelbaar) |
@@ -756,13 +793,15 @@ buitensensor mag geen vorstalarm geven.
    opnieuw (monotone klok, §4.2); een nog bestaande afwijking geeft opnieuw een melding.
 7. **Per sensor:** in de configuratie staat per sensor welke alarmen gelden; waarden zijn
    per alarm in te stellen en waar nodig per sensor te overschrijven (§5.4).
-8. **ntfy-prioriteit:** bilge en walstroom *urgent*; vorst en accu laag *hoog*; overige
-   *normaal*.
+8. **ntfy-prioriteit:** bilge, bilgepomp lang en walstroom *urgent*; vorst, accu laag en
+   bilgepomp vaak *hoog*; overige *normaal*.
 9. **Standaardwaarden** (in te stellen in `brms.toml`):
 
    | Alarm | Voorwaarde | Duur | Herstel | Herhaling |
    |---|---|---|---|---|
    | Bilge | `bilge` = 1 | direct | `bilge` = 0 gedurende 5 min | elk uur |
+   | Bilgepomp lang | `bilgepomp` = 1 | 3 min | `bilgepomp` = 0 | elk uur |
+   | Bilgepomp vaak | ≥ 4 pompbeurten binnen 6 u | — | < 4 binnen 6 u | elke 12 u |
    | Walstroom weg | `walstroom` = 0 | 2 min | `walstroom` = 1 gedurende 2 min | elke 12 u |
    | Vorst | `temperatuur` < 2 °C | 15 min | ≥ 3 °C | elke 12 u |
    | Accu laag | `soc` < 50 % | 10 min | ≥ 55 % | elke 12 u |
@@ -1037,4 +1076,5 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.10 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-3 besloten (§4.2): router (RUT241) als tijdbron via operator time en NTP, Pi synchroniseert via router; alarmlaag op monotone klok; opslag en camera schrijven pas na tijdsynchronisatie; DS3231 optioneel. |
 | 0.11 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-19 besloten (§10.1): uitrol via git met deploy key; test- en boot-Pi volgen `main`; `deploy/update.sh` met config-controle en `--terug`; indeling `/opt/brms`, `/etc/brms`, `/var/lib/brms`; systeemgebruiker `brms`; `deploy/install.sh`; geen automatische OS-updates. |
 | 0.12 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-5 besloten (§5.2.3): eigen decoders voor Ruuvi (formaat 5, getest met officiële testvectoren) en BTHome v2; Victron via `victron-ble`; ongeldige waarden niet gepubliceerd; toename bewegingsteller in de reader. |
-| **0.13** | 2026-11-09 | Claude Code, Opus 5.5 | OPEN-13 besloten (§5.5.2): duur, hysterese, herstelmelding, herinnering zolang actief, geen bevestiging, alarmtoestand niet bewaard over herstart, alarmen per sensor, ntfy-prioriteiten, standaardwaarden. Alarm "sensorbatterij laag" toegevoegd (§5.5). |
+| 0.13 | 2026-11-09 | Claude Code, Opus 5.5 | OPEN-13 besloten (§5.5.2): duur, hysterese, herstelmelding, herinnering zolang actief, geen bevestiging, alarmtoestand niet bewaard over herstart, alarmen per sensor, ntfy-prioriteiten, standaardwaarden. Alarm "sensorbatterij laag" toegevoegd (§5.5). |
+| **0.14** | 2026-11-09 | Claude Code, Opus 5.5 | Bilge uitgewerkt (§5.2.4): Shelly Plus Uni op 12 V met hoogwatervlotter (`bilge`) en pompspanning (nieuwe grootheid `bilgepomp`); bilge-Shelly elke 2 s gepolld, poll-interval per Shelly instelbaar. Alarmen "bilgepomp lang" en "bilgepomp vaak" toegevoegd (§5.5, §5.5.2). |
