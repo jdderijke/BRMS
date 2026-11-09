@@ -1,1 +1,3 @@
-# Dependencies vastgepind (==) toevoegen zodra ze geïnstalleerd en getest zijn.
+# Vastgepinde dependencies (ARCHITECTURE.md P3).
+paho-mqtt==2.1.0
+bleak==3.1.0
