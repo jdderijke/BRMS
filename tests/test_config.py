@@ -35,7 +35,36 @@ class TestConfig(unittest.TestCase):
                     'correctie = { temperatuur = -0.3 }\n')
         s = cfg.sensoren["A4:C1:38:0A:0B:0C"]
         self.assertEqual(s.naam, "kajuit")
-        self.assertEqual(s.correctie, {"temperatuur": -0.3})
+        self.assertEqual(s.correctie, {"temperatuur": config.Correctie(offset=-0.3)})
+        self.assertIsNone(s.grootheden)  # geen lijst = alles
+
+    def test_grootheden_en_factor(self):
+        cfg = _toml('[[sensor]]\nid = "A4:C1:38:0A:0B:0C"\ntype = "bthome"\nnaam = "k"\n'
+                    'grootheden = ["temperatuur", "vocht", "rssi"]\n'
+                    'correctie = { vocht = { factor = 1.02, offset = -1.5 } }\n')
+        s = cfg.sensoren["A4:C1:38:0A:0B:0C"]
+        self.assertEqual(s.grootheden, ("temperatuur", "vocht", "rssi"))
+        self.assertEqual(s.correctie["vocht"], config.Correctie(1.02, -1.5))
+        self.assertEqual(s.correctie["vocht"].toepassen(50.0), 49.5)
+
+    def test_fouten_in_grootheden_en_correctie(self):
+        tekst = """
+            [[sensor]]
+            id = "A4:C1:38:00:00:01"
+            type = "bthome"
+            naam = "a"
+            grootheden = ["temperatuur", "luchtdruk", "hoeksnelheid"]
+            correctie = { vocht = 1, temperatuur = { factor = 0 }, rssi = { schaal = 2 } }
+        """
+        with self.assertRaises(config.ConfigFout) as ctx:
+            _toml(tekst)
+        fouten = "\n".join(ctx.exception.fouten)
+        for verwacht in ["'luchtdruk' wordt door type bthome niet geleverd",
+                         "onbekende grootheid 'hoeksnelheid'",
+                         "'vocht' staat niet in 'grootheden'",
+                         "factor 0", "onbekende sleutel 'schaal'",
+                         "brms grootheden bthome"]:
+            self.assertIn(verwacht, fouten)
 
     def test_alle_fouten_tegelijk(self):
         tekst = """
@@ -61,7 +90,7 @@ class TestConfig(unittest.TestCase):
             _toml(tekst)
         tekst_fouten = "\n".join(ctx.exception.fouten)
         for verwacht in ["onbekende sleutel 'onzin'", "port", "MAC-adres", "'walstroom'",
-                         "onbekende grootheid 'foo'", "'vocht' moet een getal", "'type'",
+                         "onbekende grootheid 'foo'", "'vocht': moet een getal", "'type'",
                          "onbekende sleutel 'kleur'", "meer dan eens"]:
             self.assertIn(verwacht, tekst_fouten)
 

@@ -12,22 +12,29 @@ port = 1883
 # Relatief pad = vanaf de projectmap; op de Pi dus ~/BRMS/data/brms.db.
 database = "data/brms.db"
 
-# Eén blok per sensor. Alleen sensoren die hier staan worden verwerkt.
-#   id        vaste ID; bij BLE-sensoren het MAC-adres (AA:BB:CC:DD:EE:FF)
-#   type      bthome (Xiaomi Monitor 3 met pvvx-firmware, BTHome v2)
-#   naam      naam/locatie voor weergave; hernoemen laat de historie intact
-#   correctie optioneel: offset per doorlopende grootheid, opgeteld bij de gemeten waarde
+# Eén blok per sensor. Alleen sensoren die hier staan worden verwerkt (ARCHITECTURE.md §5.4.2).
+#   id          vaste ID; bij BLE-sensoren het MAC-adres (AA:BB:CC:DD:EE:FF)
+#   type        bthome (Xiaomi Monitor 3 met pvvx-firmware, BTHome v2)
+#   naam        naam/locatie voor weergave; hernoemen laat de historie intact
+#   grootheden  optioneel: alleen deze grootheden meenemen; zonder lijst gaat alles mee.
+#               Welke namen een type levert:  brms grootheden bthome
+#               (rssi = signaalsterkte; moet in de lijst staan als je die wilt houden)
+#   correctie   optioneel, per doorlopende grootheid:
+#                 een getal = offset             temperatuur = -0.3
+#                 of factor en/of offset         vocht = { factor = 1.02, offset = -1.5 }
+#               gecorrigeerd = gemeten × factor + offset
 
 [[sensor]]
 id = "A4:C1:38:00:00:01"
 type = "bthome"
 naam = "kajuit"
-correctie = { temperatuur = 0.0, vocht = 0.0 }
+correctie = { temperatuur = 0.0, vocht = { factor = 1.0, offset = 0.0 } }
 
 [[sensor]]
 id = "A4:C1:38:00:00:02"
 type = "bthome"
 naam = "vooronder"
+grootheden = ["temperatuur", "vocht", "batterijspanning", "rssi"]
 
 [[sensor]]
 id = "A4:C1:38:00:00:03"

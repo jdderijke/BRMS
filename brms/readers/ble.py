@@ -82,20 +82,29 @@ def verwerk(adres: str, service_data: dict[str, bytes], rssi: int | None, ts: in
     if not waarden:
         return []
 
-    # Correcties (offsets) uit de configuratie toepassen, bijv. temperatuur -0,3 °C.
-    regels = []
-    for g, offset in sensor.correctie.items():
-        if g in waarden:
-            nieuw = round(waarden[g] + offset, 3)
-            regels.append(f"{g:<17} {waarden[g]:g} {'+' if offset >= 0 else '−'} "
-                          f"{abs(offset):g} = {nieuw:g}")
-            waarden[g] = nieuw
-    if stap:
-        stap("gecorrigeerd", "\n".join(regels) or "geen correcties ingesteld")
-
     # RSSI meten we zelf (de scanner), los van wat de sensor uitzendt.
     if rssi is not None:
         waarden["rssi"] = rssi
+
+    # Alleen de grootheden uit de lijst van de sensor (§5.4.2 punt 1); de rest wordt hier
+    # weggegooid en komt niet op de bus. Zonder lijst gaat alles door.
+    regels = []
+    if sensor.grootheden is not None:
+        weg = [g for g in waarden if g not in sensor.grootheden]
+        for g in weg:
+            del waarden[g]
+        if weg:
+            regels.append(f"weggelaten (niet in 'grootheden'): {', '.join(weg)}")
+
+    # Correcties uit de configuratie: gemeten × factor + offset (§5.4.2 punt 2),
+    # bijv. temperatuur − 0,3 °C.
+    for g, c in sensor.correctie.items():
+        if g in waarden:
+            nieuw = c.toepassen(waarden[g])
+            regels.append(f"{g:<17} {waarden[g]:g} {c} = {nieuw:g}")
+            waarden[g] = nieuw
+    if stap:
+        stap("gecorrigeerd", "\n".join(regels) or "geen correcties ingesteld")
 
     # meting.maak controleert de grootheid en zet de vaste soort erbij (§5.3.3).
     return [meting.maak(ts, sensor.id, g, w) for g, w in waarden.items()]

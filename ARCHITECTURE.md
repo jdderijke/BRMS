@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.17 – concept** · 9 november 2026
+**Versie 0.18 – concept** · 9 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -302,7 +302,8 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
    (`urllib`, uitgevoerd in een thread vanuit asyncio).
 3. Readers verwerken **alleen apparaten die in de configuratie staan**; al het andere wordt
    genegeerd.
-4. Readers passen de **correcties uit de configuratie** toe en publiceren daarna elke
+4. Readers laten grootheden weg die niet in de lijst van de sensor staan, passen de
+   **correcties uit de configuratie** toe (§5.4.2) en publiceren daarna elke
    ontvangen waarde via MQTT (§3.1) als
    `Meting(ts, sensor_id, grootheid, waarde, soort)`:
    - `ts`: ontvangsttijd op de Pi, Unix-tijd UTC (een advertentie heeft zelf geen tijd; zie §4.2);
@@ -674,7 +675,7 @@ via het web vraagt schrijfrechten, invoercontrole en een extra tabel.
 Complexer; kan later alsnog.
 
 **Specificatie.** Eén configuratiebestand, buiten git (bevat de Victron-sleutel), met:
-- sensorconfiguratie (MAC → naam/locatie, correcties/offsets);
+- sensorconfiguratie (MAC → naam/locatie, welke grootheden, correcties; §5.4.2);
 - alarmdrempels en -instellingen, per alarm en waar nodig per sensor (§5.5);
 - camera-instellingen: foto-interval, videoduur, bewaartermijn foto's, maximale ruimte
   voor video's (§5.7);
@@ -719,6 +720,49 @@ alarmen – laat uitvallen; daarom wordt de configuratie gecontroleerd vóór ge
 5. Elke service **controleert de configuratie bij het starten** en meldt fouten duidelijk
    in het log. Met **`brms check-config`** is de configuratie vooraf te controleren, vóór
    een herstart.
+
+#### 5.4.2 Grootheden en correcties per sensor (v0.18)
+
+**Aanleiding.** Een sensor kan meer grootheden leveren dan nodig (een Ruuvi zendt o.a.
+luchtdruk en versnelling). Per sensor moest in te stellen zijn welke grootheden worden
+meegenomen en welke correctie er geldt. Ook moest de gebruiker kunnen opzoeken welke
+grootheden er zijn en welke een sensortype levert.
+
+**Redenering.** Een lijst van wat je wél wilt is expliciet: na een firmware-update sluipt er
+geen nieuwe grootheid ongemerkt in. Zonder lijst gaat alles door, zodat een eenvoudige
+sensor geen extra regel nodig heeft. Wat wordt weggelaten, wordt direct in de reader
+weggegooid: het komt niet op de bus, niet in de alarmlaag en niet in de database.
+
+Een offset alleen is niet altijd genoeg: een vochtsensor kan bij hoge waarden meer afwijken
+dan bij lage. Een lineaire correctie (factor en offset) dekt dat, en blijft eenvoudig.
+
+Nieuwe grootheden kunnen bewust niet via de configuratie worden toegevoegd: een decoder
+moet ze kunnen omzetten, en de soort bepaalt de opslagregel en hoort in de code (§5.3.2,
+§5.3.3). Elke decoder legt vast welke grootheden hij levert; daarmee kan de configuratie
+gecontroleerd worden en kan de gebruiker het opzoeken.
+
+**Verworpen alternatieven.**
+- *Lijst van wat níet mee moet.* Korter bij een Ruuvi, maar een nieuwe grootheid (bijv. na
+  een firmware-update) gaat dan ongevraagd mee.
+- *Alleen offset.* Dekt geen afwijking die met de waarde meeloopt.
+- *Grootheden definiëren in de configuratie.* Zie redenering.
+
+**Specificatie.**
+1. Per sensor optioneel **`grootheden = [...]`**: alleen deze grootheden worden
+   gepubliceerd (ook `rssi` moet er dan in staan als die gewenst is). Zonder lijst: alles.
+2. **`correctie`** per doorlopende grootheid, als getal (offset) of als tabel met `factor`
+   en/of `offset`: gecorrigeerd = gemeten × factor + offset (standaard factor 1, offset 0).
+   ```toml
+   correctie = { temperatuur = -0.3, vocht = { factor = 1.02, offset = -1.5 } }
+   ```
+3. Elke decoder legt vast **welke grootheden hij levert**; de reader voegt `rssi` toe.
+4. `brms check-config` meldt: onbekende grootheden, grootheden die het sensortype niet
+   levert, correcties op niet-doorlopende of weggelaten grootheden, een factor van 0.
+5. **`brms grootheden`** toont de tabel van grootheden (naam, eenheid, soort);
+   **`brms grootheden <type>`** toont wat dat sensortype levert.
+6. Een **nieuwe grootheid** toevoegen is een codewijziging: een regel in
+   `brms/grootheden.py`, de decoder uitbreiden, en de tabel in §5.3.3 bijwerken.
+7. In de trace (§10.2) toont de stap `gecorrigeerd` ook welke grootheden zijn weggelaten.
 
 ### 5.5 Alarmen en meldingen
 
@@ -1045,6 +1089,11 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
    pakketten, deploy key, clone, venv, configuratie, Mosquitto en systemd-units.
 7. **Geen automatische OS-updates.** OS, Tailscale en router-firmware worden met de hand
    bijgewerkt: eerst de test-Pi, daarna de boot-Pi.
+8. **Opdracht `brms`** (v0.18): de beheeropdrachten (`check-config`, `grootheden`,
+   `monitor`) zijn voor de gebruiker; de service-opdrachten (`ble-reader`, `opslag`) zijn
+   voor systemd. Een service-opdracht weigert te starten als systemd die service al draait
+   (een tweede exemplaar botst op de broker en, bij de opslag, op de database), behalve met
+   `--toch` voor testen.
 
 ### 10.2 Beheerhulpmiddel: monitor met trace (v0.16)
 
@@ -1159,4 +1208,5 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.14 | 2026-11-09 | Claude Code, Opus 5.5 | Bilge uitgewerkt (§5.2.4): Shelly Plus Uni op 12 V met hoogwatervlotter (`bilge`) en pompspanning (nieuwe grootheid `bilgepomp`); bilge-Shelly elke 2 s gepolld, poll-interval per Shelly instelbaar. Alarmen "bilgepomp lang" en "bilgepomp vaak" toegevoegd (§5.5, §5.5.2). |
 | 0.15 | 2026-11-09 | Claude Code, Opus 5.5 | Indeling op de Pi herzien (§10.1, §5.4.1): alles in `~/BRMS` zoals op de pc (`config/brms.toml`, `data/`, `.venv`); services als `jandirk` in plaats van systeemgebruiker `brms`; `sqlite3` en `mosquitto-clients` als beheerhulpmiddelen. |
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
-| **0.17** | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
+| 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
+| **0.18** | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |

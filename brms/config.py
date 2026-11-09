@@ -15,7 +15,7 @@ Opbouw van het bestand (zie config/brms.example.toml):
     [mqtt]      host, port              – de lokale broker
     [opslag]    database                – pad van de SQLite-database; een relatief pad
                                           geldt vanaf de projectmap (bijv. data/brms.db)
-    [[sensor]]  id, type, naam, correctie – één blok per sensor
+    [[sensor]]  id, type, naam, grootheden, correctie – één blok per sensor (§5.4.2)
 """
 
 import os
@@ -24,6 +24,7 @@ import tomllib
 from dataclasses import dataclass, field
 
 from brms import grootheden
+from brms.readers import bthome
 
 # Projectmap: de map waarin de map 'brms' (dit pakket) staat. Op de Pi ~/BRMS.
 # Alle standaardpaden zijn hiervan afgeleid, zodat dezelfde code op de pc en op de Pi werkt.
@@ -35,6 +36,13 @@ STANDAARD_PAD = os.path.join(PROJECTMAP, "config", "brms.toml")
 # komen erbij zodra hun decoders er zijn.
 BLE_TYPES = ("bthome",)
 SENSOR_TYPES = BLE_TYPES
+
+# Welke grootheden elk sensortype kan leveren (§5.4.2 punt 3). De decoder legt dat vast;
+# BLE-readers voegen zelf de signaalsterkte (rssi) toe. Gebruikt voor de controle van
+# 'grootheden' en 'correctie', en door `brms grootheden <type>`.
+LEVERT: dict[str, tuple[str, ...]] = {
+    "bthome": bthome.LEVERT + ("rssi",),
+}
 
 # MAC-adres in de vorm AA:BB:CC:DD:EE:FF (na omzetten naar hoofdletters).
 _MAC = re.compile(r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
@@ -60,6 +68,25 @@ class OpslagConfig:
 
 
 @dataclass(frozen=True)
+class Correctie:
+    """Lineaire correctie: gecorrigeerd = gemeten × factor + offset (§5.4.2 punt 2)."""
+    factor: float = 1.0
+    offset: float = 0.0
+
+    def toepassen(self, waarde: float) -> float:
+        return round(waarde * self.factor + self.offset, 4)
+
+    def __str__(self) -> str:
+        # Leesbaar voor de trace, bijv. "× 1.02 − 1.5" of "− 0.3".
+        delen = []
+        if self.factor != 1.0:
+            delen.append(f"× {self.factor:g}")
+        if self.offset != 0.0 or not delen:
+            delen.append(f"{'+' if self.offset >= 0 else '−'} {abs(self.offset):g}")
+        return " ".join(delen)
+
+
+@dataclass(frozen=True)
 class Sensor:
     # Vaste ID; bij BLE het MAC-adres in hoofdletters met dubbele punten. Deze ID staat in
     # de database, niet de naam: hernoemen laat de historie intact (§5.3.1).
@@ -67,9 +94,12 @@ class Sensor:
     type: str
     # Naam/locatie voor weergave en logregels, bijv. "kajuit".
     naam: str
-    # Offsets per doorlopende grootheid, opgeteld bij de gemeten waarde (bijv. een sensor
-    # die 0,3 °C te hoog meet: temperatuur = -0.3).
-    correctie: dict[str, float] = field(default_factory=dict)
+    # Correctie per doorlopende grootheid (§5.4.2 punt 2), bijv. een sensor die 0,3 °C te
+    # hoog meet: temperatuur = Correctie(offset=-0.3).
+    correctie: dict[str, Correctie] = field(default_factory=dict)
+    # Alleen deze grootheden worden gepubliceerd; None = alles wat de decoder levert
+    # (§5.4.2 punt 1).
+    grootheden: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -107,6 +137,31 @@ def _tabel(fouten, data, naam) -> dict:
         fouten.append(f"[{naam}] moet een tabel zijn")
         return {}
     return d
+
+
+def _getal(w) -> bool:
+    # bool is in Python een subtype van int; 'true' als getal is altijd een tikfout.
+    return isinstance(w, (int, float)) and not isinstance(w, bool)
+
+
+def _correctie(fouten, plek, w) -> "Correctie | None":
+    """Zet een correctie uit de TOML om: een getal (= offset) of een tabel met factor
+    en/of offset. Meldt fouten en geeft dan None."""
+    if _getal(w):
+        return Correctie(offset=float(w))
+    if isinstance(w, dict):
+        _onbekend(fouten, plek, w, ("factor", "offset"))
+        factor, offset = w.get("factor", 1.0), w.get("offset", 0.0)
+        if not _getal(factor) or not _getal(offset):
+            fouten.append(f"{plek}: factor en offset moeten getallen zijn")
+            return None
+        if factor == 0:
+            fouten.append(f"{plek}: factor 0 maakt elke waarde 0")
+            return None
+        return Correctie(float(factor), float(offset))
+    fouten.append(f"{plek}: moet een getal (offset) of een tabel "
+                  f"{{ factor = ..., offset = ... }} zijn")
+    return None
 
 
 def controleer(data: dict) -> Config:
@@ -153,7 +208,7 @@ def controleer(data: dict) -> Config:
         if not isinstance(s, dict):
             fouten.append(f"{plek}: moet een tabel zijn")
             continue
-        _onbekend(fouten, plek, s, ("id", "type", "naam", "correctie"))
+        _onbekend(fouten, plek, s, ("id", "type", "naam", "grootheden", "correctie"))
         sid, stype, snaam = s.get("id"), s.get("type"), s.get("naam")
         if not isinstance(snaam, str) or not snaam:
             fouten.append(f"{plek}: 'naam' ontbreekt of is leeg")
@@ -172,22 +227,51 @@ def controleer(data: dict) -> Config:
         if sid in sensoren:
             fouten.append(f"{plek}: id {sid} komt meer dan eens voor")
 
-        # Correcties: alleen voor bestaande, doorlopende grootheden (een offset op een
-        # toestand 0/1 of op een toename heeft geen betekenis), en alleen getallen.
-        correctie = s.get("correctie", {})
-        if not isinstance(correctie, dict):
+        # Wat dit sensortype kan leveren (leeg bij een onbekend type; dat is hierboven al gemeld).
+        levert = LEVERT.get(stype, ())
+        tip = f"; {stype} levert: {', '.join(levert)}  (zie: brms grootheden {stype})" if levert else ""
+
+        # --- grootheden: optionele lijst van wat wél mee moet (§5.4.2 punt 1) ---
+        lijst_g = s.get("grootheden")
+        if lijst_g is not None:
+            if not isinstance(lijst_g, list) or not all(isinstance(g, str) for g in lijst_g):
+                fouten.append(f"{plek}: 'grootheden' moet een lijst van namen zijn, "
+                              f"bijv. [\"temperatuur\", \"vocht\"]")
+                lijst_g = None
+            else:
+                for g in lijst_g:
+                    if g not in grootheden.GROOTHEDEN:
+                        fouten.append(f"{plek}: onbekende grootheid '{g}' in 'grootheden'{tip}")
+                    elif levert and g not in levert:
+                        fouten.append(f"{plek}: '{g}' wordt door type {stype} niet geleverd{tip}")
+                if len(set(lijst_g)) != len(lijst_g):
+                    fouten.append(f"{plek}: 'grootheden' bevat een naam meer dan eens")
+
+        # --- correctie: per doorlopende grootheid een getal (offset) of een tabel met
+        # factor en/of offset (§5.4.2 punt 2). Een correctie op een toestand (0/1) of een
+        # toename heeft geen betekenis. ---
+        correctie_in = s.get("correctie", {})
+        if not isinstance(correctie_in, dict):
             fouten.append(f"{plek}: 'correctie' moet een tabel zijn, bijv. {{ temperatuur = -0.3 }}")
-            correctie = {}
-        for g, w in correctie.items():
+            correctie_in = {}
+        correcties: dict[str, Correctie] = {}
+        for g, w in correctie_in.items():
             if g not in grootheden.GROOTHEDEN:
-                fouten.append(f"{plek}: correctie voor onbekende grootheid '{g}'")
-            elif grootheden.soort(g) != grootheden.DOORLOPEND:
+                fouten.append(f"{plek}: correctie voor onbekende grootheid '{g}'{tip}")
+                continue
+            if grootheden.soort(g) != grootheden.DOORLOPEND:
                 fouten.append(f"{plek}: correctie alleen mogelijk voor doorlopende grootheden, niet '{g}'")
-            if isinstance(w, bool) or not isinstance(w, (int, float)):
-                fouten.append(f"{plek}: correctie voor '{g}' moet een getal zijn")
-        sensoren[sid] = Sensor(sid, stype, snaam if isinstance(snaam, str) else "",
-                               {g: float(w) for g, w in correctie.items()
-                                if isinstance(w, (int, float)) and not isinstance(w, bool)})
+                continue
+            if levert and g not in levert:
+                fouten.append(f"{plek}: correctie voor '{g}', maar type {stype} levert die niet{tip}")
+            if lijst_g is not None and g not in lijst_g:
+                fouten.append(f"{plek}: correctie voor '{g}', maar '{g}' staat niet in 'grootheden'")
+            c = _correctie(fouten, f"{plek}: correctie voor '{g}'", w)
+            if c is not None:
+                correcties[g] = c
+
+        sensoren[sid] = Sensor(sid, stype, snaam if isinstance(snaam, str) else "", correcties,
+                               tuple(lijst_g) if lijst_g is not None else None)
 
     if fouten:
         raise ConfigFout(fouten)

@@ -82,6 +82,11 @@ _GROOTHEID: dict[int, tuple[str, float, int]] = {
     0x0C: ("batterijspanning", 0.001, 3),
 }
 
+# De grootheden die deze decoder kan leveren (ARCHITECTURE.md §5.4.2 punt 3), afgeleid uit
+# de tabel hierboven. Gebruikt door `brms check-config` en `brms grootheden bthome`.
+# Een nieuwe grootheid toevoegen = een regel in _GROOTHEID hierboven (en in grootheden.py).
+LEVERT = tuple(dict.fromkeys(naam for naam, _, _ in _GROOTHEID.values()))
+
 
 @dataclass(frozen=True)
 class Object:

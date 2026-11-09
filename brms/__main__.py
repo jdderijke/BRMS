@@ -11,6 +11,7 @@ Opdrachten:
   opslag              de opslag-service starten (§5.3)
   monitor [sensor..]  monitor in tmux: busverkeer, of met sensor(en) de trace (§10.2)
   monitor stop        het monitorvak sluiten; de shell blijft
+  grootheden [type]   alle grootheden, of wat een sensortype levert (§5.4.2)
   monitor-vak [..]    (intern) het vak onderin dat 'monitor' in tmux start
 
 De services worden normaal door systemd gestart (deploy/systemd/), niet met de hand.
@@ -19,7 +20,9 @@ De services worden normaal door systemd gestart (deploy/systemd/), niet met de h
 import argparse
 import asyncio
 import logging
+import os
 import signal
+import subprocess
 import sys
 
 from brms import VERSION, config
@@ -66,6 +69,32 @@ async def _service(naam: str, cfg: config.Config) -> None:
         bus.stop()
 
 
+def _grootheden(typen: list[str]) -> int:
+    """Toont de tabel van grootheden, of per sensortype wat dat type levert (§5.4.2).
+
+    Dit zijn de namen die in brms.toml bij 'grootheden' en 'correctie' horen."""
+    from brms import grootheden
+
+    if not typen:
+        print(f"{'GROOTHEID':<18} {'EENHEID':<8} SOORT")
+        for g in grootheden.GROOTHEDEN.values():
+            print(f"{g.naam:<18} {g.eenheid:<8} {g.soort}")
+        print()
+        print("Sensortypen:", ", ".join(config.SENSOR_TYPES),
+              "  (brms grootheden <type> toont wat een type levert)")
+        return 0
+    for t in typen:
+        if t not in config.LEVERT:
+            print(f"onbekend sensortype '{t}'; bekend: {', '.join(config.SENSOR_TYPES)}",
+                  file=sys.stderr)
+            return 1
+        print(f"{t} levert:")
+        for naam in config.LEVERT[t]:
+            g = grootheden.GROOTHEDEN[naam]
+            print(f"  {g.naam:<18} {g.eenheid:<8} {g.soort}")
+    return 0
+
+
 def _monitor(args) -> int:
     """Monitor (§10.2): configuratie lezen voor de namen, sensoren opzoeken, en dan óf de
     tmux-sessie openen (monitor) óf het vak zelf draaien (monitor-vak, in tmux)."""
@@ -91,20 +120,70 @@ def _monitor(args) -> int:
     return monitor.draai_vak(cfg, sensoren)
 
 
+# Uitleg onder 'brms --help': eerst de opdrachten voor de beheerder, dan de services.
+OPDRACHTEN = """opdrachten voor de beheerder:
+  check-config           configuratie controleren (vóór een herstart)
+  grootheden [type]      alle grootheden, of wat een sensortype levert
+  monitor [sensor ...]   monitor onderin het scherm; met sensor: trace van de keten
+  monitor stop           het monitorvak sluiten
+
+services (worden door systemd gestart – niet met de hand):
+  ble-reader             BLE-reader      (sudo systemctl restart brms-ble-reader)
+  opslag                 opslag-service  (sudo systemctl restart brms-opslag)
+"""
+
+
+def _al_actief(opdracht: str) -> bool:
+    """True als deze service al door systemd gedraaid wordt en deze aanroep niet zelf door
+    systemd gestart is.
+
+    Een tweede exemplaar naast de systemd-service botst: beide melden zich met dezelfde
+    naam bij de broker en gooien elkaar er steeds uit, en bij de opslag ontstaan twee
+    schrijvers op de database. systemd zet INVOCATION_ID voor processen die het zelf start.
+    """
+    if os.environ.get("INVOCATION_ID"):
+        return False  # gestart door systemd
+    try:
+        r = subprocess.run(["systemctl", "is-active", "--quiet", f"brms-{opdracht}"], timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False  # geen systemd (bijv. Windows): niets te controleren
+    return r.returncode == 0
+
+
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(prog="brms", description=f"BRMS {VERSION}")
+    p = argparse.ArgumentParser(prog="brms", description=f"BRMS {VERSION}", epilog=OPDRACHTEN,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", default=config.STANDAARD_PAD, help="pad naar brms.toml")
     p.add_argument("--debug", action="store_true", help="uitgebreide logging")
+    p.add_argument("--toch", action="store_true",
+                   help="een service toch met de hand starten naast die van systemd (voor testen)")
     p.add_argument("opdracht",
-                   choices=("check-config", "ble-reader", "opslag", "monitor", "monitor-vak"))
-    p.add_argument("sensoren", nargs="*", help="bij monitor: naam of ID van sensor(en) voor trace")
+                   choices=("check-config", "grootheden", "ble-reader", "opslag",
+                            "monitor", "monitor-vak"))
+    p.add_argument("sensoren", nargs="*",
+                   help="bij monitor: naam of ID van sensor(en) voor trace; "
+                        "bij grootheden: sensortype")
     args = p.parse_args(argv)
 
     if args.opdracht == "check-config":
         return _check_config(args.config)
 
+    if args.opdracht == "grootheden":
+        return _grootheden(args.sensoren)
+
     if args.opdracht in ("monitor", "monitor-vak"):
         return _monitor(args)
+
+    # Beveiliging: een service niet met de hand starten als systemd hem al draait.
+    if _al_actief(args.opdracht) and not args.toch:
+        naam = f"brms-{args.opdracht}"
+        print(f"{naam} draait al (systemd). Deze opdracht is voor systemd; gebruik", file=sys.stderr)
+        for opdracht, doel in ((f"sudo systemctl restart {naam}", "om te herstarten"),
+                               (f"journalctl -u {naam} -f", "om mee te kijken"),
+                               ("brms monitor", "om de metingen te volgen")):
+            print(f"  {opdracht:<40} {doel}", file=sys.stderr)
+        print("(Toch starten, alleen voor testen: --toch)", file=sys.stderr)
+        return 1
 
     # Logging naar stderr; onder systemd komt dat in journald, dat zelf tijd en
     # servicenaam toevoegt. Daarom hier alleen niveau, module en bericht.

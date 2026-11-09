@@ -4,7 +4,7 @@ import json
 import unittest
 
 from brms import trace
-from brms.config import Sensor
+from brms.config import Correctie, Sensor
 from brms.meting import maak
 from brms.readers.ble import verwerk
 from brms.readers.bthome import FCD2_UUID
@@ -85,13 +85,15 @@ class TestTraceInDeKeten(unittest.TestCase):
         bus = NepBus()
         tracer = trace.Tracer(bus, "ble-reader", klok=NepKlok())
         _aan(tracer, [MAC])
-        sensoren = {MAC: Sensor(MAC, "bthome", "kajuit", {"temperatuur": -0.3})}
+        sensoren = {MAC: Sensor(MAC, "bthome", "kajuit", {"temperatuur": Correctie(offset=-0.3)},
+                                 ("temperatuur", "vocht", "rssi"))}
         verwerk(MAC, {FCD2_UUID: PVVX}, -70, 1, sensoren, tracer)
         stappen = {d["stap"]: d["tekst"] for _, d in bus.berichten}
         self.assertEqual(list(stappen), ["ruw", "gedecodeerd", "gecorrigeerd"])
         self.assertIn("40 00 a4 01 64 02 ca 09", stappen["ruw"])
         self.assertIn("ca 09 = 2506 × 0.01 = 25.06", stappen["gedecodeerd"])
         self.assertIn("25.06 − 0.3 = 24.76", stappen["gecorrigeerd"])
+        self.assertIn("weggelaten (niet in 'grootheden'): batterijspanning", stappen["gecorrigeerd"])
 
     def test_zonder_trace_geen_berichten(self):
         bus = NepBus()
