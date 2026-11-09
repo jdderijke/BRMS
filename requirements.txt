@@ -1,3 +1,12 @@
-# Vastgepinde dependencies (ARCHITECTURE.md P3).
+# Vastgepinde dependencies (ARCHITECTURE.md P3): een update kan niet ongemerkt iets
+# kapotmaken. Nieuwe versies alleen na testen op de test-Pi.
+
+# MQTT-client, zelfde versie als JSEM (§3.2).
 paho-mqtt==2.1.0
+
+# Bluetooth LE-scanner (§5.2.1).
 bleak==3.1.0
+
+# Wordt door bleak op Linux gebruikt om via D-Bus met BlueZ te praten. Alleen op Linux;
+# op Windows (ontwikkel-pc) gebruikt bleak de winrt-pakketten.
+dbus-fast==5.2.0; sys_platform == "linux"

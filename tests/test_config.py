@@ -16,13 +16,19 @@ class TestConfig(unittest.TestCase):
     def test_voorbeeldbestand_is_geldig(self):
         cfg = config.lees(VOORBEELD)
         self.assertEqual(len(cfg.sensoren), 3)
+        self.assertEqual(cfg.opslag.database, os.path.join(config.PROJECTMAP, "data", "brms.db"))
         self.assertEqual(cfg.mqtt, config.MqttConfig("localhost", 1883))
 
     def test_standaardwaarden(self):
         cfg = _toml("")
         self.assertEqual(cfg.mqtt.host, "localhost")
-        self.assertEqual(cfg.opslag.database, "/var/lib/brms/brms.db")
+        self.assertEqual(cfg.opslag.database, os.path.join(config.PROJECTMAP, "data", "brms.db"))
         self.assertEqual(cfg.sensoren, {})
+
+    def test_relatief_databasepad_vanaf_projectmap(self):
+        # Een relatief pad geldt vanaf de projectmap, niet vanaf de huidige map.
+        cfg = _toml('[opslag]\ndatabase = "data/test.db"\n')
+        self.assertEqual(cfg.opslag.database, os.path.join(config.PROJECTMAP, "data", "test.db"))
 
     def test_mac_wordt_hoofdletters(self):
         cfg = _toml('[[sensor]]\nid = "a4:c1:38:0a:0b:0c"\ntype = "bthome"\nnaam = "kajuit"\n'

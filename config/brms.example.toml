@@ -1,6 +1,7 @@
-# Voorbeeldconfiguratie (ARCHITECTURE.md §5.4.1). Op de Pi: /etc/brms/brms.toml – niet in
-# git (bevat later o.a. de Victron-encryptiesleutels). Controleren vóór een herstart:
-#   python -m brms check-config
+# Voorbeeldconfiguratie (ARCHITECTURE.md §5.4.1). Kopieer naar config/brms.toml in de
+# projectmap (op de Pi: ~/BRMS/config/brms.toml). Dat bestand staat niet in git (bevat later
+# o.a. de Victron-encryptiesleutels). Controleren vóór een herstart:
+#   brms check-config        (op de pc: python -m brms check-config)
 # Een wijziging wordt doorgevoerd door de betreffende service te herstarten.
 
 [mqtt]
@@ -8,7 +9,8 @@ host = "localhost"
 port = 1883
 
 [opslag]
-database = "/var/lib/brms/brms.db"
+# Relatief pad = vanaf de projectmap; op de Pi dus ~/BRMS/data/brms.db.
+database = "data/brms.db"
 
 # Eén blok per sensor. Alleen sensoren die hier staan worden verwerkt.
 #   id        vaste ID; bij BLE-sensoren het MAC-adres (AA:BB:CC:DD:EE:FF)

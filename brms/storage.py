@@ -67,8 +67,8 @@ class Database:
     """Dunne laag om sqlite3 heen."""
 
     def __init__(self, pad: str):
-        # Map aanmaken als die nog niet bestaat (handig bij testen; op de Pi maakt
-        # install.sh /var/lib/brms aan).
+        # Map aanmaken als die nog niet bestaat (normaal bestaat data/ al: hij staat in git
+        # met een leeg .gitkeep-bestand).
         map_ = os.path.dirname(pad)
         if map_:
             os.makedirs(map_, exist_ok=True)

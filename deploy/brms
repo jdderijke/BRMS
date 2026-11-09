@@ -1,7 +1,15 @@
 #!/bin/sh
-# Opdracht 'brms' (geïnstalleerd als /usr/local/bin/brms door deploy/install.sh).
-# Start de BRMS-code uit /opt/brms met de Python van de eigen venv, bijv.:
+# Opdracht 'brms' – /usr/local/bin/brms is een verwijzing (symlink) naar dit bestand,
+# aangemaakt door deploy/install.sh. Voorbeeld:
 #     brms check-config
-# PYTHONPATH zorgt dat Python het pakket 'brms' in /opt/brms vindt.
-export PYTHONPATH=/opt/brms
-exec /opt/brms/venv/bin/python -m brms "$@"
+#
+# Start de BRMS-code met de Python van de eigen venv (.venv in de projectmap).
+
+# Projectmap bepalen: readlink -f volgt de symlink naar ~/BRMS/deploy/brms; de projectmap
+# is de map daarboven.
+BRMS="$(dirname "$(dirname "$(readlink -f "$0")")")"
+
+# PYTHONPATH zorgt dat Python het pakket 'brms' in de projectmap vindt, ongeacht de map
+# waarin je de opdracht geeft.
+export PYTHONPATH="$BRMS"
+exec "$BRMS/.venv/bin/python" -m brms "$@"

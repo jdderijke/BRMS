@@ -1,7 +1,8 @@
 """Inlezen en controleren van de configuratie (ARCHITECTURE.md §5.4, §5.4.1).
 
-- Eén TOML-bestand voor alle services: /etc/brms/brms.toml, buiten git en los van de code,
-  zodat een code-update de configuratie nooit overschrijft.
+- Eén TOML-bestand voor alle services: config/brms.toml in de projectmap (op de Pi
+  ~/BRMS/config/brms.toml, op de pc in de PyCharm-projectmap). Het staat in .gitignore,
+  zodat een code-update (git pull) de configuratie nooit overschrijft (§10.1).
 - Gelezen met tomllib uit de standaardbibliotheek (geen extra afhankelijkheid, P3).
 - Elke service leest het hele bestand en gebruikt zijn eigen deel.
 - Een wijziging wordt doorgevoerd door de service te herstarten.
@@ -12,17 +13,23 @@
 Opbouw van het bestand (zie config/brms.example.toml):
 
     [mqtt]      host, port              – de lokale broker
-    [opslag]    database                – pad van de SQLite-database
+    [opslag]    database                – pad van de SQLite-database; een relatief pad
+                                          geldt vanaf de projectmap (bijv. data/brms.db)
     [[sensor]]  id, type, naam, correctie – één blok per sensor
 """
 
+import os
 import re
 import tomllib
 from dataclasses import dataclass, field
 
 from brms import grootheden
 
-STANDAARD_PAD = "/etc/brms/brms.toml"
+# Projectmap: de map waarin de map 'brms' (dit pakket) staat. Op de Pi ~/BRMS.
+# Alle standaardpaden zijn hiervan afgeleid, zodat dezelfde code op de pc en op de Pi werkt.
+PROJECTMAP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+STANDAARD_PAD = os.path.join(PROJECTMAP, "config", "brms.toml")
 
 # Sensortypen die via Bluetooth binnenkomen (hun id is een MAC-adres). Ruuvi en Victron
 # komen erbij zodra hun decoders er zijn.
@@ -49,7 +56,7 @@ class MqttConfig:
 
 @dataclass(frozen=True)
 class OpslagConfig:
-    database: str = "/var/lib/brms/brms.db"
+    database: str = os.path.join(PROJECTMAP, "data", "brms.db")
 
 
 @dataclass(frozen=True)
@@ -128,6 +135,11 @@ def controleer(data: dict) -> Config:
     database = o.get("database", OpslagConfig.database)
     if not isinstance(database, str) or not database:
         fouten.append("[opslag] database moet een niet-leeg pad zijn")
+    elif not os.path.isabs(database):
+        # Relatief pad (bijv. "data/brms.db") geldt vanaf de projectmap, niet vanaf de map
+        # waarin de service toevallig gestart wordt.
+        # normpath maakt van "data/brms.db" op Windows "data\brms.db".
+        database = os.path.normpath(os.path.join(PROJECTMAP, database))
 
     # --- [[sensor]] (lijst van tabellen) ---
     sensoren: dict[str, Sensor] = {}

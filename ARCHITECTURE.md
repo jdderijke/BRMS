@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.14 – concept** · 9 november 2026
+**Versie 0.15 – concept** · 9 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -705,7 +705,7 @@ alarmen – laat uitvallen; daarom wordt de configuratie gecontroleerd vóór ge
 
 **Specificatie.**
 1. Formaat **TOML**, gelezen met `tomllib`.
-2. **Eén bestand** voor alle services: **`/etc/brms/brms.toml`** op de Pi, buiten git en
+2. **Eén bestand** voor alle services: **`~/BRMS/config/brms.toml`** op de Pi (v0.15, §10.1), buiten git en
    los van de code. Elke service leest zijn eigen deel. Een voorbeeldbestand
    (`config/brms.example.toml`) staat wel in git.
 3. Geheimen van rclone (OneDrive-token) staan niet in dit bestand maar in rclone's eigen
@@ -977,9 +977,15 @@ gebruiker kiest zelf het moment, nadat `main` op de test-Pi goed draait. Voorwaa
 tussen "getest" en "bijgewerkt aan boord" niets meer naar `main` gaat; met één ontwikkelaar
 is dat overzichtelijk. Eén spoor is eenvoudiger dan versietags (P1).
 
-Een eigen systeemgebruiker beperkt de services tot de rechten die ze nodig hebben. De
-indeling volgt de Linux-conventie: code, configuratie en data gescheiden, zodat een
-code-update configuratie en data nooit raakt.
+*Indeling (herzien in v0.15).* Oorspronkelijk volgde de indeling de Linux-conventie
+(`/opt/brms`, `/etc/brms`, `/var/lib/brms`) met een eigen systeemgebruiker `brms`. In de
+praktijk bleken de bestanden zo lastig te vinden. De gebruiker wil op de Pi dezelfde
+indeling als op de pc: één map `~/BRMS` (een git-clone) met daarin `brms/`, `config/` en
+`data/`. Configuratie en data staan in `.gitignore`, dus een `git pull` raakt ze nog steeds
+niet. Een systeemgebruiker kan niet zonder meer in een home-map lezen en schrijven; de
+services draaien daarom als de gebruiker die BRMS beheert (`jandirk`). Het nadeel – de
+services hebben meer rechten dan nodig – is bewust geaccepteerd; systemd beperkt ze
+(alleen-lezen systeem en home, schrijven alleen in `data/`).
 
 Automatische OS-updates kunnen ongemerkt iets breken (CLAUDE.md); er staat niets open op
 internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken is klein.
@@ -991,7 +997,8 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
 - *Docker.* Zwaar; een extra laag die moet blijven werken (P1).
 - *Boot-Pi alleen op versietags.* Markeert expliciet "getest", maar is bij handmatige
   updates niet nodig; tags blijven mogelijk als mijlpaal.
-- *Services als gebruiker `jandirk`.* Meer rechten dan nodig.
+- *Linux-conventie met systeemgebruiker `brms` (`/opt/brms`, `/etc/brms`, `/var/lib/brms`).*
+  Besluit tot v0.14; verlaten in v0.15 omdat de bestanden op de Pi lastig te vinden waren.
 - *Automatische OS-updates (unattended-upgrades).* Zie redenering.
 
 **Specificatie.**
@@ -1012,15 +1019,22 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
 
    | Wat | Waar |
    |---|---|
-   | Code en venv | `/opt/brms` |
-   | Configuratie | `/etc/brms/brms.toml` (§5.4.1) |
-   | Database en opnames | `/var/lib/brms` |
+   | Wat | Waar |
+   |---|---|
+   | Code (git-clone) | `~/BRMS` (o.a. `brms/`, `deploy/`, `tests/`) |
+   | Python-venv | `~/BRMS/.venv` |
+   | Configuratie | `~/BRMS/config/brms.toml` (§5.4.1) |
+   | Database en opnames | `~/BRMS/data/` |
    | Logs | journald |
 
-5. De services draaien als eigen systeemgebruiker **`brms`**, met alleen de benodigde
-   rechten (o.a. Bluetooth, schrijven in `/var/lib/brms`).
-6. Systeempakketten via apt (Mosquitto, rclone, later ffmpeg). Een eenmalig
-   **`deploy/install.sh`** richt de Pi in: gebruiker, mappen, venv, systemd-units en deploy key.
+   `config/brms.toml`, `data/` en `.venv/` staan in `.gitignore`; updates raken ze niet.
+5. De services draaien als de beheerder van de Pi (**`jandirk`**, lid van de groep
+   `bluetooth`). systemd beperkt ze: systeem en home alleen-lezen, schrijven alleen in
+   `~/BRMS/data`. git en de deploy key horen ook bij `jandirk`; alleen pakketten
+   installeren en services (her)starten vraagt `sudo`.
+6. Systeempakketten via apt (Mosquitto, rclone, later ffmpeg; als beheerhulpmiddelen
+   `mosquitto-clients` en `sqlite3`). Een eenmalig **`deploy/install.sh`** richt de Pi in:
+   pakketten, deploy key, clone, venv, configuratie, Mosquitto en systemd-units.
 7. **Geen automatische OS-updates.** OS, Tailscale en router-firmware worden met de hand
    bijgewerkt: eerst de test-Pi, daarna de boot-Pi.
 
@@ -1041,14 +1055,14 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
 | 9 | ~~Datamodel SQLite~~ – **besloten in v0.2**: generieke tabel `meting`, stills als bestand + tabel `still` (sinds v0.5 `opname`) | §5.3.1 |
 | 10 | ~~Meetinterval en schrijffrequentie~~ – **besloten in v0.3**: opslag per 5 min (gemiddelde; toestanden bij verandering), alarm op elke waarde, Shelly-poll 30 s | §5.3.2 |
 | 11 | Bewaartermijn / downsampling | §5.3 |
-| 12 | ~~Formaat configuratiebestand~~ – **besloten in v0.7**: TOML, één bestand `/etc/brms/brms.toml`, herstart bij wijziging, controle bij start | §5.4.1 |
+| 12 | ~~Formaat configuratiebestand~~ – **besloten in v0.7**: TOML, één bestand `config/brms.toml` (sinds v0.15 in `~/BRMS`), herstart bij wijziging, controle bij start | §5.4.1 |
 | 13 | ~~Alarmdetails: drempels, duur, hysterese, herhaling, herstel~~ – **besloten in v0.13**: één werking voor alle alarmen met duur, herstel-drempel, herinnering en herstelmelding; alarm "sensorbatterij laag" toegevoegd | §5.5.2 |
 | 14 | ntfy.sh of zelf gehost | §5.5 |
 | 15 | Authenticatie op webinterface | §5.6 |
 | 16 | ~~Back-up~~ – **besloten in v0.6**: wekelijks naar OneDrive met `rclone copy` | §7.1 |
 | 17 | Reikwijdte van de watchdog | §7 |
 | 18 | Detectie thuis als BRMS zelf uitvalt | §8 |
-| 19 | ~~Uitrol van code en updates~~ – **besloten in v0.11**: git met deploy key, beide Pi's volgen `main`, `update.sh` met terugdraaien | §10.1 |
+| 19 | ~~Uitrol van code en updates~~ – **besloten in v0.11**: git met deploy key, beide Pi's volgen `main`, `update.sh` met terugdraaien; sinds v0.15 alles in `~/BRMS` | §10.1 |
 | 20 | ~~Bewaartermijn van stills~~ – **besloten in v0.5**: foto's 2 weken, video's tot de gebruiker ze verwijdert, met maximale ruimte | §5.7 |
 | 21 | Maatregelen op OS-niveau tegen flashslijtage | §7 |
 | 22 | ~~MQTT-clientbibliotheek~~ – **besloten in v0.8**: `paho-mqtt==2.1.0` direct, met eigen busmodule | §3.2 |
@@ -1077,4 +1091,5 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.11 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-19 besloten (§10.1): uitrol via git met deploy key; test- en boot-Pi volgen `main`; `deploy/update.sh` met config-controle en `--terug`; indeling `/opt/brms`, `/etc/brms`, `/var/lib/brms`; systeemgebruiker `brms`; `deploy/install.sh`; geen automatische OS-updates. |
 | 0.12 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-5 besloten (§5.2.3): eigen decoders voor Ruuvi (formaat 5, getest met officiële testvectoren) en BTHome v2; Victron via `victron-ble`; ongeldige waarden niet gepubliceerd; toename bewegingsteller in de reader. |
 | 0.13 | 2026-11-09 | Claude Code, Opus 5.5 | OPEN-13 besloten (§5.5.2): duur, hysterese, herstelmelding, herinnering zolang actief, geen bevestiging, alarmtoestand niet bewaard over herstart, alarmen per sensor, ntfy-prioriteiten, standaardwaarden. Alarm "sensorbatterij laag" toegevoegd (§5.5). |
-| **0.14** | 2026-11-09 | Claude Code, Opus 5.5 | Bilge uitgewerkt (§5.2.4): Shelly Plus Uni op 12 V met hoogwatervlotter (`bilge`) en pompspanning (nieuwe grootheid `bilgepomp`); bilge-Shelly elke 2 s gepolld, poll-interval per Shelly instelbaar. Alarmen "bilgepomp lang" en "bilgepomp vaak" toegevoegd (§5.5, §5.5.2). |
+| 0.14 | 2026-11-09 | Claude Code, Opus 5.5 | Bilge uitgewerkt (§5.2.4): Shelly Plus Uni op 12 V met hoogwatervlotter (`bilge`) en pompspanning (nieuwe grootheid `bilgepomp`); bilge-Shelly elke 2 s gepolld, poll-interval per Shelly instelbaar. Alarmen "bilgepomp lang" en "bilgepomp vaak" toegevoegd (§5.5, §5.5.2). |
+| **0.15** | 2026-11-09 | Claude Code, Opus 5.5 | Indeling op de Pi herzien (§10.1, §5.4.1): alles in `~/BRMS` zoals op de pc (`config/brms.toml`, `data/`, `.venv`); services als `jandirk` in plaats van systeemgebruiker `brms`; `sqlite3` en `mosquitto-clients` als beheerhulpmiddelen. |

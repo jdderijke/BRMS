@@ -2,7 +2,8 @@
 
     python -m brms [--config PAD] [--debug] <opdracht>
 
-Op de Pi installeert install.sh een korte opdracht `brms` die hetzelfde doet.
+Op de Pi installeert deploy/install.sh een korte opdracht `brms` die hetzelfde doet.
+Zonder --config wordt config/brms.toml in de projectmap gelezen.
 
 Opdrachten:
   check-config   configuratie controleren, bijv. vóór een herstart (§5.4.1)
