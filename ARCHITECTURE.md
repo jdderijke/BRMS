@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.12 – concept** · 8 november 2026
+**Versie 0.13 – concept** · 9 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -694,6 +694,7 @@ alarmen – laat uitvallen; daarom wordt de configuratie gecontroleerd vóór ge
 | Vorst | Temperatuur < 2 °C |
 | Bilge | Vlotter actief |
 | Sensor stil | Sensor levert geen data meer |
+| Sensorbatterij laag | `batterijspanning` onder drempel |
 | Beweging | Toename van de Ruuvi-bewegingsteller ≥ N binnen T seconden (instelbaar) |
 
 Alle drempels en instellingen staan in het configuratiebestand (§5.4).
@@ -719,8 +720,57 @@ Zonder rustperiode zou storm de ene video na de andere opleveren.
 3. Na een video door dit alarm volgt **minstens 10 minuten** (instelbaar) geen nieuwe
    video door hetzelfde alarm.
 
-**[OPEN-13]** Per alarm: exacte drempel, duur ("langdurig"), hysterese, herhaling van
-meldingen, en melding bij herstel.
+#### 5.5.2 Alarmdetails (besluit OPEN-13)
+
+**Aanleiding.** Open stond per alarm de exacte drempel, de duur ("langdurig"), de
+hysterese, de herhaling van meldingen en de melding bij herstel.
+
+**Redenering.** Eén werking voor alle alarmen houdt de alarmlaag klein (P1); alleen de
+waarden verschillen. Een duur voorkomt meldingen bij een enkele afwijkende waarde; een aparte
+herstel-drempel voorkomt pendelen rond de drempel. Omdat de boot onbeheerd is, gaat een
+gemiste melding vóór een melding te veel: herinneringen zolang een alarm actief is, en na een
+herstart opnieuw melden. Een melding bij herstel vertelt dat ingrijpen niet meer nodig is.
+Uitblijven van data zegt niets over herstel. Niet elke sensor hoort bij elk alarm: de
+buitensensor mag geen vorstalarm geven.
+
+**Verworpen alternatieven.**
+- *Alarm bevestigen (via web of ntfy) om herinneringen te stoppen.* Extra toestand en extra
+  interface; een herinnering met lange tussenpoos is eenvoudiger.
+- *Alarmtoestand bewaren over een herstart heen.* Extra opslag en randgevallen; een dubbele
+  melding na een herstart is onschuldig.
+- *Eén melding per alarm, zonder herinnering.* Eén gemiste of weggeveegde melding betekent
+  dan dat het alarm onopgemerkt blijft.
+
+**Specificatie.**
+1. **Duur:** een alarm gaat af als de voorwaarde de ingestelde duur onafgebroken geldt; één
+   waarde die niet aan de voorwaarde voldoet, zet de duur terug.
+2. **Hysterese:** een actief alarm herstelt pas als de herstelvoorwaarde de ingestelde duur
+   onafgebroken geldt.
+3. **Herstel:** bij herstel volgt een melding met de duur van het alarm (bijv. "Walstroom
+   terug (was 3 u 12 min weg)"). Niet bij beweging: dat is een gebeurtenis, geen toestand.
+4. **Herhaling:** zolang een alarm actief is, volgt een herinnering met de ingestelde
+   tussenpoos. Er is geen bevestiging.
+5. **Geen data is geen herstel:** valt een sensor stil terwijl een alarm van die sensor
+   actief is, dan blijft dat alarm actief; daarnaast geldt "sensor stil".
+6. **Herstart:** de alarmtoestand wordt niet bewaard. Na een herstart begint elke duur
+   opnieuw (monotone klok, §4.2); een nog bestaande afwijking geeft opnieuw een melding.
+7. **Per sensor:** in de configuratie staat per sensor welke alarmen gelden; waarden zijn
+   per alarm in te stellen en waar nodig per sensor te overschrijven (§5.4).
+8. **ntfy-prioriteit:** bilge en walstroom *urgent*; vorst en accu laag *hoog*; overige
+   *normaal*.
+9. **Standaardwaarden** (in te stellen in `brms.toml`):
+
+   | Alarm | Voorwaarde | Duur | Herstel | Herhaling |
+   |---|---|---|---|---|
+   | Bilge | `bilge` = 1 | direct | `bilge` = 0 gedurende 5 min | elk uur |
+   | Walstroom weg | `walstroom` = 0 | 2 min | `walstroom` = 1 gedurende 2 min | elke 12 u |
+   | Vorst | `temperatuur` < 2 °C | 15 min | ≥ 3 °C | elke 12 u |
+   | Accu laag | `soc` < 50 % | 10 min | ≥ 55 % | elke 12 u |
+   | Vocht | `vocht` > 80 % | 6 u | ≤ 75 % | elke 24 u |
+   | Sensor stil | geen waarde | 30 min | eerste nieuwe waarde | elke 24 u |
+   | Sensorbatterij laag | `batterijspanning` < 2,5 V | 1 u | ≥ 2,6 V | elke week |
+   | Beweging | ≥ N binnen T s (§5.5.1) | — | — | rustperiode 10 min |
+
 **[OPEN-14]** ntfy-server: publieke ntfy.sh of zelf gehost. (Ntfy.sh vereist internet;
 bij uitval van mobiel internet komt geen melding aan – zie ook §8.)
 
@@ -953,7 +1003,7 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
 | 10 | ~~Meetinterval en schrijffrequentie~~ – **besloten in v0.3**: opslag per 5 min (gemiddelde; toestanden bij verandering), alarm op elke waarde, Shelly-poll 30 s | §5.3.2 |
 | 11 | Bewaartermijn / downsampling | §5.3 |
 | 12 | ~~Formaat configuratiebestand~~ – **besloten in v0.7**: TOML, één bestand `/etc/brms/brms.toml`, herstart bij wijziging, controle bij start | §5.4.1 |
-| 13 | Alarmdetails: drempels, duur, hysterese, herhaling, herstel | §5.5 |
+| 13 | ~~Alarmdetails: drempels, duur, hysterese, herhaling, herstel~~ – **besloten in v0.13**: één werking voor alle alarmen met duur, herstel-drempel, herinnering en herstelmelding; alarm "sensorbatterij laag" toegevoegd | §5.5.2 |
 | 14 | ntfy.sh of zelf gehost | §5.5 |
 | 15 | Authenticatie op webinterface | §5.6 |
 | 16 | ~~Back-up~~ – **besloten in v0.6**: wekelijks naar OneDrive met `rclone copy` | §7.1 |
@@ -986,4 +1036,5 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.9 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-6 en OPEN-7 besloten (§5.2.2): BMV-700, 3× MPPT (2× 75/15 met VE.Direct-dongle, 100/30 SmartSolar) en MultiPlus (VE.Bus Smart dongle) via BLE Instant Readout. Walstroom via MultiPlus in plaats van Shelly; OPEN-8 vervallen; Shelly alleen nog voor bilge. OPEN-25 besloten (§5.3.3): tabel van grootheden. §5.3.2, §5.5 bijgewerkt. |
 | 0.10 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-3 besloten (§4.2): router (RUT241) als tijdbron via operator time en NTP, Pi synchroniseert via router; alarmlaag op monotone klok; opslag en camera schrijven pas na tijdsynchronisatie; DS3231 optioneel. |
 | 0.11 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-19 besloten (§10.1): uitrol via git met deploy key; test- en boot-Pi volgen `main`; `deploy/update.sh` met config-controle en `--terug`; indeling `/opt/brms`, `/etc/brms`, `/var/lib/brms`; systeemgebruiker `brms`; `deploy/install.sh`; geen automatische OS-updates. |
-| **0.12** | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-5 besloten (§5.2.3): eigen decoders voor Ruuvi (formaat 5, getest met officiële testvectoren) en BTHome v2; Victron via `victron-ble`; ongeldige waarden niet gepubliceerd; toename bewegingsteller in de reader. |
+| 0.12 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-5 besloten (§5.2.3): eigen decoders voor Ruuvi (formaat 5, getest met officiële testvectoren) en BTHome v2; Victron via `victron-ble`; ongeldige waarden niet gepubliceerd; toename bewegingsteller in de reader. |
+| **0.13** | 2026-11-09 | Claude Code, Opus 5.5 | OPEN-13 besloten (§5.5.2): duur, hysterese, herstelmelding, herinnering zolang actief, geen bevestiging, alarmtoestand niet bewaard over herstart, alarmen per sensor, ntfy-prioriteiten, standaardwaarden. Alarm "sensorbatterij laag" toegevoegd (§5.5). |
