@@ -1,0 +1,14 @@
+# Systeempakketten (apt) die BRMS nodig heeft (ARCHITECTURE.md §10.1 punt 6).
+#
+# deploy/install.sh installeert ze; deploy/update.sh controleert bij elke update of er
+# één ontbreekt en installeert alleen die. Een nieuw pakket toevoegen = hier een regel bij.
+# (Python-pakketten staan niet hier maar in requirements.txt; die gaan met pip in de venv.)
+#
+# Eén pakket per regel; alles na # is commentaar.
+
+mosquitto           # de lokale MQTT-broker (§3.1)
+mosquitto-clients   # mosquitto_sub/_pub: metingen live volgen en testen
+sqlite3             # de database bekijken (altijd met -readonly; §3.1: één schrijver)
+tmux                # vensterverdeling voor 'brms monitor' (§10.2)
+git                 # code ophalen en bijwerken (§10.1)
+python3-venv        # eigen Python-omgeving, los van de systeem-Python (§5.1)

@@ -11,7 +11,8 @@
 # Stappen (§10.1 punt 3):
 #   1. de huidige commit onthouden (om terug te kunnen)
 #   2. 'main' ophalen en uitchecken
-#   3. pakketten installeren volgens requirements.txt (vastgepinde versies)
+#   3. ontbrekende systeempakketten uit deploy/pakketten.txt installeren (apt, alleen
+#      als er iets ontbreekt), en Python-pakketten volgens requirements.txt (pip)
 #   4. 'brms check-config' – bij een fout stopt de update en draait de oude versie door
 #   5. systemd-units bijwerken en de services herstarten (vraagt het sudo-wachtwoord)
 #
@@ -55,6 +56,8 @@ fi
 
 if [ "$doel" = "$huidig" ]; then
     echo "Al op $(git log -1 --format='%h %s' "$huidig")."
+    # Toch controleren of er systeempakketten ontbreken (bijv. na een handmatige wijziging).
+    bash deploy/pakketten.sh
     exit 0
 fi
 
@@ -74,6 +77,10 @@ echo "  ->  $(git log -1 --format='%h %s' "$doel")"
 git checkout -q -B main "$doel"
 
 # --- 3. Pakketten ------------------------------------------------------------
+# Systeempakketten (apt) uit de nieuwe deploy/pakketten.txt; vraagt alleen om het
+# sudo-wachtwoord als er iets ontbreekt.
+bash deploy/pakketten.sh
+# Python-pakketten in de venv, exact volgens requirements.txt.
 .venv/bin/pip install -q -r requirements.txt
 
 # --- 4. Configuratie controleren tegen de nieuwe code --------------------------

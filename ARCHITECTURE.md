@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.16 – concept** · 9 november 2026
+**Versie 0.17 – concept** · 9 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1013,7 +1013,8 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
 3. Updates via **`deploy/update.sh`**:
    1. de huidige commit wegschrijven (voor teruggaan);
    2. `git fetch` en `main` uitchecken;
-   3. `pip install -r requirements.txt` in de venv (vastgepinde versies);
+   3. ontbrekende systeempakketten uit `deploy/pakketten.txt` installeren (apt; v0.17)
+      en `pip install -r requirements.txt` in de venv (vastgepinde versies);
    4. `brms check-config` (§5.4.1) – bij een fout stopt de update en draait de oude
       versie door;
    5. de services herstarten.
@@ -1037,7 +1038,10 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
    `~/BRMS/data`. git en de deploy key horen ook bij `jandirk`; alleen pakketten
    installeren en services (her)starten vraagt `sudo`.
 6. Systeempakketten via apt (Mosquitto, rclone, later ffmpeg; als beheerhulpmiddelen
-   `mosquitto-clients` en `sqlite3`). Een eenmalig **`deploy/install.sh`** richt de Pi in:
+   `mosquitto-clients`, `sqlite3` en `tmux`). Ze staan in één lijst,
+   **`deploy/pakketten.txt`** (v0.17); `install.sh` en `update.sh` installeren wat daarvan
+   ontbreekt, zodat een nieuw pakket bij de eerstvolgende update vanzelf meekomt. Een
+   eenmalig **`deploy/install.sh`** richt de Pi in:
    pakketten, deploy key, clone, venv, configuratie, Mosquitto en systemd-units.
 7. **Geen automatische OS-updates.** OS, Tailscale en router-firmware worden met de hand
    bijgewerkt: eerst de test-Pi, daarna de boot-Pi.
@@ -1152,4 +1156,5 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.13 | 2026-11-09 | Claude Code, Opus 5.5 | OPEN-13 besloten (§5.5.2): duur, hysterese, herstelmelding, herinnering zolang actief, geen bevestiging, alarmtoestand niet bewaard over herstart, alarmen per sensor, ntfy-prioriteiten, standaardwaarden. Alarm "sensorbatterij laag" toegevoegd (§5.5). |
 | 0.14 | 2026-11-09 | Claude Code, Opus 5.5 | Bilge uitgewerkt (§5.2.4): Shelly Plus Uni op 12 V met hoogwatervlotter (`bilge`) en pompspanning (nieuwe grootheid `bilgepomp`); bilge-Shelly elke 2 s gepolld, poll-interval per Shelly instelbaar. Alarmen "bilgepomp lang" en "bilgepomp vaak" toegevoegd (§5.5, §5.5.2). |
 | 0.15 | 2026-11-09 | Claude Code, Opus 5.5 | Indeling op de Pi herzien (§10.1, §5.4.1): alles in `~/BRMS` zoals op de pc (`config/brms.toml`, `data/`, `.venv`); services als `jandirk` in plaats van systeemgebruiker `brms`; `sqlite3` en `mosquitto-clients` als beheerhulpmiddelen. |
-| **0.16** | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
+| 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
+| **0.17** | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |

@@ -24,10 +24,11 @@
 #       bash ~/BRMS/deploy/install.sh
 #
 # Wat het doet, in volgorde:
-#   1. systeempakketten installeren                                       (sudo)
+#   1. git installeren als het ontbreekt                                  (sudo)
 #   2. de gebruiker toevoegen aan de groep 'bluetooth'                     (sudo)
 #   3. de deploy key klaarzetten waarmee de Pi de code van GitHub mag LEZEN
-#   4. de code ophalen naar ~/BRMS
+#   4. de code ophalen naar ~/BRMS, daarna de systeempakketten uit
+#      deploy/pakketten.txt installeren (alleen wat ontbreekt)              (sudo)
 #   5. een Python-venv maken en de vastgepinde pakketten installeren
 #   6. config/brms.toml aanmaken uit het voorbeeld (alleen als hij nog niet bestaat)
 #   7. de opdracht 'brms' installeren (/usr/local/bin/brms)                (sudo)
@@ -59,16 +60,13 @@ if [ "$EUID" -eq 0 ]; then
 fi
 
 # -----------------------------------------------------------------------------
-echo "== 1. Systeempakketten"
-# mosquitto:          de lokale MQTT-broker (§3.1)
-# mosquitto-clients:  mosquitto_sub/_pub om metingen live te volgen en te testen
-# sqlite3:            de database bekijken (altijd met -readonly; de opslag-service is de
-#                     enige schrijver, §3.1)
-# tmux:               vensterverdeling voor 'brms monitor' (§10.2)
-# git:                code ophalen (§10.1)
-# python3-venv:       eigen Python-omgeving, los van de systeem-Python (§5.1)
-sudo apt-get update -q
-sudo apt-get install -y -q mosquitto mosquitto-clients sqlite3 tmux git python3-venv
+echo "== 1. git"
+# De volledige lijst systeempakketten staat in deploy/pakketten.txt, maar die is er pas
+# na het clonen (stap 4). Daarvoor is alleen git nodig.
+if ! command -v git >/dev/null; then
+    sudo apt-get update -q
+    sudo apt-get install -y -q git
+fi
 
 # -----------------------------------------------------------------------------
 echo "== 2. Groep bluetooth"
@@ -122,6 +120,11 @@ echo "== 4. Code in $BRMS"
 if [ ! -d "$BRMS/.git" ]; then
     git clone -q --branch main "$REPO" "$BRMS"
 fi
+
+# Nu de code er is: de systeempakketten uit deploy/pakketten.txt (Mosquitto, sqlite3,
+# tmux, python3-venv, ...). Alleen wat ontbreekt wordt geïnstalleerd.
+echo "== 4b. Systeempakketten"
+bash "$BRMS/deploy/pakketten.sh"
 
 # -----------------------------------------------------------------------------
 echo "== 5. Python-venv"
