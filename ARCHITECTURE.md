@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.44 – concept** · 10 november 2026
+**Versie 0.45 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1293,15 +1293,16 @@ schrijvers op dezelfde database en map.
      bevestiging. De opdracht is `brms/opdracht/opslag/verwijder` met
      `{"opnames": [[camera_id, ts], ...]}` (hooguit 500 per keer); de pagina haalt de
      lijst kort daarna opnieuw op.
-   - **"Live camera"** (v0.44; *ontworpen, nog niet gebouwd*) toont het live-beeld van
+   - **"Live camera"** (v0.44; gebouwd in v0.45) toont het live-beeld van
      de camera in het fotovak (§5.7 punt 18). Zolang het live-beeld loopt, zijn er twee
      knoppen: **"Foto"** maakt direct een foto en slaat hem op, **"Video"** neemt een
      video op (standaard 120 s) en slaat hem op. Beide geven de camera-reader een poll-nu
      met aanleiding `handmatig` (§5.7 punt 12); het live-beeld loopt intussen door en de
      pagina meldt wanneer de opname is opgeslagen. Deze knoppen vervangen "Foto nu" en
      "Video nu": een opname op verzoek maak je terwijl je kijkt.
-   - Tot dat gebouwd is: **"Foto nu"** en **"Video nu"** geven de camera-reader een
-     poll-nu; de pagina wacht op de gevraagde opname en zet die in beeld (v0.44).
+     Na het stoppen van het live-beeld staat de laatste opname in de lijst. Een camera
+     zonder `live_url` heeft geen live-knop, en dus ook geen opname op verzoek vanuit de
+     pagina.
    - Onderaan staan de totalen: aantal en omvang van de foto's en video's, de
      bewaartermijn en de maximale ruimte.
    - De bestanden zelf levert de webservice uit op `/opname/<pad>`, alleen voor een pad
@@ -1598,7 +1599,7 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
     en het opruimen van foto's; (b) video en de maximale ruimte; (c) foto en video bij
     een alarm (alarmlaag en meldingskanalen); (d) bekijken en verwijderen in het web
     (§5.6); (e) het live-beeld (punt 18).
-18. **Live-beeld** (v0.44; *ontworpen, nog niet gebouwd*). Kijken en opnemen zijn los van
+18. **Live-beeld** (v0.44; gebouwd in v0.45). Kijken en opnemen zijn los van
     elkaar: "Live camera" toont wat de camera nu ziet; "Foto" en "Video" leggen iets vast
     terwijl het live-beeld doorloopt (§5.6 punt 2).
     - **De MJPEG-stroom van de camera.** Veel camera's leveren naast RTSP een tweede
@@ -1629,8 +1630,33 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
     - **Testcamera** (Foscam, beproefd op 2026-11-10): het adres
       `http://192.168.178.202:89/cgi-bin/CGIStream.cgi?cmd=GetMJStream&usr={gebruiker}&pwd={wachtwoord}`
       levert zonder verdere instelling een MJPEG-stroom van 640×480, 30 beelden per
-      seconde. Nog te beproeven: of de camera het live-beeld, een foto en een video
-      tegelijk levert.
+      seconde.
+
+    Invulling bij het bouwen (v0.45):
+    - **De pagina leest de stroom zelf** en zet elk beeld in het fotovak, in plaats van
+      de stroom aan de browser over te laten. Zo weet de pagina wanneer er een beeld
+      binnenkomt: zij meldt "wacht op het eerste beeld", "geen nieuw beeld sinds N s" als
+      de camera stilvalt, en waarom het live-beeld niet start (camera onbereikbaar, te
+      veel kijkers).
+    - De webservice wacht hooguit 10 s op de camera; stuurt die zo lang niets, dan eindigt
+      het live-beeld met een melding.
+    - Elke kijker heeft een **eigen verbinding** met de camera. Eén gedeelde verbinding
+      voor alle kijkers is beter voor de camera (zie hieronder) maar nog niet gebouwd.
+    - `live_beelden` mag van 0,2 tot 30 zijn.
+
+    **Grenzen van de testcamera** (gemeten op 2026-11-10; een andere camera kan anders
+    zijn):
+    - Zonder opname komen er via de webservice 5 beelden per seconde door. Het eerste
+      beeld komt na 0,2 tot ruim 5 seconden.
+    - **Tijdens een video-opname** (RTSP) zakt het live-beeld naar ongeveer 2 beelden per
+      seconde: de camera kan beide stromen niet op volle snelheid leveren.
+    - Bij **twee kijkers** verdeelt de camera zijn beelden (ongeveer 13 per seconde elk);
+      dat is ruim genoeg.
+    - Na veel verbindingen kort na elkaar, samen met een video-opname, gaf de camera
+      ongeveer een minuut **geen MJPEG-stroom** (time-out); foto's en de camera zelf
+      bleven werken en het herstelde vanzelf. De camera hield gesloten verbindingen nog
+      even vast.
+    - Een foto en het live-beeld tegelijk gaat goed (foto opgeslagen binnen 4 tot 10 s).
 
 ---
 
@@ -2083,7 +2109,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.44** | 2026-11-10 | Claude Code, Fable 5.2 | "Foto nu" toont de nieuwe foto direct (gebouwd, §5.6 punt 2). Ontwerp: live-beeld via de MJPEG-stroom van de camera, doorgegeven door de webservice (`live_url`, hooguit 5 beelden per seconde, stopt na 10 minuten); knop "Live camera" met daarbinnen "Foto" en "Video" (§5.6 punt 2, §5.7 punt 18). HLS overwogen en verworpen. Nog niet gebouwd. |
+| **0.45** | 2026-11-10 | Claude Code, Fable 5.2 | Live-beeld gebouwd (§5.6 punt 2, §5.7 punt 18): `live_url` en `live_beelden` per camera, de webservice geeft de MJPEG-stroom door, knop "Live camera" met "Foto" en "Video". Grenzen van de testcamera vastgelegd. |
+| 0.44 | 2026-11-10 | Claude Code, Fable 5.2 | "Foto nu" toont de nieuwe foto direct (gebouwd, §5.6 punt 2). Ontwerp: live-beeld via de MJPEG-stroom van de camera, doorgegeven door de webservice (`live_url`, hooguit 5 beelden per seconde, stopt na 10 minuten); knop "Live camera" met daarbinnen "Foto" en "Video" (§5.6 punt 2, §5.7 punt 18). HLS overwogen en verworpen. Nog niet gebouwd. |
 | 0.43 | 2026-11-10 | Claude Code, Fable 5.2 | Dagoverzicht gebouwd (§5.6 punt 2): tweede weergave van de opnamepagina, met afspelen, pauze, "verder" bij een video en een tijdbalk van de dag. |
 | 0.42 | 2026-11-10 | Claude Code, Fable 5.2 | Ontwerp: dagoverzicht op de opnamepagina (§5.6 punt 2): de opnames van een dag afspelen van oud naar nieuw, intervalfoto 0,5 s, foto bij een gebeurtenis 5 s, video volledig met een knop "verder". Nog niet gebouwd. |
 | 0.41 | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (d) gebouwd (§5.6 punt 2): opnamepagina in het web (bekijken per dag, verwijderen via de opslag-service, "Foto nu" en "Video nu"). Het log vermeldt of een melding met foto is verstuurd. |

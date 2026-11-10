@@ -13,7 +13,11 @@
   opdracht op de MQTT-bus zet; de opslag-service verwijdert bestand en databaserij (§3.1:
   één schrijver). Daarom wordt de lijst kort na een opdracht opnieuw opgehaald.
 
-  "Foto nu" en "Video nu" geven de camera-reader een opdracht (poll-nu, §5.7 punt 12).
+  "Live camera" toont het live-beeld van de camera (§5.7 punt 18): de webservice geeft de
+  MJPEG-stroom van de camera door, een paar beelden per seconde. Zolang het live-beeld
+  loopt, zijn er de knoppen "Foto" en "Video": die geven de camera-reader een opdracht
+  (poll-nu, §5.7 punt 12) om een opname te maken en op te slaan, in de volle kwaliteit van
+  de camera. Het live-beeld loopt intussen door; het wordt zelf niet opgeslagen.
 
   Dagoverzicht (tweede weergave): de opnames van de dag worden van oud naar nieuw
   afgespeeld als een versnelde film. Een intervalfoto staat 0,5 s in beeld, een foto bij
@@ -122,8 +126,12 @@
     <label class="alleen-lijst" title="Uit: alleen wat op verzoek of bij een alarm is gemaakt">
       <input type="checkbox" id="interval" checked> intervalfoto's</label>
     <span class="ruimte"></span>
-    <button id="foto-nu" title="Laat de camera nu een foto maken">Foto nu</button>
-    <button id="video-nu" title="Laat de camera nu een video opnemen">Video nu</button>
+    <button id="live" title="Het live-beeld van de camera">Live camera</button>
+    <!-- Alleen zolang het live-beeld loopt: een opname maken en opslaan. -->
+    <span id="live-knoppen" hidden>
+      <button id="live-foto" title="Maak nu een foto en sla hem op">Foto</button>
+      <button id="live-video" title="Neem nu een video op en sla hem op">Video</button>
+    </span>
   </div>
   <p id="status"></p>
 
@@ -181,6 +189,7 @@
 // Door de webservice ingevuld: de camera's uit de configuratie en de grenzen voor opnames.
 const CAMERAS = {{ cameras | tojson }};
 const VIDEO_RUIMTE = {{ video_ruimte | tojson }};     // GB
+const MAX_LIVE = {{ max_live | tojson }};             // seconden; daarna stopt het live-beeld
 const FOTO_BEWAREN = {{ foto_bewaren | tojson }};     // seconden
 
 const el = id => document.getElementById(id);
@@ -296,6 +305,7 @@ function toonKnoppen() {
 
 // --- de weergave -----------------------------------------------------------------------
 function toon(o) {
+  eindeLive();
   gekozen = o ? sleutel(o) : null;
   for (const tr of el("rijen").rows) tr.classList.toggle("gekozen", tr.dataset.sleutel === gekozen);
   const beeld = el("beeld");
@@ -415,6 +425,7 @@ function tekenBalk() {
 // Zet de opname op `plek` in beeld. Loopt het overzicht, dan gaat het vanzelf verder: bij
 // een foto na de vaste tijd, bij een video als die afgelopen is.
 function toonPlek() {
+  eindeLive();
   const mijn = ++beurt;
   clearTimeout(wekker);
   const o = film[plek];
@@ -551,6 +562,7 @@ function zetWeergave(nieuw) {
   pauze();
   for (const e of document.querySelectorAll(".alleen-lijst")) e.hidden = weergave !== "lijst";
   for (const e of document.querySelectorAll(".alleen-dag")) e.hidden = weergave !== "dag";
+  zetLiveKnop();
   try { localStorage.setItem("brms-opnames-weergave", weergave); } catch (e) { /* mag mislukken */ }
   gekozen = null;
   meld("");
@@ -601,48 +613,181 @@ async function wachtOpNieuwe(camera, type, bekend, seconden) {
   return null;
 }
 
-// Gaat naar de dag van een opname en zet die opname in beeld, in de lijst of in het
-// dagoverzicht (dat blijft dan stilstaan op die opname).
-async function toonOpname(o) {
-  el("dag").value = datum(new Date(o.ts * 1000));
-  // De keuze van de soort mag de opname niet verbergen.
-  if (el("type").value && el("type").value !== o.type) el("type").value = "";
-  gekozen = null;
-  await laad();
-  if (weergave === "dag") {
-    const i = film.findIndex(x => sleutel(x) === sleutel(o));
-    if (i >= 0) { plek = i; toonPlek(); }
-  } else {
-    const gevonden = opnames.find(x => sleutel(x) === sleutel(o));
-    if (gevonden) toon(gevonden);
+// --- live-beeld (§5.7 punt 18) -----------------------------------------------------------
+let live = null;          // de camera waarvan het live-beeld loopt, of null
+let liveWekker = null;    // de timer die het live-beeld na MAX_LIVE stopt
+let liveTik = null;       // elke seconde: het bijschrift bijwerken
+let liveStop = null;      // om de aanvraag van de stroom af te breken (AbortController)
+let laatsteBeeld = 0;     // wanneer het laatste live-beeld binnenkwam (ms)
+let videoTot = 0;         // tot wanneer de video-opname loopt (ms), of 0
+const bezig = {foto: false, video: false};   // loopt er een opname op verzoek?
+
+// De camera voor het live-beeld: de gekozen camera, of anders de eerste.
+const liveCamera = () => CAMERAS.find(c => c.id === el("camera").value) || CAMERAS[0];
+
+function zetLiveKnop() {
+  const camera = live || liveCamera();
+  el("live").textContent = live ? "■ Stop live" : "Live camera";
+  el("live").disabled = !live && !(camera && camera.live);
+  el("live").title = el("live").disabled
+    ? "Deze camera heeft geen live-beeld (geen live_url in brms.toml)"
+    : "Het live-beeld van de camera";
+  el("live-knoppen").hidden = !live;
+  el("live-foto").disabled = bezig.foto;
+  el("live-video").disabled = bezig.video || !(camera && camera.video);
+  // Bladeren door de opnames hoort niet bij het live-beeld.
+  el("ouder").hidden = el("nieuwer").hidden = !!live || weergave !== "lijst";
+}
+
+// Het bijschrift onder het live-beeld: of er beeld is, en tijdens een video-opname de
+// resterende tijd. Zo is te zien dat het beeld stilstaat als de camera niets meer stuurt.
+function liveBijschrift() {
+  if (!live) return;
+  const rest = Math.ceil((videoTot - Date.now()) / 1000);
+  const stil = laatsteBeeld ? Math.round((Date.now() - laatsteBeeld) / 1000) : 0;
+  el("bij").querySelector(".tijd").textContent = "Live";
+  el("bij").querySelector(".rest").textContent = live.naam
+    + (!laatsteBeeld ? " · wacht op het eerste beeld …"
+       : stil >= 4 ? " · geen nieuw beeld sinds " + stil + " s" : "")
+    + (rest > 0 ? " · ● video-opname loopt, nog " + rest + " s" : "");
+}
+
+// Zoekt in een reeks bytes het einde van de kop van een deel (lege regel: CR LF CR LF).
+function kopEinde(bytes) {
+  const tot = Math.min(bytes.length - 3, 400);
+  for (let i = 0; i < tot; i++)
+    if (bytes[i] === 13 && bytes[i + 1] === 10 && bytes[i + 2] === 13 && bytes[i + 3] === 10) return i;
+  return -1;
+}
+
+// Leest de stroom van de webservice en zet elk beeld in het fotovak. De pagina leest de
+// stroom zelf (in plaats van hem aan een <img> te geven): zo weet zij wanneer er een
+// beeld binnenkomt, wanneer de stroom ophoudt en wat er misging.
+async function leesLive(camera, img, stop) {
+  const antwoord = await fetch("/live/" + encodeURIComponent(camera.id),
+                               {signal: stop.signal, cache: "no-store"});
+  if (!antwoord.ok) {
+    const d = await antwoord.json().catch(() => ({}));
+    throw new Error(d.fout || "fout " + antwoord.status);
+  }
+  const lezer = antwoord.body.getReader();
+  let buffer = new Uint8Array(0);
+  let vorig = null;       // het adres van het vorige beeld, om het geheugen vrij te geven
+  for (;;) {
+    const {value, done} = await lezer.read();
+    if (done) return;                     // de webservice of de camera is gestopt
+    const samen = new Uint8Array(buffer.length + value.length);
+    samen.set(buffer); samen.set(value, buffer.length);
+    buffer = samen;
+    // Elk deel: een kop met de lengte, een lege regel, het beeld, en een regeleinde.
+    for (;;) {
+      const einde = kopEinde(buffer);
+      if (einde < 0) break;
+      const kop = new TextDecoder().decode(buffer.subarray(0, einde));
+      const lengte = /Content-Length: (\d+)/.exec(kop);
+      if (!lengte) throw new Error("onverwacht antwoord van de webservice");
+      const begin = einde + 4, n = Number(lengte[1]);
+      if (buffer.length < begin + n + 2) break;        // de rest van het beeld komt nog
+      const adres = URL.createObjectURL(new Blob([buffer.slice(begin, begin + n)], {type: "image/jpeg"}));
+      img.src = adres;
+      if (vorig) URL.revokeObjectURL(vorig);
+      vorig = adres;
+      laatsteBeeld = Date.now();
+      buffer = buffer.subarray(begin + n + 2);
+    }
   }
 }
 
-async function opnameNu(type) {
-  const camera = CAMERAS.find(c => c.id === el("camera").value) || CAMERAS[0];
-  if (!camera) return;
-  el("foto-nu").disabled = el("video-nu").disabled = true;
+function startLive() {
+  const camera = liveCamera();
+  if (!camera || !camera.live) return;
+  pauze();                      // een lopend dagoverzicht staat stil zolang er live gekeken wordt
+  live = camera;
+  gekozen = null;
+  laatsteBeeld = 0;
+  for (const tr of el("rijen").rows) tr.classList.remove("gekozen");
+  const img = document.createElement("img");
+  img.alt = "Live-beeld van " + camera.naam;
+  el("beeld").replaceChildren(img);
+  el("bij").hidden = false;
+  liveBijschrift();
+  liveTik = setInterval(liveBijschrift, 1000);
+  const stop = liveStop = new AbortController();
+  leesLive(camera, img, stop).then(() => {
+    // De stroom is opgehouden zonder dat de gebruiker stopte.
+    if (stop.signal.aborted) return;
+    stopLive();
+    meld("Het live-beeld van " + camera.naam + " is gestopt: de camera stuurt geen beeld meer. "
+         + "Start het opnieuw om verder te kijken.", true);
+  }).catch(e => {
+    if (stop.signal.aborted) return;      // zelf gestopt: geen fout
+    stopLive();
+    meld("Het live-beeld van " + camera.naam + " is niet beschikbaar: " + e.message + ".", true);
+  });
+  // Vanzelf stoppen: een vergeten tabblad mag de databundel van de boot niet leegtrekken.
+  // Iets eerder dan de webservice, zodat deze melding verschijnt en niet "gestopt".
+  liveWekker = setTimeout(() => {
+    stopLive();
+    meld("Het live-beeld is na " + Math.round(MAX_LIVE / 60) + " minuten gestopt om data te "
+         + "sparen. Start het opnieuw om verder te kijken.");
+  }, (MAX_LIVE - 3) * 1000);
+  meld("");
+  zetLiveKnop();
+}
+
+// Het live-beeld is voorbij: de verbinding sluiten. Wat er daarna in het fotovak komt,
+// bepaalt de aanroeper.
+function eindeLive() {
+  if (!live) return;
+  clearTimeout(liveWekker);
+  clearInterval(liveTik);
+  if (liveStop) liveStop.abort();          // breekt de aanvraag van de stroom af
+  live = null;
+  zetLiveKnop();
+}
+
+// Stoppen en terug naar de lijst of het dagoverzicht; die wordt opnieuw opgehaald, zodat
+// de opnames van zojuist erin staan.
+function stopLive() {
+  eindeLive();
+  gekozen = null;
+  laad();
+}
+
+// "Foto" of "Video" tijdens het live-beeld: de camera-reader maakt de opname en slaat hem
+// op; het live-beeld loopt door. De pagina meldt wanneer de opname is opgeslagen.
+async function liveOpname(type) {
+  const camera = live;
+  if (!camera || bezig[type]) return;
+  bezig[type] = true;
+  zetLiveKnop();
+  const naam = type === "foto" ? "Foto" : "Video";
   try {
     // Wat er al is, vóór de opdracht: alles wat daarna bijkomt is de gevraagde opname.
     const bekend = new Set((await recent(camera, type)).map(sleutel));
     await opdracht("/api/opnames/nu", {camera_id: camera.id, type});
     let nieuw;
     if (type === "foto") {
-      meld("Foto van " + camera.naam + " wordt gemaakt …");
+      meld("Foto wordt gemaakt …");
       nieuw = await wachtOpNieuwe(camera, type, bekend, 15);
     } else {
-      // De video staat er pas als de opname klaar is.
+      // De video staat er pas als de opname klaar is; het bijschrift telt af.
       const duur = Math.round(camera.video_duur);
-      meld("Video van " + camera.naam + " wordt opgenomen (" + duur + " s) …");
+      videoTot = Date.now() + duur * 1000;
+      meld("Video-opname gestart (" + duur + " s).");
+      liveBijschrift();
       await new Promise(r => setTimeout(r, Math.max(0, duur - 2) * 1000));
       nieuw = await wachtOpNieuwe(camera, type, bekend, 45);
     }
-    if (nieuw) { meld(""); await toonOpname(nieuw); }
-    else meld("De " + type + " is niet binnengekomen. De reden staat in het log van de "
-              + "camera-reader (journalctl -u brms-camera).", true);
+    if (nieuw) meld(naam + " opgeslagen (" + tijd(nieuw.ts) + ", " + grootte(nieuw.bytes) + ").");
+    else meld("De " + type + " is niet binnengekomen"
+              + (type === "video" ? " (liep er al een video-opname, bijvoorbeeld door een alarm? "
+                                    + "Dan wordt een tweede genegeerd)" : "")
+              + ". De reden staat in het log van de camera-reader (journalctl -u brms-camera).", true);
   } catch (e) { meld("De opdracht is niet gelukt: " + e.message, true); }
-  el("foto-nu").disabled = !CAMERAS.length;
-  zetVideoKnop();
+  if (type === "video") videoTot = 0;
+  bezig[type] = false;
+  zetLiveKnop();
 }
 
 // --- dag kiezen ------------------------------------------------------------------------
@@ -660,12 +805,7 @@ el("camera").parentElement.hidden = CAMERAS.length <= 1;
 el("camera").add(new Option("alle camera's", ""));
 for (const c of CAMERAS) el("camera").add(new Option(c.naam, c.id));
 // Zonder camera in de configuratie valt er niets op te nemen.
-el("foto-nu").disabled = !CAMERAS.length;
-function zetVideoKnop() {
-  const camera = CAMERAS.find(c => c.id === el("camera").value) || CAMERAS[0];
-  el("video-nu").disabled = !camera || !camera.video;
-}
-zetVideoKnop();
+zetLiveKnop();
 if (!CAMERAS.length) meld("Er is geen camera ingesteld in brms.toml ([[camera]]).");
 
 el("vorige").addEventListener("click", () => schuif(-1));
@@ -673,7 +813,7 @@ el("volgende").addEventListener("click", () => schuif(1));
 el("vandaag").addEventListener("click", () => zetDag(new Date()));
 el("dag").addEventListener("change", () => { gekozen = null; geselecteerd.clear(); laad(); });
 for (const id of ["camera", "type", "interval"])
-  el(id).addEventListener("change", () => { gekozen = null; zetVideoKnop(); laad(); });
+  el(id).addEventListener("change", () => { gekozen = null; laad(); zetLiveKnop(); });
 el("ouder").addEventListener("click", () => stap(1));
 el("nieuwer").addEventListener("click", () => stap(-1));
 el("alles").addEventListener("click", () => { for (const o of opnames) geselecteerd.add(sleutel(o)); toonLijst(); });
@@ -685,8 +825,9 @@ el("verwijder").addEventListener("click", () => {
 });
 el("nee").addEventListener("click", toonKnoppen);
 el("ja").addEventListener("click", verwijder);
-el("foto-nu").addEventListener("click", () => opnameNu("foto"));
-el("video-nu").addEventListener("click", () => opnameNu("video"));
+el("live").addEventListener("click", () => live ? stopLive() : startLive());
+el("live-foto").addEventListener("click", () => liveOpname("foto"));
+el("live-video").addEventListener("click", () => liveOpname("video"));
 // Pijltjes bladeren door de opnames, behalve als de datum of een keuzelijst de invoer heeft.
 document.addEventListener("keydown", e => {
   if (["INPUT", "SELECT", "VIDEO"].includes(document.activeElement.tagName)) return;

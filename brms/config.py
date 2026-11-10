@@ -230,6 +230,8 @@ class Alarmregel:
 # Grenzen van de camera-instellingen (§5.7), in seconden.
 MIN_FOTO_INTERVAL, MAX_FOTO_INTERVAL = 10.0, 86400.0
 MIN_VIDEO_DUUR, MAX_VIDEO_DUUR = 5.0, 600.0
+# Beelden per seconde van het live-beeld (§5.7 punt 18).
+MIN_LIVE_BEELDEN, MAX_LIVE_BEELDEN = 0.2, 30.0
 # De invulplaatsen voor het account in een camera-adres (§5.7 punt 7).
 PLAATS_GEBRUIKER, PLAATS_WACHTWOORD = "{gebruiker}", "{wachtwoord}"
 
@@ -250,6 +252,11 @@ class Camera:
     wachtwoord: str | None = field(default=None, repr=False)
     foto_interval: float = 180.0
     video_duur: float = 120.0
+    # Het adres van de MJPEG-stroom voor het live-beeld in het web (§5.7 punt 18); None =
+    # deze camera heeft geen live-beeld.
+    live_url: str | None = field(default=None, repr=False)
+    # Zoveel beelden per seconde geeft de webservice hooguit door.
+    live_beelden: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -527,7 +534,8 @@ def _cameras(fouten, data: dict, sensoren: dict[str, Sensor]) -> dict[str, Camer
             fouten.append(f"{plek}: moet een tabel zijn")
             continue
         _onbekend(fouten, plek, c, ("id", "naam", "foto_url", "video_url", "gebruiker",
-                                    "wachtwoord", "foto_interval", "video_duur"))
+                                    "wachtwoord", "foto_interval", "video_duur",
+                                    "live_url", "live_beelden"))
         aantal_fouten = len(fouten)
 
         cid = c.get("id")
@@ -558,7 +566,19 @@ def _cameras(fouten, data: dict, sensoren: dict[str, Sensor]) -> dict[str, Camer
                 fouten.append(f"{plek}: '{sleutel}' moet een niet-lege tekst zijn")
         if (gebruiker is None) != (wachtwoord is None):
             fouten.append(f"{plek}: 'gebruiker' en 'wachtwoord' horen bij elkaar; een van de twee ontbreekt")
-        adressen = (foto_url or "") + (video_url or "")
+        # Het live-beeld (§5.7 punt 18): de MJPEG-stroom van de camera, over HTTP.
+        live_url = None
+        if "live_url" in c:
+            live_url = _adres(fouten, plek, c, "live_url", ("http://", "https://"))
+        live_beelden = c.get("live_beelden", Camera.live_beelden)
+        if not _getal(live_beelden) or not MIN_LIVE_BEELDEN <= live_beelden <= MAX_LIVE_BEELDEN:
+            fouten.append(f"{plek}: 'live_beelden' moet een getal tussen {MIN_LIVE_BEELDEN:g} en "
+                          f"{MAX_LIVE_BEELDEN:g} zijn (beelden per seconde)")
+            live_beelden = Camera.live_beelden
+        elif "live_url" not in c and "live_beelden" in c:
+            fouten.append(f"{plek}: 'live_beelden' zonder 'live_url' doet niets")
+
+        adressen = (foto_url or "") + (video_url or "") + (live_url or "")
         if gebruiker is None and (PLAATS_GEBRUIKER in adressen or PLAATS_WACHTWOORD in adressen):
             fouten.append(f"{plek}: een adres bevat {PLAATS_GEBRUIKER} of {PLAATS_WACHTWOORD}, "
                           f"maar 'gebruiker' en 'wachtwoord' ontbreken")
@@ -569,7 +589,7 @@ def _cameras(fouten, data: dict, sensoren: dict[str, Sensor]) -> dict[str, Camer
                            MIN_VIDEO_DUUR, MAX_VIDEO_DUUR)
         if len(fouten) == aantal_fouten:
             cameras[cid] = Camera(cid, naam.strip(), foto_url, video_url, gebruiker, wachtwoord,
-                                  foto_interval, video_duur)
+                                  foto_interval, video_duur, live_url, float(live_beelden))
     return cameras
 
 

@@ -453,6 +453,42 @@ class TestConfig(unittest.TestCase):
                 _toml(self._MET_CAMERA + 'id = "vorst"\n' + regel)
             self.assertIn(verwacht, "\n".join(ctx.exception.fouten))
 
+    def test_live_beeld(self):
+        cfg = _toml("""
+            [[camera]]
+            id = "dek"
+            gebruiker = "brms"
+            wachtwoord = "geheim"
+            foto_url = "http://camera/snap?usr={gebruiker}&pwd={wachtwoord}"
+            live_url = "http://camera/stream?usr={gebruiker}&pwd={wachtwoord}"
+            live_beelden = 2
+
+            [[camera]]
+            id = "mast"
+            foto_url = "http://camera2/snap.jpg"
+            live_url = "http://camera2/stream"
+
+            [[camera]]
+            id = "kajuit-cam"
+            foto_url = "http://camera3/snap.jpg"
+        """)
+        dek, mast, kajuit = cfg.cameras.values()
+        self.assertEqual((dek.live_url.startswith("http://camera/stream"), dek.live_beelden), (True, 2.0))
+        self.assertEqual((mast.live_url, mast.live_beelden), ("http://camera2/stream", 5.0))
+        self.assertIsNone(kajuit.live_url)
+        self.assertNotIn("stream", repr(dek))          # ook dit adres niet in de repr
+
+    def test_fouten_in_live_beeld(self):
+        for regels, verwacht in [
+                ('live_url = "rtsp://camera/video"', "'live_url' moet een adres zijn dat begint met http://"),
+                ('live_url = "http://camera/stream"\nlive_beelden = 0', "'live_beelden' moet een getal tussen"),
+                ('live_url = "http://camera/stream"\nlive_beelden = "5"', "'live_beelden' moet een getal tussen"),
+                ('live_beelden = 5', "'live_beelden' zonder 'live_url' doet niets"),
+                ('live_url = "http://camera/stream?pwd={wachtwoord}"', "maar 'gebruiker' en 'wachtwoord' ontbreken")]:
+            with self.assertRaises(config.ConfigFout, msg=regels) as ctx:
+                _toml('[[camera]]\nid = "dek"\nfoto_url = "http://camera/snap.jpg"\n' + regels)
+            self.assertIn(verwacht, "\n".join(ctx.exception.fouten))
+
     def test_zonder_camera(self):
         cfg = _toml("")
         self.assertEqual(cfg.cameras, {})

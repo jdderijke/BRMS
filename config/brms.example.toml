@@ -113,6 +113,10 @@ naam = "motorruim"
 #                  wachtwoord dus niet zelf in het adres.
 #   video_url      het adres van de videostroom (rtsp://). Mag weg: dan maakt de camera
 #                  geen video's. Een video wordt alleen op verzoek opgenomen.
+#   live_url       het adres van de MJPEG-stroom van de camera (http:// of https://), voor
+#                  "Live camera" op de opnamepagina. Mag weg: dan is er geen live-beeld.
+#   live_beelden   zoveel beelden per seconde gaan er hooguit naar de browser; standaard 5.
+#                  Minder beelden kost minder data (bij de Foscam ongeveer 35 kB per beeld).
 #   foto_interval  tijd tussen twee foto's; standaard "3m"
 #   video_duur     lengte van een video; standaard "120s"
 #
@@ -125,6 +129,8 @@ naam = "motorruim"
 # wachtwoord = "..."
 # foto_url = "http://192.168.1.20:88/cgi-bin/CGIProxy.fcgi?cmd=snapPicture2&usr={gebruiker}&pwd={wachtwoord}"
 # video_url = "rtsp://{gebruiker}:{wachtwoord}@192.168.1.20:88/videoMain"
+# live_url = "http://192.168.1.20:88/cgi-bin/CGIStream.cgi?cmd=GetMJStream&usr={gebruiker}&pwd={wachtwoord}"
+# live_beelden = 5
 # foto_interval = "3m"
 # video_duur = "120s"
 #
