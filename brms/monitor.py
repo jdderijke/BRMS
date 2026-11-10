@@ -5,13 +5,16 @@
     brms monitor stop            het monitorvak sluiten (trace uit); de shell blijft
 
 De monitor opent een tmux-sessie 'brms': bovenin de gewone shell, onderin een vak van
-ongeveer 20 regels met de laatste berichten. Wegvallen van de ssh-sessie is geen probleem:
+ongeveer 20 regels. Elke waarde heeft daarin een vaste plaats: een nieuwe meting of keten
+overschrijft de vorige, er schuift niets. Past niet alles in het vak, sleep dan de rand
+tussen shell en vak met de muis omhoog. Wegvallen van de ssh-sessie is geen probleem:
 opnieuw `brms monitor` brengt je terug in dezelfde sessie. Opnieuw `brms monitor` met
 andere sensoren vervangt het vak.
 
 tmux in het kort:
     brms monitor stop  (in de shell) monitor stoppen; het vak sluit
-    muisklik           een vak kiezen; scrollwiel bladert terug (selecteren: met Shift)
+    muisklik           een vak kiezen; de rand slepen maakt het vak groter of kleiner
+                       (tekst selecteren: met Shift)
     Ctrl-b  ↑ / ↓      wisselen tussen shell en vak (zonder muis)
     Ctrl-c             (in het vak zelf) monitor stoppen – let op: na het starten staat
                        het toetsenbord in de shell bovenin, niet in het vak
@@ -22,7 +25,6 @@ De monitor is geen onderdeel van het draaiende systeem: BRMS werkt zonder monito
 hetzelfde. Hij publiceert alleen trace-opdrachten (aan/uit) en luistert verder alleen.
 """
 
-import collections
 import json
 import os
 import queue
@@ -89,36 +91,148 @@ def formatteer_opdracht(topic: str, payload: bytes) -> list[str]:
     return [f"{tijd}  OPDRACHT     {topic}  {payload.decode(errors='replace')}"]
 
 
-def formatteer_trace(d: dict, namen: dict[str, str]) -> list[str]:
-    """Een tracebericht als blok regels:
+# =============================================================================
+# De inhoud van het vak: vaste plaatsen die overschreven worden (§10.2 punt 2)
+# =============================================================================
+#
+# Het vak is geen doorlopende lijst: elke waarde heeft een vaste plaats op het scherm en
+# een nieuwe waarde overschrijft de vorige. Zo verspringt er niets. Regels komen er alleen
+# bij (een nieuwe sensor of grootheid); er verdwijnt nooit een regel.
 
-        22:03:41  kajuit       RUW          BTHome 40 00 a4 01 64 ...
-                               GEDECODEERD  temperatuur  0x02: ca 09 = 2506 × 0.01 = 25.06
+class Tabel:
+    """Busmodus (`brms monitor`): één regel per sensor en grootheid, met de laatst
+    ontvangen waarde en het tijdstip daarvan. Bovenaan de laatste opdracht op de bus."""
+
+    def __init__(self, config: Config):
+        self._namen = {s.id: s.naam for s in config.sensoren.values()}
+        # Volgorde van de sensoren: zoals in de configuratie; een sensor die daar niet
+        # (meer) in staat, komt achteraan zodra hij voor het eerst iets stuurt.
+        self._sensoren = list(config.sensoren)
+        self._metingen: dict[tuple[str, str], dict] = {}   # (sensor-ID, grootheid) -> bericht
+        self._opdracht = "(nog geen)"
+
+    def meting(self, d: dict) -> None:
+        sensor_id, g = d.get("sensor_id"), d.get("grootheid")
+        if not isinstance(sensor_id, str) or not isinstance(g, str):
+            raise ValueError("meting zonder sensor_id of grootheid")
+        if sensor_id not in self._sensoren:
+            self._sensoren.append(sensor_id)
+        self._metingen[(sensor_id, g)] = d
+
+    def opdracht(self, topic: str, payload: bytes) -> None:
+        self._opdracht = formatteer_opdracht(topic, payload)[0]
+
+    def regels(self) -> list[str]:
+        # Grootheden in de volgorde van de tabel van grootheden (§5.3.3).
+        volgorde = list(grootheden.GROOTHEDEN)
+
+        def plaats(sleutel):
+            sensor_id, g = sleutel
+            return (self._sensoren.index(sensor_id),
+                    volgorde.index(g) if g in volgorde else len(volgorde), g)
+
+        uit = [f"Laatste opdracht: {self._opdracht}"]
+        for sleutel in sorted(self._metingen, key=plaats):
+            uit += formatteer_meting(self._metingen[sleutel], self._namen)
+        if not self._metingen:
+            uit.append("wachten op metingen …")
+        return uit
+
+
+# De stappen van een keten, in de volgorde waarin ze op het scherm staan (§10.2 punt 4).
+STAPPEN = ("ruw", "gedecodeerd", "gecorrigeerd", "gepubliceerd", "opgenomen", "opgeslagen")
+
+
+class Ketens:
+    """Tracemodus (`brms monitor kajuit`): per sensor één blok met de laatste keten.
+
+        kajuit       RUW          22:03:41  BTHome 40 00 a4 01 64 ...
+                     GEDECODEERD  22:03:41  temperatuur  0x02: ca 09 = 2506 × 0.01 = 25.06
                                             vocht        ...
-    De stap 'ruw' begint een nieuwe keten en krijgt een scheidingslijn erboven.
+                     GECORRIGEERD 22:03:41  ...
+
+    Elke stap heeft een vaste plaats; een nieuw tracebericht overschrijft de vorige inhoud
+    van die stap. Het tijdstip staat per stap, zodat te zien is hoe oud de inhoud is (de
+    stap 'opgeslagen' komt maar eens per 5 minuten).
+
+    Het aantal regels van een stap verschilt per sensor en hangt af van de weggelaten
+    grootheden. Daarom onthoudt het blok per stap het grootste aantal regels dat het gezien
+    heeft en vult het korter uitvallende inhoud aan met lege regels: de stappen eronder
+    blijven dan op hun plaats.
+
+    Een stap kan uit delen bestaan (veld 'deel' in het tracebericht): de opslag stuurt
+    'opgenomen' per grootheid. Elk deel heeft dan zijn eigen regel(s) binnen de stap.
     """
-    tijd = time.strftime("%H:%M:%S", time.localtime(d.get("ts", 0)))
-    stap = str(d.get("stap", "?")).upper()
-    tekst = str(d.get("tekst", "")).split("\n")
-    kop = f"{tijd}  {_naam(d.get('sensor_id', '?'), namen):<12} {stap:<12} "
-    regels = [kop + tekst[0]] + [" " * len(kop) + t for t in tekst[1:]]
-    if d.get("stap") == "ruw":
-        regels.insert(0, "─" * 40)
-    return regels
+
+    def __init__(self, sensoren: list[Sensor]):
+        self._sensoren = sensoren
+        # sensor-ID -> stap -> deel -> (tijdstip, regels tekst)
+        self._inhoud: dict[str, dict[str, dict[str, tuple[int, list[str]]]]] = {
+            s.id: {stap: {} for stap in STAPPEN} for s in sensoren}
+        # (sensor-ID, stap) -> grootste aantal regels tot nu toe
+        self._hoogte: dict[tuple[str, str], int] = {}
+
+    def trace(self, d: dict) -> None:
+        stappen = self._inhoud.get(d.get("sensor_id"))
+        if stappen is None:
+            return  # trace van een sensor die niet in dit vak staat
+        stap, deel = str(d.get("stap", "?")), str(d.get("deel", ""))
+        tekst = str(d.get("tekst", "")).split("\n")
+        # Een stap die niet in STAPPEN staat (nieuwe dienst), komt onderaan het blok.
+        stappen.setdefault(stap, {})[deel] = (d.get("ts", 0), tekst)
+
+    def regels(self) -> list[str]:
+        uit = []
+        for sensor in self._sensoren:
+            naam = sensor.naam   # alleen op de eerste regel van het blok
+            for stap, delen in self._inhoud[sensor.id].items():
+                # De inhoud van deze stap: per deel het tijdstip en de tekst.
+                blok = []
+                for ts, tekst in delen.values():
+                    tijd = time.strftime("%H:%M:%S", time.localtime(ts))
+                    blok.append(f"{tijd}  {tekst[0]}")
+                    blok += [" " * 10 + t for t in tekst[1:]]
+                if not blok:
+                    blok = ["–"]   # nog niets ontvangen voor deze stap
+                # Aanvullen tot het grootste aantal regels dat deze stap ooit had.
+                hoogte = max(len(blok), self._hoogte.get((sensor.id, stap), 0))
+                self._hoogte[(sensor.id, stap)] = hoogte
+                blok += [""] * (hoogte - len(blok))
+                for i, regel in enumerate(blok):
+                    label = stap.upper() if i == 0 else ""
+                    uit.append(f"{naam:<12} {label:<12} {regel}".rstrip())
+                    naam = ""
+        return uit
+
+
+def pas_in(regels: list[str], ruimte: int) -> list[str]:
+    """De regels die in het vak passen. Past niet alles, dan zegt de laatste regel hoeveel
+    er niet te zien is (terugbladeren kan niet in een scherm dat overschreven wordt)."""
+    if len(regels) <= ruimte:
+        return list(regels)
+    if ruimte <= 0:
+        return []
+    verborgen = len(regels) - (ruimte - 1)
+    return list(regels[:ruimte - 1]) + [f"… nog {verborgen} regels: maak het vak groter "
+                                        f"(sleep de rand met de muis)"]
 
 
 # =============================================================================
 # Het vak onderin (draait in het onderste tmux-vak: `brms monitor-vak ...`)
 # =============================================================================
 
-def _teken(regels, kop: str) -> None:
-    """Scherm wissen en de kop plus de laatste regels tekenen, afgekapt op de breedte
-    (een afgebroken regel zou het vak laten verspringen)."""
+def _teken(regels: list[str], kop: str) -> None:
+    """Tekent de kop en de regels over het bestaande scherm heen.
+
+    Het scherm wordt niet eerst gewist (dat flikkert): elke regel wordt overschreven en de
+    rest van die regel gewist (\\033[K); onder de laatste regel wordt alles gewist (\\033[J).
+    Regels worden afgekapt op de breedte: een afgebroken regel zou het vak laten verspringen.
+    """
     breedte, hoogte = shutil.get_terminal_size((100, VAK_REGELS))
-    zichtbaar = list(regels)[-(hoogte - 1):] if hoogte > 1 else []
-    uit = ["\033[H\033[J", "\033[7m" + kop[:breedte].ljust(breedte) + "\033[0m"]
-    uit += [r[:breedte] for r in zichtbaar]
-    sys.stdout.write(uit[0] + "\n".join(uit[1:]))
+    uit = ["\033[7m" + kop[:breedte].ljust(breedte) + "\033[0m"]
+    # Eén teken minder dan de breedte: op de laatste kolom zou \033[K het laatste teken wissen.
+    uit += [r[:breedte - 1] + "\033[K" for r in pas_in(regels, hoogte - 1)]
+    sys.stdout.write("\033[H" + "\n".join(uit) + "\033[J")
     sys.stdout.flush()
 
 
@@ -127,9 +241,10 @@ def draai_vak(config: Config, sensoren: list[Sensor]) -> int:
     het vak sluit."""
     from brms.bus import Bus
 
-    namen = {s.id: s.naam for s in config.sensoren.values()}
     ids = [s.id for s in sensoren]
-    regels = collections.deque(maxlen=500)
+    # De inhoud van het vak: ketens per sensor (trace) of een tabel van laatste waarden.
+    scherm = Ketens(sensoren) if ids else Tabel(config)
+    fout = ""                             # laatste onleesbare bericht, onderaan getoond
     binnen: queue.Queue = queue.Queue()   # paho's thread zet berichten hierin
 
     # Een eigen client-ID per monitor (pid), zodat twee monitors elkaar niet afmelden.
@@ -160,7 +275,6 @@ def draai_vak(config: Config, sensoren: list[Sensor]) -> int:
     vernieuwd = 0.0     # monotone tijd van de laatste trace-opdracht
     getekend = 0.0
     gewijzigd = True
-    regels.append("wachten op berichten …")
     try:
         while True:
             # Trace aan houden zolang de monitor draait (pas zodra de bus verbonden is).
@@ -172,7 +286,7 @@ def draai_vak(config: Config, sensoren: list[Sensor]) -> int:
             try:
                 topic, payload = binnen.get(timeout=0.2)
                 while True:
-                    regels.extend(_maak_regels(topic, payload, namen))
+                    fout = _verwerk(scherm, topic, payload) or fout
                     gewijzigd = True
                     topic, payload = binnen.get_nowait()
             except queue.Empty:
@@ -182,7 +296,7 @@ def draai_vak(config: Config, sensoren: list[Sensor]) -> int:
             # (eens per seconde opnieuw).
             nu = time.monotonic()
             if (gewijzigd and nu - getekend >= 0.2) or nu - getekend >= 1.0:
-                _teken(regels, kop)
+                _teken(scherm.regels() + ([fout] if fout else []), kop)
                 getekend, gewijzigd = nu, False
     except KeyboardInterrupt:
         pass
@@ -194,16 +308,21 @@ def draai_vak(config: Config, sensoren: list[Sensor]) -> int:
     return 0
 
 
-def _maak_regels(topic: str, payload: bytes, namen: dict[str, str]) -> list[str]:
-    """Kiest de opmaak bij de soort bericht; een onleesbaar bericht wordt ruw getoond."""
+def _verwerk(scherm, topic: str, payload: bytes) -> str:
+    """Zet een bericht van de bus op zijn plaats in het scherm (Ketens of Tabel).
+
+    Geeft een lege tekst terug, of bij een onleesbaar bericht een regel die dat meldt.
+    """
     try:
         if topic.startswith(trace.TOPIC_PREFIX + "/"):
-            return formatteer_trace(json.loads(payload), namen)
-        if topic.startswith("brms/meting/"):
-            return formatteer_meting(json.loads(payload), namen)
-        return formatteer_opdracht(topic, payload)
+            scherm.trace(json.loads(payload))
+        elif topic.startswith("brms/meting/"):
+            scherm.meting(json.loads(payload))
+        else:
+            scherm.opdracht(topic, payload)
+        return ""
     except (ValueError, AttributeError):
-        return [f"{time.strftime('%H:%M:%S')}  ONLEESBAAR  {topic}  {payload[:200]!r}"]
+        return f"{time.strftime('%H:%M:%S')}  ONLEESBAAR  {topic}  {payload[:200]!r}"
 
 
 # =============================================================================

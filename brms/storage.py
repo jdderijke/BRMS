@@ -297,7 +297,9 @@ async def draai(config: Config, bus, stop: asyncio.Event, klok_ok=klok_gesynchro
             stap = tracer.voor(m.sensor_id)
             if stap:
                 tot = time.strftime("%H:%M", time.localtime(moment))
-                stap("opgenomen", f"interval tot {tot}: {agg.beschrijf(m, veranderd)}")
+                # Eén bericht per grootheid; 'deel' geeft elk een eigen plaats in de monitor.
+                stap("opgenomen", f"interval tot {tot}: {agg.beschrijf(m, veranderd)}",
+                     m.grootheid)
     finally:
         db.sluit()
         log.info("opslag gestopt")

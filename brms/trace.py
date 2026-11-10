@@ -7,7 +7,7 @@ zet trace aan voor één of meer sensoren met de opdracht
 
 Daarna publiceren de readers en de opslag voor die sensoren per stap wat ze doen, op
 
-    brms/trace/<sensor_id>    {"ts", "sensor_id", "dienst", "stap", "tekst"}
+    brms/trace/<sensor_id>    {"ts", "sensor_id", "dienst", "stap", "tekst"[, "deel"]}
 
 Trace gaat na `duur` seconden vanzelf uit (de monitor vernieuwt de opdracht zolang hij
 draait), of direct met brms/opdracht/trace/uit. Zo kan trace nooit per ongeluk blijven
@@ -98,10 +98,15 @@ class Tracer:
         opbouwen van de tracetekst dan helemaal over."""
         if not self.actief(sensor_id):
             return None
-        return lambda stap, tekst: self.stuur(sensor_id, stap, tekst)
+        return lambda stap, tekst, deel="": self.stuur(sensor_id, stap, tekst, deel)
 
-    def stuur(self, sensor_id: str, stap: str, tekst: str) -> None:
+    def stuur(self, sensor_id: str, stap: str, tekst: str, deel: str = "") -> None:
+        """deel: voor een stap die per meting uit meerdere berichten bestaat (de opslag
+        stuurt 'opgenomen' per grootheid). De monitor geeft elk deel een eigen vaste plaats
+        binnen de stap; zonder deel overschrijft een bericht de hele stap."""
         bericht = {"ts": int(time.time()), "sensor_id": sensor_id, "dienst": self._dienst,
                    "stap": stap, "tekst": tekst}
+        if deel:
+            bericht["deel"] = deel
         self._bus.publiceer(f"{TOPIC_PREFIX}/{sensor_id}",
                             json.dumps(bericht, ensure_ascii=False, separators=(",", ":")))

@@ -5,8 +5,10 @@
 #
 # Als gewone gebruiker (bijv. jandirk), NIET met sudo ervoor:
 #
-#     ~/BRMS/deploy/update.sh           bijwerken naar de nieuwste 'main' op GitHub
-#     ~/BRMS/deploy/update.sh --terug   terug naar de commit van vóór de laatste update
+#     brms update           bijwerken naar de nieuwste 'main' op GitHub
+#     brms update --terug   terug naar de commit van vóór de laatste update
+#
+# 'brms update' voert dit script uit; rechtstreeks kan ook: ~/BRMS/deploy/update.sh [--terug]
 #
 # Stappen (§10.1 punt 3):
 #   1. de huidige commit onthouden (om terug te kunnen)
@@ -99,6 +101,6 @@ for unit in deploy/systemd/brms-*.service; do
 done
 sudo systemctl daemon-reload
 sudo systemctl restart $SERVICES
-echo "Bijgewerkt en services herstart. Terug kan met: $BRMS/deploy/update.sh --terug"
+echo "Bijgewerkt en services herstart. Terug kan met: brms update --terug"
 exit 0
 }

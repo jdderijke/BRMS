@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.20 – concept** · 10 november 2026
+**Versie 0.21 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -162,7 +162,7 @@ staat; daarom QoS 1.
 | Meting | `brms/meting/<sensor_id>/<grootheid>` | `{"ts", "sensor_id", "grootheid", "waarde", "soort"}` | 1 voor toestand, 0 voor doorlopend en toename |
 | Opname | `brms/opname/<camera_id>` | `{"ts", "camera_id", "type", "duur", "bestand", "bytes", "aanleiding"}` | 1 |
 | Opdracht | `brms/opdracht/<doel>/<actie>`, bijv. `brms/opdracht/camera/poll-nu`, `brms/opdracht/shelly/poll-nu`, `brms/opdracht/opslag/verwijder`, `brms/opdracht/trace/aan`, `brms/opdracht/simulatie/aan` (§10.3) | afhankelijk van de actie, bijv. `{"type": "video", "aanleiding": "alarm:beweging"}` | 1 |
-| Trace (v0.16) | `brms/trace/<sensor_id>` | `{"ts", "sensor_id", "dienst", "stap", "tekst"}` – alleen zolang trace voor die sensor aanstaat (§10.2) | 0 |
+| Trace (v0.16) | `brms/trace/<sensor_id>` | `{"ts", "sensor_id", "dienst", "stap", "tekst"}`, optioneel `"deel"` – alleen zolang trace voor die sensor aanstaat (§10.2) | 0 |
 
 1. Elk bericht is **compleet**: ook wat in de topic staat, staat in de inhoud.
 2. **Geen retain**, voor geen enkel bericht.
@@ -1084,6 +1084,11 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
    5. de services herstarten.
 
    **`deploy/update.sh --terug`** gaat terug naar de weggeschreven vorige commit.
+
+   De gebruiker start dit met **`brms update`** en **`brms update --terug`** (v0.21). De
+   opdracht doet zelf niets anders dan het script uitvoeren, en vervangt daarbij zijn eigen
+   proces door het script: tijdens de update verandert de code van BRMS, en zo draait er
+   geen half oude, half nieuwe code.
 4. Indeling op de Pi:
 
    | Wat | Waar |
@@ -1110,7 +1115,7 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
 7. **Geen automatische OS-updates.** OS, Tailscale en router-firmware worden met de hand
    bijgewerkt: eerst de test-Pi, daarna de boot-Pi.
 8. **Opdracht `brms`** (v0.18): de beheeropdrachten (`check-config`, `grootheden`,
-   `monitor`, `simuleer`) zijn voor de gebruiker; de service-opdrachten (`ble-reader`, `opslag`) zijn
+   `monitor`, `simuleer`, `update`) zijn voor de gebruiker; de service-opdrachten (`ble-reader`, `opslag`) zijn
    voor systemd. Een service-opdracht weigert te starten als systemd die service al draait
    (een tweede exemplaar botst op de broker en, bij de opslag, op de database), behalve met
    `--toch` voor testen.
@@ -1155,13 +1160,24 @@ escape-codes is breekbaar (venstergrootte, programma's als `nano` en `less`).
 **Specificatie.**
 1. Opdracht **`brms monitor [sensor ...]`** (sensor = naam uit de configuratie of
    sensor-ID). Start of hervat een tmux-sessie: bovenin de shell, onderin een vak van
-   ongeveer 20 regels met de laatste berichten. De ssh-sessie mag wegvallen; opnieuw
+   ongeveer 20 regels. De ssh-sessie mag wegvallen; opnieuw
    `brms monitor` brengt terug in dezelfde sessie.
    **`brms monitor stop`** (in de shell) sluit het vak en zet trace uit; de shell blijft.
-   Muisbediening staat aan: klikken kiest een vak, het scrollwiel bladert terug.
+   Muisbediening staat aan: klikken kiest een vak, de rand slepen maakt het vak groter.
 2. Zonder sensor toont de monitor het verkeer op de bus (metingen en opdrachten), met naam
    uit de configuratie en eenheid uit de tabel van grootheden. Met sensor zet hij trace aan
    voor die sensor(en) en toont hij per meting de keten.
+
+   Het vak is geen doorlopende lijst (v0.21): elke waarde heeft een **vaste plaats** en
+   een nieuwe waarde overschrijft de vorige, zodat er niets verspringt.
+   - *Zonder sensor:* één regel per sensor en grootheid met de laatste waarde en het
+     tijdstip; bovenaan de laatste opdracht.
+   - *Met sensor:* per sensor één blok met de zes stappen van punt 4, elk met het tijdstip
+     van zijn laatste bericht. Een stap houdt het grootste aantal regels dat hij gehad
+     heeft; kortere inhoud wordt aangevuld met lege regels, zodat de stappen eronder op
+     hun plaats blijven (het aantal regels verschilt per sensor en per bericht).
+   - Past niet alles in het vak, dan meldt de laatste regel hoeveel regels niet te zien
+     zijn; terugbladeren kan niet in een scherm dat overschreven wordt.
 3. **Trace aanzetten:** opdracht `brms/opdracht/trace/aan` met
    `{"sensor_ids": [...], "duur": 600}`; uitzetten met `brms/opdracht/trace/uit`. Trace gaat
    na `duur` seconden vanzelf uit; de monitor vernieuwt de opdracht elke minuut zolang hij
@@ -1175,6 +1191,10 @@ escape-codes is breekbaar (venstergrootte, programma's als `nano` en `less`).
    | `gepubliceerd` | reader | topic en inhoud van het MQTT-bericht, of "weggegooid" |
    | `opgenomen` | opslag | in welk interval, en het tussenresultaat (aantal, gemiddelde/som, toestandsverandering) |
    | `opgeslagen` | opslag | de regel(s) in de database bij het opslagmoment, met het aantal samengevoegde waarden; of "weggegooid" (klok niet gesynchroniseerd) |
+
+   Een stap waarvoor per meting meerdere berichten komen, zet in elk bericht een veld
+   **`deel`** (v0.21): de opslag stuurt `opgenomen` per grootheid, met de grootheid als
+   deel. De monitor geeft elk deel een eigen vaste plaats binnen de stap.
 5. De monitor **publiceert alleen trace-opdrachten**; verder luistert hij alleen. Hij hoort
    niet bij het draaiende systeem: BRMS werkt zonder monitor precies hetzelfde.
 6. `tmux` wordt door `deploy/install.sh` geïnstalleerd.
@@ -1315,5 +1335,6 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.20** | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie (§10.3): `brms simuleer <sensor>` stuurt een testreeks door de keten; de BLE-reader maakt de advertenties zelf aan en negeert zolang de echte sensor (§5.2.1 punt 8); startsein via `brms/opdracht/simulatie/aan` (§3.3); gesimuleerde waarden komen in de database. |
+| **0.21** | 2026-11-10 | Claude Code, Fable 5.2 | Monitor (§10.2): vaste plaats per meting en per ketenstap in plaats van een doorlopende lijst; optioneel veld `deel` in traceberichten (§3.3). `brms update [--terug]` voert `deploy/update.sh` uit (§10.1 punt 3). |
+| 0.20 | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie (§10.3): `brms simuleer <sensor>` stuurt een testreeks door de keten; de BLE-reader maakt de advertenties zelf aan en negeert zolang de echte sensor (§5.2.1 punt 8); startsein via `brms/opdracht/simulatie/aan` (§3.3); gesimuleerde waarden komen in de database. |
 | 0.19 | 2026-11-10 | Claude Code, Fable 5.2 | Bilge (§5.2.4): vastgelegd waarom de Shelly Plus Uni via wifi wordt uitgelezen en niet via Bluetooth. Ruuvi-decoder gebouwd (§5.2.1): bewegingsteller loopt van 0 t/m 254, 255 = ongeldig (§5.3.2); geen `beweging` bij de eerste ontvangst na een herstart (§5.2.3 punt 5). |

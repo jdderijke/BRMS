@@ -14,6 +14,7 @@ Opdrachten:
   grootheden [type]   alle grootheden, of wat een sensortype levert (§5.4.2)
   simuleer <sensor>   een testreeks van gesimuleerde sensordata door de keten sturen (§10.3)
   start | stop | herstart   alle BRMS-services via systemd (§10.1 punt 9)
+  update [--terug]    code bijwerken vanaf GitHub, of terug naar de vorige versie (§10.1)
   monitor-vak [..]    (intern) het vak onderin dat 'monitor' in tmux start
 
 De services worden normaal door systemd gestart (deploy/systemd/), niet met de hand.
@@ -163,6 +164,26 @@ def _monitor(args) -> int:
     return monitor.draai_vak(cfg, sensoren)
 
 
+def _update(terug: bool) -> int:
+    """brms update [--terug]: de code bijwerken of terugdraaien (§10.1 punt 3).
+
+    Het werk gebeurt in deploy/update.sh: nieuwe code ophalen, ontbrekende pakketten
+    installeren, configuratie controleren en de services herstarten. Dit proces wordt
+    vervangen door dat script (exec): de Python-code van BRMS verandert tijdens de update,
+    en zo draait er geen half oude, half nieuwe code.
+    """
+    script = os.path.join(config.PROJECTMAP, "deploy", "update.sh")
+    if os.name != "posix":
+        print("brms update werkt alleen op de Pi (het voert deploy/update.sh uit).",
+              file=sys.stderr)
+        return 1
+    try:
+        os.execv("/bin/bash", ["bash", script] + (["--terug"] if terug else []))
+    except OSError as e:
+        print(f"update.sh kon niet gestart worden: {e}", file=sys.stderr)
+        return 1
+
+
 def _simuleer(args) -> int:
     """Simulatie (§10.3): configuratie lezen en de opdracht in brms.simulatie uitvoeren."""
     from brms import simulatie
@@ -189,6 +210,9 @@ OPDRACHTEN = """opdrachten voor de beheerder:
   stop                   alle BRMS-services stoppen (tot de volgende herstart van de Pi)
   herstart               configuratie controleren en alle services herstarten,
                          bijv. na een wijziging van brms.toml
+  update                 nieuwste versie ophalen, ontbrekende pakketten installeren,
+                         configuratie controleren en de services herstarten
+  update --terug         terug naar de versie van vóór de laatste update
 
 services (worden door systemd gestart – niet met de hand; gebruik brms herstart):
   ble-reader             BLE-reader      (systemd-unit brms-ble-reader)
@@ -220,8 +244,10 @@ def main(argv=None) -> int:
     p.add_argument("--debug", action="store_true", help="uitgebreide logging")
     p.add_argument("--toch", action="store_true",
                    help="een service toch met de hand starten naast die van systemd (voor testen)")
+    p.add_argument("--terug", action="store_true",
+                   help="bij update: terug naar de versie van vóór de laatste update")
     p.add_argument("opdracht",
-                   choices=("check-config", "grootheden", "start", "stop", "herstart",
+                   choices=("check-config", "grootheden", "start", "stop", "herstart", "update",
                             "monitor", "simuleer", "ble-reader", "opslag", "monitor-vak"))
     p.add_argument("sensoren", nargs="*",
                    help="bij monitor: naam of ID van sensor(en) voor trace; "
@@ -237,6 +263,9 @@ def main(argv=None) -> int:
 
     if args.opdracht in ("start", "stop", "herstart"):
         return _beheer(args.opdracht, args.config)
+
+    if args.opdracht == "update":
+        return _update(args.terug)
 
     if args.opdracht in ("monitor", "monitor-vak"):
         return _monitor(args)
