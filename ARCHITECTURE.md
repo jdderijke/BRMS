@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.35 – concept** · 10 november 2026
+**Versie 0.36 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1301,6 +1301,13 @@ schrijvers op dezelfde database en map.
      de pagina vraagt elke 2 s wat er nieuw is. Na een herstart van de webservice begint
      dat geheugen leeg.
 
+   **Herstart van de webservice** (v0.36). De sensoren en alarmregels staan in de pagina
+   zoals ze waren toen de pagina geladen werd. Na een wijziging van `brms.toml` en een
+   herstart kende een pagina die al open stond de nieuwe regels niet (en tekende dan geen
+   grenzen en alarmperioden voor een nieuwe regel). Daarom stuurt de webservice bij elk
+   antwoord zijn starttijdstip mee (kop `X-BRMS-Gestart`); is dat anders dan bij het
+   laden, dan laadt de pagina zichzelf opnieuw. De gekozen grafieken blijven staan.
+
      Het **venster** is te kiezen (v0.24): laatste 50 of 100 metingen, of laatste 10
      minuten, 30 minuten, 1 uur, 3 uur, 12 uur, 24 uur. Tot en met 30 minuten toont de
      grafiek elke meting. Vanaf 1 uur worden de metingen samengevat per tijdvak (5, 15, 60
@@ -1842,7 +1849,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.35** | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie: de testreeks loopt binnen de duur twee keer heen en weer, zodat ook het herstellen van een alarm te testen is (§10.3 punt 5). |
+| **0.36** | 2026-11-10 | Claude Code, Fable 5.2 | Web: de pagina laadt zichzelf opnieuw na een herstart van de webservice, zodat nieuwe sensoren en alarmregels meteen gelden (§5.6). |
+| 0.35 | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie: de testreeks loopt binnen de duur twee keer heen en weer, zodat ook het herstellen van een alarm te testen is (§10.3 punt 5). |
 | 0.34 | 2026-11-10 | Claude Code, Fable 5.2 | Fout hersteld: na een herstart van de Pi bleef een alarm in de database (en de grafiek) open staan. De alarmlaag meldt nu elke minuut welke alarmen actief zijn; de opslag sluit de rest af (§3.3, §5.5.3 punt 8). |
 | 0.33 | 2026-11-10 | Claude Code, Fable 5.2 | Alarmlaag stap (a) gebouwd (§5.5.3, §5.5.4): service `brms-alarm`, alarmregels `[[alarm]]` en kanalen `[melding.telegram]`/`[melding.email]` in `brms.toml`, tabel `alarm`, grenzen en alarmperioden in de grafieken. Meldingen worden hooguit een dag opnieuw geprobeerd. |
 | 0.32 | 2026-11-10 | Claude Code, Fable 5.2 | OPEN-14 besloten (§5.5.4): meldingen via een Telegram-bot, met e-mail (SMTP) als tweede kanaal; ntfy vervalt. Ontwerp, nog niet gebouwd. |

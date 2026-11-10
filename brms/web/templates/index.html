@@ -144,6 +144,26 @@ const GROOTHEDEN = {{ grootheden | tojson }};
 const REGELS = {{ regels | tojson }};
 const regelsVan = r => (REGELS[r.sensor] || {})[r.grootheid] || [];
 
+// Het starttijdstip van de webservice waar deze pagina vandaan komt. De sensoren en
+// alarmregels hierboven zijn die van dat moment. De webservice stuurt zijn starttijdstip
+// met elk antwoord mee; is het anders, dan is hij herstart (bijvoorbeeld na een wijziging
+// van brms.toml) en laadt de pagina zichzelf opnieuw (§5.6). De gekozen grafieken blijven
+// staan: die bewaart de pagina in de browser.
+const GESTART = {{ gestart | tojson }};
+let herlaadt = false;
+
+// Als fetch(), maar let op het starttijdstip van de webservice. Alle vragen aan de
+// webservice lopen hierlangs.
+async function haal(url, opties) {
+  const antwoord = await fetch(url, opties);
+  const kenmerk = antwoord.headers.get({{ kop_gestart | tojson }});
+  if (kenmerk !== null && kenmerk !== GESTART && !herlaadt) {
+    herlaadt = true;
+    location.reload();
+  }
+  return antwoord;
+}
+
 const LIVE_INTERVAL = 2000;   // ms tussen twee vragen aan /api/live
 const GAT = 900;              // s; een groter gat in de historie wordt niet doorverbonden
 const MAX_REEKSEN = 8;        // per grafiek; er zijn acht goed te onderscheiden kleuren
@@ -320,7 +340,7 @@ async function laadAlarmen(g, van, tot) {
   if (!reeksen.length) return;
   try {
     await Promise.all(reeksen.map(async r => {
-      const a = await fetch("/api/alarmen?sensor=" + encodeURIComponent(r.sensor)
+      const a = await haal("/api/alarmen?sensor=" + encodeURIComponent(r.sensor)
                             + "&grootheid=" + encodeURIComponent(r.grootheid) + "&van=" + van + "&tot=" + tot);
       if (!a.ok) throw new Error("fout " + a.status);
       r.alarmen = (await a.json()).perioden.map(p => [p[0] * 1000, p[1] === null ? null : p[1] * 1000]);
@@ -559,7 +579,7 @@ async function vraagLive() {
   if (!doelen.length) return;
   bezig = true;
   try {
-    const antwoord = await fetch("/api/live", {
+    const antwoord = await haal("/api/live", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({vragen: doelen.map(d => d.vraag)})});
     if (!antwoord.ok) throw new Error("fout " + antwoord.status);
@@ -668,7 +688,7 @@ async function laadHistorie(g) {
   meld(g, "Database: laden …");
   try {
     const antwoorden = await Promise.all(reeksen.map(async r => {
-      const a = await fetch("/api/historie?sensor=" + encodeURIComponent(r.sensor)
+      const a = await haal("/api/historie?sensor=" + encodeURIComponent(r.sensor)
                             + "&grootheid=" + encodeURIComponent(r.grootheid) + "&van=" + van + "&tot=" + tot);
       if (!a.ok) throw new Error("fout " + a.status);
       return a.json();

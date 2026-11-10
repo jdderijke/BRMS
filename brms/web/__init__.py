@@ -42,6 +42,10 @@ from brms.meting import TOPIC_PREFIX, Meting
 
 log = logging.getLogger(__name__)
 
+# Naam van de kop waarin de webservice bij elk antwoord zijn starttijdstip meestuurt. De
+# pagina ziet daaraan dat de webservice herstart is en laadt zichzelf dan opnieuw (§5.6).
+KOP_GESTART = "X-BRMS-Gestart"
+
 # Aantal seconden dat metingen van de bus in het geheugen blijven voor de live-grafiek:
 # het langste venster dat de pagina aanbiedt (24 uur).
 BEWAAR = 24 * 3600
@@ -300,6 +304,18 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
     app.json.sort_keys = False
     app.jinja_env.policies["json.dumps_kwargs"] = {"sort_keys": False}
 
+    # Het starttijdstip van deze webservice, als kenmerk. De configuratie (sensoren,
+    # alarmregels) wordt alleen bij de start gelezen (§5.4.1) en staat in de pagina; een
+    # pagina die al open stond bij een herstart kent de nieuwe regels dus niet. Daarom
+    # gaat het kenmerk met elk antwoord mee en laadt de pagina zichzelf opnieuw als het
+    # anders is dan bij het laden (§5.6).
+    gestart = f"{klok():.3f}"
+
+    @app.after_request
+    def _kenmerk(antwoord):
+        antwoord.headers[KOP_GESTART] = gestart
+        return antwoord
+
     def _getal(waarde, standaard=None, laagste=None, hoogste=None):
         """Zet een waarde uit een aanvraag om in een geheel getal binnen de grenzen;
         `standaard` als hij ontbreekt of geen getal is."""
@@ -316,7 +332,7 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
     @app.get("/")
     def pagina():
         return render_template(
-            "index.html", versie=VERSION,
+            "index.html", versie=VERSION, gestart=gestart, kop_gestart=KOP_GESTART,
             sensoren=[{"id": s.id, "naam": s.naam, "type": s.type, "grootheden": _levert(s)}
                       for s in cfg.sensoren.values()],
             regels=_regels(cfg),

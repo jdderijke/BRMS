@@ -152,6 +152,17 @@ class TestWeb(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         return r.get_json()
 
+    def test_starttijdstip_bij_elk_antwoord(self):
+        # De pagina kent het starttijdstip van de webservice en krijgt het bij elk
+        # antwoord terug; een andere (herstarte) webservice geeft een ander tijdstip.
+        self.assertIn('const GESTART = "1000.700";', self.client.get("/").get_data(as_text=True))
+        for r in (self.client.get("/"), self.client.post("/api/live", json={"vragen": []}),
+                  self.client.get(f"/api/alarmen?sensor={MAC}&grootheid=temperatuur&van=0&tot=9"),
+                  self.client.get("/api/historie")):
+            self.assertEqual(r.headers[web.KOP_GESTART], "1000.700")
+        ander = web.maak_app(_config(self.pad), self.live, klok=lambda: 2000.0).test_client()
+        self.assertEqual(ander.get("/").headers[web.KOP_GESTART], "2000.000")
+
     def test_pagina(self):
         r = self.client.get("/")
         self.assertEqual(r.status_code, 200)
