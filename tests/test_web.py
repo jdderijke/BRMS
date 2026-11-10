@@ -32,15 +32,15 @@ class TestLiveBuffer(unittest.TestCase):
         live.voeg_toe(maak(100, MAC2, "temperatuur", 3.0))
         live.voeg_toe(maak(100, MAC, "vocht", 50.0))
         # Meerdere reeksen in één keer, ook van verschillende sensoren.
-        nr, punten = live.lees([_vraag(MAC, "temperatuur"), _vraag(MAC2, "temperatuur"),
-                                _vraag(MAC, "vocht"), _vraag(MAC, "luchtdruk")])
+        nr, punten, _ = live.lees([_vraag(MAC, "temperatuur"), _vraag(MAC2, "temperatuur"),
+                                   _vraag(MAC, "vocht"), _vraag(MAC, "luchtdruk")])
         self.assertEqual(nr, 3)
         self.assertEqual(punten, [[[100, 8.0]], [[100, 3.0]], [[100, 50.0]], []])
 
         # Tweede vraag: alleen wat er sinds het vorige volgnummer bij kwam, ook als het in
         # dezelfde seconde valt.
         live.voeg_toe(maak(100, MAC, "temperatuur", 8.1))
-        nr2, punten = live.lees([_vraag(MAC, "temperatuur", na=nr), _vraag(MAC, "vocht", na=nr)])
+        nr2, punten, _ = live.lees([_vraag(MAC, "temperatuur", na=nr), _vraag(MAC, "vocht", na=nr)])
         self.assertEqual((nr2, punten), (4, [[[100, 8.1]], []]))
 
     def test_venster_in_tijd_en_in_aantal(self):
@@ -54,6 +54,32 @@ class TestLiveBuffer(unittest.TestCase):
         self.assertEqual(lees(aantal=3), [[107, 7.0], [108, 8.0], [109, 9.0]])
         self.assertEqual(lees(vanaf=108), [[108, 8.0], [109, 9.0]])
         self.assertEqual(lees(vanaf=500), [])
+
+    def test_eerder_venster(self):
+        # Terugbladeren (§5.6 punt 4): metingen op 100 .. 109, waarden 0 .. 9.
+        live = web.LiveBuffer()
+        for i in range(10):
+            live.voeg_toe(maak(100 + i, MAC, "temperatuur", float(i)))
+
+        def lees(**extra):
+            _, punten, eerder = live.lees([_vraag(MAC, "temperatuur", **extra)])
+            return [w for _, w in punten[0]], eerder[0]
+
+        # Per aantal: de 3 metingen vóór de laatste 3, en die daarvoor.
+        self.assertEqual(lees(aantal=3), ([7.0, 8.0, 9.0], True))
+        self.assertEqual(lees(aantal=3, overslaan=3), ([4.0, 5.0, 6.0], True))
+        self.assertEqual(lees(aantal=3, overslaan=6), ([1.0, 2.0, 3.0], True))
+        # Het oudste venster is korter; daarvoor staat er niets meer.
+        self.assertEqual(lees(aantal=3, overslaan=9), ([0.0], False))
+        self.assertEqual(lees(aantal=3, overslaan=50), ([], False))
+        # Met een vast eindpunt verschuift het venster niet als er metingen bij komen.
+        self.assertEqual(lees(aantal=3, overslaan=3, tot=108), ([2.0, 3.0, 4.0], True))
+        live.voeg_toe(maak(110, MAC, "temperatuur", 10.0))
+        self.assertEqual(lees(aantal=3, overslaan=3, tot=108), ([2.0, 3.0, 4.0], True))
+        # Per tijd: vanaf t/m net vóór tot.
+        self.assertEqual(lees(vanaf=103, tot=106), ([3.0, 4.0, 5.0], True))
+        self.assertEqual(lees(vanaf=90, tot=102), ([0.0, 1.0], False))
+        self.assertEqual(lees(vanaf=104, tot=108, stap=2), ([4.5, 6.5], True))
 
     def test_oud_wordt_opgeruimd(self):
         # Bewaartijd 80 s: wat ouder is, verdwijnt (in stappen, niet bij elke meting).
@@ -81,8 +107,8 @@ class TestLiveBuffer(unittest.TestCase):
             live.voeg_toe(maak(ts, MAC, "beweging", w))       # toename: som
         for ts, w in [(101, 0), (105, 1), (108, 0), (112, 0)]:
             live.voeg_toe(maak(ts, MAC, "bilgepomp", w))      # toestand: een 1 blijft zichtbaar
-        _, punten = live.lees([_vraag(MAC, g, stap=10)
-                               for g in ("temperatuur", "beweging", "bilgepomp")])
+        _, punten, _ = live.lees([_vraag(MAC, g, stap=10)
+                                  for g in ("temperatuur", "beweging", "bilgepomp")])
         self.assertEqual(punten, [[[100, 3.0], [110, 10.0]],
                                   [[100, 6.0], [110, 10.0]],
                                   [[100, 1.0], [110, 0.0]]])
@@ -94,7 +120,7 @@ class TestLiveBuffer(unittest.TestCase):
         live = web.LiveBuffer()
         live.bij_bericht("brms/meting/x", maak(5, MAC, "vocht", 40).naar_json().encode())
         live.bij_bericht("brms/meting/x", b"kapot")   # wordt genegeerd
-        self.assertEqual(live.lees([_vraag(MAC, "vocht")]), (1, [[[5, 40.0]]]))
+        self.assertEqual(live.lees([_vraag(MAC, "vocht")]), (1, [[[5, 40.0]]], [False]))
 
 
 class TestWeb(unittest.TestCase):
@@ -196,7 +222,17 @@ class TestWeb(unittest.TestCase):
         self.assertEqual(haal(venster=450, stap=300), [[600, 7.0], [900, 9.5]])
         self.assertEqual(haal(vanaf=900, stap=300), [[900, 9.5]])
         # Onzin in de aanvraag geeft geen fout.
-        self.assertEqual(len(haal(aantal="x", stap="y", venster="z")), 10)
+        self.assertEqual(len(haal(aantal="x", stap="y", venster="z", tot="t", overslaan="o")), 10)
+
+    def test_live_eerder_venster(self):
+        for ts in range(100, 1001, 100):
+            self.live.voeg_toe(maak(ts, MAC, "temperatuur", ts / 100))
+        vraag = {"sensor": MAC, "grootheid": "temperatuur"}
+        d = self._live({**vraag, "aantal": 2, "overslaan": 2, "tot": 1000},
+                       {**vraag, "vanaf": 100, "tot": 300},
+                       {"sensor": "onbekend", "grootheid": "vocht"})
+        self.assertEqual(d["punten"], [[[600, 6.0], [700, 7.0]], [[100, 1.0], [200, 2.0]], []])
+        self.assertEqual(d["eerder"], [True, False, False])
 
     def test_fouten(self):
         self.assertEqual(self.client.post("/api/live", json={"vragen": "x"}).status_code, 400)

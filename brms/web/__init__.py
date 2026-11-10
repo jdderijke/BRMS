@@ -52,6 +52,7 @@ MAX_PUNTEN = 100_000
 
 # Grenzen voor wat de pagina in één keer mag opvragen.
 MAX_AANTAL = 1000   # "laatste N metingen"
+MAX_OVERSLAAN = MAX_PUNTEN   # terugbladeren kan niet verder dan wat er bewaard wordt
 MAX_STAP = 3600     # s; breedste tijdvak bij samenvatten
 MAX_VRAGEN = 64     # reeksen in één aanvraag aan /api/live
 
@@ -112,7 +113,7 @@ class LiveBuffer:
                 weg = max(bisect.bisect_left(r.ts, m.ts - self._bewaar), len(r.ts) - self._maximum)
                 del r.nr[:weg], r.ts[:weg], r.waarde[:weg]
 
-    def lees(self, vragen: list[dict]) -> tuple[int, list[list]]:
+    def lees(self, vragen: list[dict]) -> tuple[int, list[list], list[bool]]:
         """Beantwoordt een lijst vragen, elk over één reeks (sensor + grootheid).
 
         Een vraag is een dict met:
@@ -120,11 +121,17 @@ class LiveBuffer:
             na      alleen metingen met een volgnummer groter dan dit (standaard 0)
             vanaf   alleen metingen met ts >= vanaf (optioneel)
             aantal  hooguit de laatste zoveel metingen (optioneel)
+            tot     alleen metingen met ts < tot (optioneel). Voor een eerder venster
+                    (terugbladeren, §5.6 punt 4): een vast eindpunt, zodat het venster
+                    niet verschuift terwijl er nieuwe metingen binnenkomen.
+            overslaan  sla de laatste zoveel metingen (vóór `tot`) over (optioneel).
+                    "De 50 metingen daarvoor" is aantal=50, overslaan=50.
             stap    0 = elke meting; anders samengevat per tijdvak van `stap` seconden
                     (zie _vat_samen). Voor lange vensters: 24 uur aan losse metingen is te
                     veel voor de browser en voor de mobiele verbinding.
 
-        Geeft (hoogste volgnummer tot nu toe, per vraag een lijst [[ts, waarde], ...]).
+        Geeft (hoogste volgnummer tot nu toe, per vraag een lijst [[ts, waarde], ...],
+        per vraag of er in het geheugen nog metingen vóór de eerste geleverde staan).
         Alle vragen worden op hetzelfde moment beantwoord, zodat dat ene volgnummer voor
         alle reeksen klopt.
         """
@@ -138,12 +145,18 @@ class LiveBuffer:
                 if r is None:
                     stukken.append(None)
                     continue
+                # Het stuk [i:j] van de reeks. Eerst het einde j: alles, of tot een vast
+                # tijdstip, en daarvan eventueel de laatste `overslaan` niet.
+                j = len(r.ts) if v.get("tot") is None else bisect.bisect_left(r.ts, v["tot"])
+                j = max(0, j - (v.get("overslaan") or 0))
+                # Dan het begin i: de strengste van de gevraagde grenzen.
                 i = bisect.bisect_right(r.nr, v["na"]) if v.get("na") else 0
                 if v.get("vanaf") is not None:
                     i = max(i, bisect.bisect_left(r.ts, v["vanaf"]))
                 if v.get("aantal") is not None:
-                    i = max(i, len(r.ts) - v["aantal"])
-                stukken.append((r.ts[i:], r.waarde[i:]))
+                    i = max(i, j - v["aantal"])
+                i = min(i, j)
+                stukken.append((r.ts[i:j], r.waarde[i:j], i > 0))
 
         antwoorden = []
         for v, stuk in zip(vragen, stukken):
@@ -153,8 +166,8 @@ class LiveBuffer:
                 antwoorden.append(_vat_samen(stuk[0], stuk[1], v["stap"],
                                              grootheden.soort(v["grootheid"])))
             else:
-                antwoorden.append([[t, w] for t, w in zip(*stuk)])
-        return hoogste, antwoorden
+                antwoorden.append([[t, w] for t, w in zip(stuk[0], stuk[1])])
+        return hoogste, antwoorden, [bool(stuk and stuk[2]) for stuk in stukken]
 
 
 def _vat_samen(ts, waarden, stap: int, soort: str) -> list:
@@ -269,11 +282,15 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
             aantal=N    de laatste N metingen
             venster=S   de laatste S seconden (eerste vraag; de tijd van de Pi telt, niet
                         die van de browser)
-            vanaf=T     vanaf tijdstip T (vervolgvragen bij samenvatten)
+            vanaf=T     vanaf tijdstip T (vervolgvragen bij samenvatten; eerder venster)
+            tot=T       tot (niet tot en met) tijdstip T: een eerder venster
+            overslaan=M de laatste M metingen (vóór 'tot') overslaan: bladeren per aantal
             na=NR       alleen wat nieuwer is dan volgnummer NR (vervolgvragen)
             stap=S      samenvatten per S seconden; 0 of weggelaten = elke meting }, ...]}
         Antwoord:  {"nu": tijd van de Pi, "nr": hoogste volgnummer, "broker": bereikbaar,
-                    "punten": per vraag [[ts, waarde], ...]}
+                    "punten": per vraag [[ts, waarde], ...],
+                    "eerder": per vraag of er in het geheugen nog oudere metingen staan
+                              dan de eerste geleverde (dan kan de pagina terugbladeren)}
         Een vraag over een onbekende sensor of grootheid levert een lege lijst.
         """
         inhoud = request.get_json(silent=True)
@@ -295,9 +312,11 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
             vragen.append({"sensor_id": sensor.id, "grootheid": grootheid,
                            "na": _getal(v.get("na"), 0), "vanaf": vanaf,
                            "aantal": _getal(v.get("aantal"), None, 1, MAX_AANTAL),
+                           "tot": _getal(v.get("tot")),
+                           "overslaan": _getal(v.get("overslaan"), 0, 0, MAX_OVERSLAAN),
                            "stap": _getal(v.get("stap"), 0, 0, MAX_STAP)})
-        nr, punten = live.lees(vragen)
-        return jsonify(nu=nu, nr=nr, punten=punten,
+        nr, punten, eerder = live.lees(vragen)
+        return jsonify(nu=nu, nr=nr, punten=punten, eerder=eerder,
                        broker=bus.verbonden if bus is not None else None)
 
     @app.get("/api/historie")

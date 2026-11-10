@@ -9,6 +9,10 @@
   Per grafiek kiest hij een sensor en een grootheid en voegt die als reeks toe; een grafiek
   kan reeksen van meerdere sensoren en grootheden bevatten.
 
+  Met "eerder" en "later" schuift het venster van een grafiek: bij de database een periode
+  terug, bij live over de metingen die de webservice nog in het geheugen heeft. Een eerder
+  live-venster staat stil; "nu" laat de grafiek weer meelopen.
+
   Grootheden met een verschillende eenheid (°C en %) krijgen binnen de grafiek elk een
   eigen strook met een eigen verticale as, onder elkaar op dezelfde tijdas. Twee schalen
   door elkaar in één vlak zijn niet af te lezen.
@@ -98,8 +102,8 @@
         <option value="604800">7 dagen</option>
         <option value="2592000">30 dagen</option>
       </select>
-      <button class="eerder" title="Eén periode eerder">◀ eerder</button>
-      <button class="later" title="Eén periode later">later ▶</button>
+      <button class="eerder" title="Eén venster eerder">◀ eerder</button>
+      <button class="later" title="Eén venster later">later ▶</button>
       <button class="nu" title="Terug naar nu">nu</button>
       <span class="ruimte"></span>
       <button class="kaal weg" title="Deze grafiek verwijderen">✕</button>
@@ -139,12 +143,19 @@ const sensor = id => SENSOREN.find(s => s.id === id);
 const eenheid = g => (GROOTHEDEN[g] || {eenheid: ""}).eenheid;
 
 // Alle grafieken op de pagina. Eén grafiek:
-//   {bron: "live"|"database", venster, periode, verschuiving, vak (het DOM-element),
-//    chart (Chart.js), reeksen: [reeks, ...]}
+//   {bron: "live"|"database", venster, periode, vak (het DOM-element),
+//    chart (Chart.js), reeksen: [reeks, ...],
+//    verschuiving  0 = het venster eindigt nu; N = N vensters eerder,
+//    anker         (live) het tijdstip waar het terugbladeren begon, zie vraagLive}
 // Eén reeks:
 //   {sensor (ID), grootheid, kleur (1..8), data: [{x: ms, y}], en voor live:
-//    geladen, na, vanaf – wat er al opgehaald is (zie vraagLive)}
+//    geladen, na, vanaf – wat er al opgehaald is (zie vraagLive),
+//    eerder – of de webservice nog oudere metingen heeft dan dit venster}
 let grafieken = [];
+
+// De tijd van de Pi (Unix-seconden) uit het laatste antwoord van /api/live. Vensters
+// worden met de klok van de Pi gerekend, niet met die van de browser.
+let piTijd = null;
 
 // --- tijd en getallen -------------------------------------------------------------
 // Tijdstempels zijn Unix-seconden UTC; de browser toont ze in de lokale tijd.
@@ -186,14 +197,14 @@ function bewaard() {
 function nieuweGrafiek(bron, opgeslagen) {
   const vak = el("sjabloon").content.firstElementChild.cloneNode(true);
   const q = klasse => vak.querySelector("." + klasse);
-  const g = {bron, venster: "t600", periode: "86400", verschuiving: 0, vak, chart: null, reeksen: []};
+  const g = {bron, venster: "t600", periode: "86400", verschuiving: 0, anker: null, vak, chart: null, reeksen: []};
   if (opgeslagen) { g.venster = opgeslagen.venster || g.venster; g.periode = opgeslagen.periode || g.periode; }
   grafieken.push(g);
 
   const live = bron === "live";
   q("bron").textContent = live ? "Live (MQTT-bus)" : "Database";
   q("venster").hidden = !live;
-  for (const k of ["periode", "eerder", "later", "nu"]) q(k).hidden = live;
+  q("periode").hidden = live;
   q("venster").value = g.venster;
   q("periode").value = g.periode;
 
@@ -211,9 +222,15 @@ function nieuweGrafiek(bron, opgeslagen) {
     const melding = voegReeksToe(g, q("sensor").value, q("grootheid").value);
     if (melding) meld(g, melding); else { bewaar(); ververs(g); }
   });
-  q("venster").addEventListener("change", () => { g.venster = q("venster").value; bewaar(); ververs(g); });
+  q("venster").addEventListener("change", () => { g.venster = q("venster").value; g.verschuiving = 0; bewaar(); ververs(g); });
   q("periode").addEventListener("change", () => { g.periode = q("periode").value; g.verschuiving = 0; bewaar(); ververs(g); });
-  q("eerder").addEventListener("click", () => { g.verschuiving += 1; ververs(g); });
+  q("eerder").addEventListener("click", () => {
+    // Live: bij de eerste stap terug het eindpunt vastleggen. Alle eerdere vensters worden
+    // vanaf dat punt geteld, zodat ze niet verschuiven terwijl er metingen bij komen.
+    if (live && g.verschuiving === 0) g.anker = piTijd !== null ? piTijd : Math.floor(Date.now() / 1000);
+    g.verschuiving += 1;
+    ververs(g);
+  });
   q("later").addEventListener("click", () => { g.verschuiving = Math.max(0, g.verschuiving - 1); ververs(g); });
   q("nu").addEventListener("click", () => { g.verschuiving = 0; ververs(g); });
   q("weg").addEventListener("click", () => {
@@ -244,7 +261,7 @@ function voegReeksToe(g, sensorId, grootheid, gewensteKleur) {
   const bezet = g.reeksen.map(r => r.kleur);
   let k = gewensteKleur && !bezet.includes(gewensteKleur) ? gewensteKleur : 1;
   while (bezet.includes(k)) k++;
-  g.reeksen.push({sensor: sensorId, grootheid, kleur: k, data: [], geladen: false, na: 0, vanaf: null});
+  g.reeksen.push({sensor: sensorId, grootheid, kleur: k, data: [], geladen: false, na: 0, vanaf: null, eerder: false});
   return "";
 }
 
@@ -260,12 +277,20 @@ function venster(g) {
 // Tekent de grafiek opnieuw op (na een andere keuze of een andere set reeksen) en haalt de
 // gegevens opnieuw op.
 function ververs(g) {
-  for (const r of g.reeksen) { r.data = []; r.geladen = false; r.na = 0; r.vanaf = null; }
+  for (const r of g.reeksen) { r.data = []; r.geladen = false; r.na = 0; r.vanaf = null; r.eerder = false; }
   g.vak.querySelector(".later").disabled = g.vak.querySelector(".nu").disabled = g.verschuiving === 0;
+  zetEerder(g);
   bouwChart(g);
   if (!g.reeksen.length) { meld(g, "Kies een sensor en een grootheid en klik op Toevoegen."); return; }
   if (g.bron === "live") { meld(g, "Live: laden …"); vraagLive(); }
   else laadHistorie(g);
+}
+
+// De knop "eerder" van een live-grafiek werkt alleen als de webservice nog oudere metingen
+// in het geheugen heeft dan het getoonde venster (van minstens één reeks). De database
+// kan altijd verder terug.
+function zetEerder(g) {
+  g.vak.querySelector(".eerder").disabled = g.bron === "live" && !g.reeksen.some(r => r.eerder);
 }
 
 // Maakt het Chart.js-object voor de huidige reeksen van de grafiek.
@@ -391,6 +416,12 @@ function toonWaarden(g) {
 // --- live: de metingen van de bus --------------------------------------------------
 // Eén aanvraag voor alle reeksen van alle live-grafieken. Per reeks wordt bijgehouden wat
 // er al is: de eerste keer het hele venster, daarna alleen wat nieuw is.
+//
+// Een grafiek met een eerder venster (verschuiving > 0) staat stil: zijn reeksen worden één
+// keer opgehaald en daarna niet meer. Het venster wordt geteld vanaf het anker (het
+// tijdstip waarop het terugbladeren begon):
+//   per tijd    van anker - (N+1) × duur  tot  anker - N × duur
+//   per aantal  de `aantal` metingen vóór de laatste N × aantal metingen van vóór het anker
 let bezig = false;
 async function vraagLive() {
   if (bezig) return;
@@ -400,18 +431,29 @@ async function vraagLive() {
     const v = venster(g);
     for (const r of g.reeksen) {
       const vraag = {sensor: r.sensor, grootheid: r.grootheid};
-      if (v.stap) {
+      let vol = true;   // vraagt deze vraag het hele venster op (en geen aanvulling)?
+      if (g.verschuiving > 0) {
+        if (r.geladen) continue;   // een eerder venster verandert niet meer
+        if (v.aantal) {
+          vraag.aantal = v.aantal; vraag.overslaan = g.verschuiving * v.aantal; vraag.tot = g.anker;
+        } else {
+          vraag.tot = g.anker - g.verschuiving * v.duur;
+          vraag.vanaf = vraag.tot - v.duur;
+          if (v.stap) vraag.stap = v.stap;
+        }
+      } else if (v.stap) {
         // Samengevat: eerst het hele venster, daarna alleen de laatste tijdvakken opnieuw.
         vraag.stap = v.stap;
-        if (r.vanaf === null) vraag.venster = v.duur; else vraag.vanaf = r.vanaf;
+        if (r.vanaf === null) vraag.venster = v.duur; else { vraag.vanaf = r.vanaf; vol = false; }
       } else if (r.geladen) {
         vraag.na = r.na;   // vervolgvraag: alleen wat nieuw is
+        vol = false;
       } else if (v.aantal) {
         vraag.aantal = v.aantal;
       } else {
         vraag.venster = v.duur;
       }
-      doelen.push({g, r, v, data: r.data, vraag});
+      doelen.push({g, r, v, data: r.data, vraag, vol, verschuiving: g.verschuiving});
     }
   }
   if (!doelen.length) return;
@@ -422,15 +464,20 @@ async function vraagLive() {
       body: JSON.stringify({vragen: doelen.map(d => d.vraag)})});
     if (!antwoord.ok) throw new Error("fout " + antwoord.status);
     const d = await antwoord.json();
+    piTijd = d.nu;
+    const geraakt = new Set();   // grafieken waarvoor in dit antwoord iets binnenkwam
     status(d.broker === false ? "De MQTT-broker is niet bereikbaar; er komen geen metingen binnen." : "");
 
     doelen.forEach((doel, i) => {
       const {g, r, v} = doel, data = r.data;
       // Is er intussen iets anders gekozen (ander venster, reeks verwijderd), dan hoort dit
       // antwoord bij een oude vraag en vervalt het.
-      if (data !== doel.data || !g.reeksen.includes(r)) return;
+      if (data !== doel.data || !g.reeksen.includes(r) || g.verschuiving !== doel.verschuiving) return;
       const punten = d.punten[i] || [];
+      geraakt.add(g);
       r.geladen = true;
+      // Alleen een vraag om het hele venster zegt of er nog oudere metingen zijn.
+      if (doel.vol) r.eerder = !!(d.eerder && d.eerder[i]);
       r.na = d.nr;
       // Het lopende tijdvak verandert nog, en in het vak daarvoor kan sinds de vorige vraag
       // nog een meting gevallen zijn: die twee worden de volgende keer opnieuw gevraagd.
@@ -448,17 +495,26 @@ async function vraagLive() {
     for (const g of grafieken) {
       if (g.bron !== "live" || !g.reeksen.length) continue;
       const v = venster(g);
+      if (g.verschuiving > 0) {
+        // Een eerder venster staat stil: alleen tekenen als het net is binnengekomen.
+        if (geraakt.has(g)) toonEerderVenster(g, v);
+        continue;
+      }
       g.reeksen.forEach((r, i) => {
+        let weg = 0;
         if (v.aantal) {
-          if (r.data.length > v.aantal) r.data.splice(0, r.data.length - v.aantal);
+          weg = Math.max(0, r.data.length - v.aantal);
         } else {
           const begin = (d.nu - v.duur) * 1000;
-          let weg = 0;
           while (weg < r.data.length && r.data[weg].x < begin) weg++;
-          r.data.splice(0, weg);
         }
+        r.data.splice(0, weg);
+        // Wat uit het venster schuift, staat nog in het geheugen van de webservice:
+        // daarheen kan teruggebladerd worden.
+        if (weg) r.eerder = true;
         g.chart.data.datasets[i].pointRadius = v.aantal ? 2 : 0;
       });
+      zetEerder(g);
       g.chart.options.scales.x.min = v.aantal ? undefined : (d.nu - v.duur) * 1000;
       g.chart.options.scales.x.max = v.aantal ? undefined : d.nu * 1000;
       g.chart.update();
@@ -474,6 +530,33 @@ async function vraagLive() {
   } finally {
     bezig = false;
   }
+}
+
+// Tekent een eerder live-venster (verschuiving > 0) dat zojuist is opgehaald.
+function toonEerderVenster(g, v) {
+  g.reeksen.forEach((r, i) => { g.chart.data.datasets[i].pointRadius = v.aantal ? 2 : 0; });
+  let van, tot;   // ms
+  if (v.aantal) {
+    // Per aantal ligt het tijdsbereik niet vast: de as volgt de metingen zelf.
+    g.chart.options.scales.x.min = g.chart.options.scales.x.max = undefined;
+    const tijden = g.reeksen.flatMap(r => r.data.length ? [r.data[0].x, r.data[r.data.length - 1].x] : []);
+    van = Math.min(...tijden); tot = Math.max(...tijden);
+  } else {
+    // Per tijd toont de as het hele venster, ook waar geen metingen zijn.
+    tot = (g.anker - g.verschuiving * v.duur) * 1000;
+    van = tot - v.duur * 1000;
+    g.chart.options.scales.x.min = van;
+    g.chart.options.scales.x.max = tot;
+  }
+  zetEerder(g);
+  g.chart.update();
+  toonWaarden(g);
+  const wat = v.aantal ? v.aantal + " metingen"
+    : g.vak.querySelector(".venster").selectedOptions[0].textContent.replace("laatste ", "");
+  meld(g, g.reeksen.every(r => !r.data.length)
+    ? "Live, " + g.verschuiving + " venster(s) eerder: geen metingen in het geheugen van de webservice."
+    : "Live, " + g.verschuiving + " venster(s) eerder (" + wat + "): " + datum(van) + " " + klok(van, true)
+      + "  –  " + klok(tot, true) + ". Staat stil; “nu” laat de grafiek weer meelopen.");
 }
 
 // --- database: de opgeslagen historie ------------------------------------------------

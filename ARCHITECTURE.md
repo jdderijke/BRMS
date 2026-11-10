@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.27 – concept** · 10 november 2026
+**Versie 0.28 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -949,6 +949,15 @@ schrijvers op dezelfde database en map.
      van 24 uur zijn te veel voor de browser en voor de mobiele verbinding. Samenvatten
      volgt de soort (§5.3.2): gemiddelde voor doorlopend, som voor toename, en voor een
      toestand het maximum, zodat een korte 1 zichtbaar blijft.
+
+     Met **"eerder"** en **"later"** schuift het venster over de metingen in het geheugen
+     (v0.28): bij "laatste 50 metingen" geeft "eerder" de 50 metingen daarvoor (per reeks),
+     bij "laatste 10 minuten" de 10 minuten daarvoor. Een eerder venster **staat stil**: het
+     wordt geteld vanaf het tijdstip waarop het terugbladeren begon en verschuift niet
+     door nieuwe metingen. **"nu"** laat de grafiek weer meelopen. "eerder" is alleen
+     actief als de webservice nog oudere metingen heeft dan het getoonde venster; verder
+     terug dan 24 uur (of dan de laatste herstart van de webservice) kan alleen via de
+     database.
    - **Database**: de opgeslagen rijen (per 5 minuten, §5.3.2), over 1 uur, 6 uur, 24 uur,
      7 dagen of 30 dagen, met bladeren naar eerdere perioden. Een interval zonder rij
      blijft in de grafiek open.
@@ -1425,7 +1434,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.27** | 2026-11-10 | Claude Code, Fable 5.2 | Victron-decoder gebouwd (§5.2.2 punt 7–10): sensortypen `victron-bmv`, `victron-mppt`, `victron-multiplus` met `sleutel` in de configuratie; `victron-ble` 0.9.3 als decoder; één waarschuwing per sensor bij een verkeerde sleutel. |
+| **0.28** | 2026-11-10 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4): bij een live-grafiek met "eerder" en "later" door de metingen in het geheugen bladeren; een eerder venster staat stil, "nu" loopt weer mee. |
+| 0.27 | 2026-11-10 | Claude Code, Fable 5.2 | Victron-decoder gebouwd (§5.2.2 punt 7–10): sensortypen `victron-bmv`, `victron-mppt`, `victron-multiplus` met `sleutel` in de configuratie; `victron-ble` 0.9.3 als decoder; één waarschuwing per sensor bij een verkeerde sleutel. |
 | 0.26 | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie (§10.3 punt 5): ruis op de testreeks en op de signaalsterkte. |
 | 0.25 | 2026-11-10 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4): zelf grafieken toevoegen (live of database), per grafiek reeksen van meerdere sensoren en grootheden; een strook per eenheid; indeling onthouden in de browser. Simulatie (§10.3): `brms sim`, meerdere sensoren of `all`, geen wachttijd, standaard 10 minuten, opdracht keert direct terug, `brms sim stop`. |
 | 0.24 | 2026-11-10 | Claude Code, Fable 5.2 | Testpagina (§5.6 punt 4): live-venster te kiezen (laatste 50/100 metingen, 10 min t/m 24 uur); de webservice bewaart 24 uur aan metingen in het geheugen; vanaf 1 uur samengevat per tijdvak. |
