@@ -100,6 +100,39 @@ naam = "motorruim"
 # drempel = 6.0
 
 # =============================================================================
+# Camera's (ARCHITECTURE.md §5.7)
+# =============================================================================
+# Eén blok per camera. De camera-reader haalt elke 'foto_interval' een foto op van het
+# snapshot-adres en zet die in de opnamemap. Haal het # weg en vul je eigen gegevens in.
+#   id             vaste naam (letters, cijfers, '-' en '_'); wordt de mapnaam van de foto's
+#   naam           naam voor weergave (mag weg: dan geldt het id)
+#   gebruiker,     het account op de camera. Maak op de camera bij voorkeur een eigen
+#   wachtwoord     gebruiker voor BRMS aan met alleen kijkrechten.
+#   foto_url       het snapshot-adres van de camera (http:// of https://). Op de plaats van
+#                  het account staan {gebruiker} en {wachtwoord}; BRMS vult die in. Zet het
+#                  wachtwoord dus niet zelf in het adres.
+#   video_url      het adres van de videostroom (rtsp://), voor video's (volgt later)
+#   foto_interval  tijd tussen twee foto's; standaard "3m"
+#
+# Het voorbeeld is een Foscam HD-camera. Het snapshot-adres van een ander merk staat in de
+# handleiding van de camera (zoek op "snapshot URL").
+# [[camera]]
+# id = "dek"
+# naam = "Dek"
+# gebruiker = "brms"
+# wachtwoord = "..."
+# foto_url = "http://192.168.1.20:88/cgi-bin/CGIProxy.fcgi?cmd=snapPicture2&usr={gebruiker}&pwd={wachtwoord}"
+# video_url = "rtsp://{gebruiker}:{wachtwoord}@192.168.1.20:88/videoMain"
+# foto_interval = "3m"
+#
+# Waar de opnames staan en hoe lang ze blijven. Zonder dit blok gelden deze waarden. Laat
+# de map binnen data/ staan: alleen daar mogen de services schrijven.
+# [opnames]
+# map = "data/opnames"
+# foto_bewaren = "14d"     # foto's ouder dan dit worden vanzelf verwijderd
+# video_ruimte = 20        # GB; maximale ruimte voor video's (volgt later)
+
+# =============================================================================
 # Meldingen (ARCHITECTURE.md §5.5.4)
 # =============================================================================
 # Een melding gaat naar elk kanaal dat hier is ingesteld. Zonder kanaal worden alarmen wel

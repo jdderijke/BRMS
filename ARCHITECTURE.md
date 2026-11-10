@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.37 – concept** · 10 november 2026
+**Versie 0.38 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1360,7 +1360,11 @@ met toegang tot het web een alarmregel uitzetten.
 
 ### 5.7 Camera
 
-*Ontworpen; nog niet gebouwd.*
+*Stap (a) van punt 17 is gebouwd (v0.38): de camera-reader met een foto per interval en op
+verzoek (poll-nu), de tabel `opname` en het opruimen van oude foto's. Nog niet gebouwd:
+video (punt 11) en de maximale ruimte, foto en video bij een alarm (punt 15), en bekijken
+en verwijderen in het web. Een opdracht voor een video geeft tot die tijd een waarschuwing
+in het log. Nog niet getest met een echte camera.*
 
 **Redenering.** De camera bekijkt het dek. Een regelmatige foto toont de toestand van de
 boot; een video legt een gebeurtenis vast (iemand stapt aan boord, storm). Een IP-camera
@@ -1427,10 +1431,15 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
    | `video_ruimte` | maximale ruimte voor video's in GB; standaard 20 |
 
    In de adressen staan `{gebruiker}` en `{wachtwoord}` op de plaats waar het account
-   moet komen; de camera-reader vult ze in. Het wachtwoord staat zo op één plek.
+   moet komen; de camera-reader vult ze in (gecodeerd, zodat een wachtwoord met tekens
+   als `&` of `@` het adres niet breekt). Het wachtwoord staat zo op één plek. Het
+   account mag ontbreken (een camera zonder aanmelding); `gebruiker` en `wachtwoord`
+   horen wel bij elkaar. Zonder `naam` geldt het `id`. Grenzen (v0.38): `foto_interval`
+   10 s tot 24 uur, `video_duur` 5 s tot 10 min, `foto_bewaren` minstens een uur. De
+   opnamemap hoort binnen `data/` te staan: alleen daar mogen de services schrijven.
 8. Het **wachtwoord** van de camera komt nooit in het log, een foutmelding of de trace
-   (zoals de Victron-sleutel en de Telegram-token): een adres wordt alleen zonder account
-   getoond. Bij `ffmpeg` staat het adres met wachtwoord in de opdrachtregel en is het
+   (zoals de Victron-sleutel en de Telegram-token): een adres wordt alleen getoond als
+   schema, host en poort (v0.38), ook in een foutmelding van `check-config`. Bij `ffmpeg` staat het adres met wachtwoord in de opdrachtregel en is het
    zolang de opname loopt zichtbaar voor wie op de Pi is ingelogd; dat is alleen de
    gebruiker zelf.
 9. De camera-reader is een eigen service, **`brms-camera`** (§3.1). Hij heeft `ffmpeg`
@@ -1439,7 +1448,9 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
 10. **Foto.** De reader haalt het snapshot-adres op (timeout 10 s) en controleert dat het
     antwoord een JPEG is. Het bestand wordt eerst onder een tijdelijke naam geschreven en
     dan hernoemd, zodat er nooit een half bestand staat. Plaats:
-    `<map>/<camera_id>/JJJJ/MM/DD/UUMMSS.jpg` (UTC).
+    `<map>/<camera_id>/JJJJ/MM/DD/UUMMSS.jpg` (UTC). In de tabel `opname` staat het pad
+    binnen de opnamemap (`dek/2026/11/10/203000.jpg`). Een antwoord groter dan 20 MB is
+    geen foto.
 11. **Video.** De reader start `ffmpeg` met de RTSP-stroom over TCP, de vaste duur en
     **zonder omrekenen** (het beeld wordt gekopieerd naar een MP4-bestand); het geluid
     wordt niet opgenomen. Dezelfde plaats en naamgeving als de foto, met `.mp4`. Is
@@ -1451,12 +1462,16 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
 13. Na een geslaagde opname publiceert de reader de metadata op `brms/opname/<camera_id>`
     (§3.3). Een **mislukte** opname (camera onbereikbaar, geen JPEG, `ffmpeg` geeft een
     fout) geeft één waarschuwing in het log en geen bericht; de reader probeert het niet
-    opnieuw, de volgende intervalfoto komt vanzelf. Zolang de klok niet gesynchroniseerd
+    opnieuw, de volgende intervalfoto komt vanzelf. Mislukken de intervalfoto's keer op
+    keer, dan komt alleen de eerste keer een waarschuwing en één regel bij herstel
+    (v0.38, zoals bij de Shelly); een mislukte foto op verzoek wordt altijd gemeld. Zolang de klok niet gesynchroniseerd
     is, maakt de reader geen opnames (§4.2).
 14. De **opslag-service** legt de metadata vast in de tabel `opname` en ruimt op: foto's
     ouder dan de bewaartermijn eenmaal per uur, en de oudste video's zodra de maximale
     ruimte vol raakt (punt 5). Een bestand zonder rij in de tabel (het bericht ging
-    verloren, §3.3) wordt na de bewaartermijn ook verwijderd.
+    verloren, §3.3) wordt na de bewaartermijn ook verwijderd, en mappen die leeg raken
+    ook. De opslag neemt alleen een pad van de vaste vorm van punt 10 aan (v0.38), zodat
+    het opruimen nooit een bestand buiten de opnamemap raakt.
 15. **Foto bij een alarm** (§5.5.3 punt 5 en 6). De alarmlaag geeft een poll-nu met de
     regel als aanleiding (`alarm:<alarm_id>`), wacht hooguit 15 s op het bericht op
     `brms/opname/<camera_id>` met die aanleiding en leest het bestand uit de opnamemap
@@ -1932,7 +1947,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.37** | 2026-11-10 | Claude Code, Fable 5.2 | OPEN-24 besloten en de camera uitgewerkt (§5.7 punt 6–17): foto via het snapshot-adres, video via RTSP met `ffmpeg`; blokken `[[camera]]` en `[opnames]`; service `brms-camera`; foto bij een alarm; bouwvolgorde. Testcamera thuis: Foscam. Nog niet gebouwd. |
+| **0.38** | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (a) gebouwd (§5.7): service `brms-camera`, blokken `[[camera]]` en `[opnames]`, foto per interval en op poll-nu, tabel `opname`, opruimen van oude foto's. |
+| 0.37 | 2026-11-10 | Claude Code, Fable 5.2 | OPEN-24 besloten en de camera uitgewerkt (§5.7 punt 6–17): foto via het snapshot-adres, video via RTSP met `ffmpeg`; blokken `[[camera]]` en `[opnames]`; service `brms-camera`; foto bij een alarm; bouwvolgorde. Testcamera thuis: Foscam. Nog niet gebouwd. |
 | 0.36 | 2026-11-10 | Claude Code, Fable 5.2 | Web: de pagina laadt zichzelf opnieuw na een herstart van de webservice, zodat nieuwe sensoren en alarmregels meteen gelden (§5.6). |
 | 0.35 | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie: de testreeks loopt binnen de duur twee keer heen en weer, zodat ook het herstellen van een alarm te testen is (§10.3 punt 5). |
 | 0.34 | 2026-11-10 | Claude Code, Fable 5.2 | Fout hersteld: na een herstart van de Pi bleef een alarm in de database (en de grafiek) open staan. De alarmlaag meldt nu elke minuut welke alarmen actief zijn; de opslag sluit de rest af (§3.3, §5.5.3 punt 8). |

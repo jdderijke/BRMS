@@ -22,12 +22,17 @@ Daarnaast legt de opslag de opgetreden alarmen vast (§5.5.3 punt 8): de alarmla
 begin en einde van een alarm op de bus (brms/alarm/<alarm_id>), en de opslag schrijft die
 direct in de tabel `alarm` – niet per 5 minuten, want het precieze tijdstip telt en het
 zijn er weinig.
+
+En de opnames van de camera's (§5.7 punt 14): de camera-reader schrijft het bestand en
+meldt de gegevens ervan op de bus (brms/opname/<camera_id>); de opslag legt die vast in de
+tabel `opname` en verwijdert eens per uur de foto's die ouder zijn dan de bewaartermijn.
 """
 
 import asyncio
 import json
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 import time
@@ -87,6 +92,15 @@ CREATE TABLE IF NOT EXISTS alarm_uit (
 # Topics van de alarmlaag (zie brms/alarms.py).
 TOPIC_ALARM = "brms/alarm"
 TOPIC_HERSTART = "brms/alarm/herstart"
+
+# Topic van de camera-reader (zie brms/readers/camera.py).
+TOPIC_OPNAME = "brms/opname"
+# Om de hoeveel seconden oude foto's worden opgeruimd (§5.7 punt 14).
+OPRUIM_INTERVAL = 3600
+# Het pad van een opname binnen de opnamemap: <camera_id>/JJJJ/MM/DD/UUMMSS.jpg of .mp4.
+# Het pad komt van de bus; alleen deze vorm wordt aangenomen, zodat het opruimen nooit
+# een bestand buiten de opnamemap kan raken.
+_BESTAND = re.compile(r"^[A-Za-z0-9_-]+/\d{4}/\d{2}/\d{2}/\d{6}\.(jpg|mp4)$")
 
 # Eén rij in de tabel meting: (ts, sensor_id, grootheid, waarde).
 Rij = tuple[int, str, str, float]
@@ -159,6 +173,27 @@ class Database:
                 "WHERE alarm_id = ? AND sensor_id = ? AND einde IS NULL",
                 [(ts, *paar) for paar in weg])
         return len(weg)
+
+    # --- opnames van de camera's (§5.7 punt 14) --------------------------------------
+    def opname(self, ts: int, camera_id: str, type_: str, duur: int | None, bestand: str,
+               bytes_: int, aanleiding: str) -> None:
+        """Legt de gegevens van één opname vast. Twee opnames van dezelfde camera in
+        dezelfde seconde hebben dezelfde bestandsnaam; de laatste geldt."""
+        with self._con:
+            self._con.execute(
+                "INSERT OR REPLACE INTO opname (ts, camera_id, type, duur, bestand, bytes, aanleiding) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)", (ts, camera_id, type_, duur, bestand, bytes_, aanleiding))
+
+    def oude_fotos(self, voor: int) -> list[tuple[str, int, str]]:
+        """De foto's van vóór het tijdstip `voor`: (camera_id, ts, bestand)."""
+        return self._con.execute(
+            "SELECT camera_id, ts, bestand FROM opname WHERE type = 'foto' AND ts < ?",
+            (voor,)).fetchall()
+
+    def verwijder_opnames(self, sleutels: list[tuple[str, int]]) -> None:
+        """Verwijdert de rijen van de opnames met deze (camera_id, ts)."""
+        with self._con:
+            self._con.executemany("DELETE FROM opname WHERE camera_id = ? AND ts = ?", sleutels)
 
     def sluit(self) -> None:
         self._con.close()
@@ -339,6 +374,122 @@ def verwerk_alarm(db: Database, topic: str, payload: bytes) -> str | None:
     return f"alarm {alarm_id} voor {sensor_id}: {wat}"
 
 
+def verwerk_opname(db: Database, payload: bytes) -> str:
+    """Legt één bericht van de camera-reader vast in de tabel `opname`. Geeft een korte
+    omschrijving terug (voor het log); ValueError bij een ongeldig bericht."""
+    try:
+        d = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise ValueError(f"geen geldige JSON: {e}") from None
+    if not isinstance(d, dict):
+        raise ValueError("bericht is geen JSON-object")
+
+    def geheel(naam, leeg_mag=False):
+        w = d.get(naam)
+        if w is None and leeg_mag:
+            return None
+        if isinstance(w, bool) or not isinstance(w, int) or w < 0:
+            raise ValueError(f"{naam} is geen geheel getal: {w!r}")
+        return w
+
+    ts, bytes_, duur = geheel("ts"), geheel("bytes"), geheel("duur", leeg_mag=True)
+    camera_id, type_, bestand, aanleiding = (d.get(k) for k in ("camera_id", "type", "bestand", "aanleiding"))
+    if type_ not in ("foto", "video"):
+        raise ValueError(f"onbekend type: {type_!r}")
+    if not isinstance(bestand, str) or not _BESTAND.match(bestand):
+        raise ValueError(f"ongeldige bestandsnaam: {bestand!r}")
+    # De map van het bestand is die van de camera.
+    if not isinstance(camera_id, str) or bestand.split("/")[0] != camera_id:
+        raise ValueError(f"camera_id {camera_id!r} hoort niet bij bestand {bestand!r}")
+    if not isinstance(aanleiding, str) or not aanleiding:
+        raise ValueError("aanleiding ontbreekt")
+    db.opname(ts, camera_id, type_, duur, bestand, bytes_, aanleiding)
+    return f"{type_} van {camera_id}: {bestand} ({bytes_} bytes, {aanleiding})"
+
+
+def ruim_fotos(db: Database, map_: str, bewaren: float, nu: float) -> int:
+    """Verwijdert de foto's die ouder zijn dan de bewaartermijn (§5.7 punt 14): het bestand
+    en de rij in de tabel. Geeft het aantal verwijderde bestanden.
+
+    Ook een bestand zonder rij wordt verwijderd als het oud genoeg is: het bericht van de
+    camera-reader kan verloren zijn gegaan (§3.3), of er is een tijdelijk bestand
+    achtergebleven. Video's blijven staan: die verdwijnen niet vanzelf (§5.7 punt 2).
+    """
+    grens = nu - bewaren
+    aantal = 0
+
+    # 1. Wat in de database staat.
+    oud = db.oude_fotos(int(grens))
+    weg = []
+    for camera_id, ts, bestand in oud:
+        # Alleen een pad van de bekende vorm; een rij met iets anders blijft staan.
+        if not _BESTAND.match(bestand):
+            log.warning("opname %s van %s heeft een onverwacht pad (%r); niet opgeruimd",
+                        ts, camera_id, bestand)
+            continue
+        try:
+            os.remove(os.path.join(map_, *bestand.split("/")))
+            aantal += 1
+        except FileNotFoundError:
+            pass                # al weg (bijv. met de hand verwijderd): de rij mag ook weg
+        except OSError as e:
+            log.warning("foto %s niet te verwijderen: %s", bestand, e)
+            continue            # rij laten staan; de volgende keer opnieuw proberen
+        weg.append((camera_id, ts))
+    if weg:
+        db.verwijder_opnames(weg)
+
+    # 2. Wat alleen op schijf staat: oude foto's en tijdelijke bestanden zonder rij. Van
+    # onder naar boven, zodat mappen die leeg raken meteen weg kunnen.
+    for pad, _mappen, bestanden in os.walk(map_, topdown=False):
+        for naam in bestanden:
+            if not naam.endswith((".jpg", ".tmp")):
+                continue
+            volledig = os.path.join(pad, naam)
+            try:
+                if os.path.getmtime(volledig) < grens:
+                    os.remove(volledig)
+                    aantal += 1
+            except OSError:
+                pass
+        if pad != map_:
+            try:
+                os.rmdir(pad)   # lukt alleen als de map leeg is
+            except OSError:
+                pass
+    return aantal
+
+
+async def _opnames(db: Database, q: asyncio.Queue, stop: asyncio.Event, klok_ok, map_: str,
+                   bewaren: float) -> None:
+    """Legt de berichten van de camera-reader vast en ruimt eens per uur oude foto's op.
+    Loopt naast de hoofdlus in dezelfde asyncio-loop (en dus in dezelfde thread als de
+    database)."""
+    # De eerste keer kort na de start, daarna elk uur.
+    opruimen = time.monotonic() + 60
+    while not stop.is_set():
+        if time.monotonic() >= opruimen:
+            opruimen = time.monotonic() + OPRUIM_INTERVAL
+            # Zonder goede klok is niet te zeggen wat oud is (§4.2).
+            if klok_ok() and os.path.isdir(map_):
+                try:
+                    aantal = ruim_fotos(db, map_, bewaren, time.time())
+                    if aantal:
+                        log.info("%d oude foto's opgeruimd", aantal)
+                except (sqlite3.Error, OSError):
+                    log.exception("opruimen van oude foto's mislukt")
+        try:
+            topic, payload = await asyncio.wait_for(q.get(), timeout=1.0)
+        except TimeoutError:
+            continue
+        try:
+            log.debug(verwerk_opname(db, payload))
+        except ValueError as e:
+            log.warning("ongeldig bericht op %s genegeerd: %s", topic, e)
+        except sqlite3.Error:
+            log.exception("vastleggen van opname mislukt (%s)", topic)
+
+
 async def _alarmen(db: Database, q: asyncio.Queue, stop: asyncio.Event, klok_ok) -> None:
     """Legt de berichten van de alarmlaag vast, direct bij ontvangst. Loopt naast de
     hoofdlus in dezelfde asyncio-loop (en dus in dezelfde thread als de database)."""
@@ -379,6 +530,10 @@ async def draai(config: Config, bus, stop: asyncio.Event, klok_ok=klok_gesynchro
     # De alarmen van de alarmlaag (§5.5.3 punt 8), in een eigen taak naast deze lus.
     alarmtaak = asyncio.create_task(
         _alarmen(db, bus.wachtrij(f"{TOPIC_ALARM}/#", qos=1), stop, klok_ok))
+    # De opnames van de camera's (§5.7 punt 14), ook in een eigen taak.
+    opnametaak = asyncio.create_task(
+        _opnames(db, bus.wachtrij(f"{TOPIC_OPNAME}/#", qos=1), stop, klok_ok,
+                 config.opnames.map, config.opnames.foto_bewaren))
     moment = volgend_moment(time.time())
     log.info("opslag gestart; database %s", config.opslag.database)
     try:
@@ -436,12 +591,13 @@ async def draai(config: Config, bus, stop: asyncio.Event, klok_ok=klok_gesynchro
                 stap("opgenomen", f"interval tot {tot}: {agg.beschrijf(m, veranderd)}",
                      m.grootheid)
     finally:
-        # Eerst de alarmtaak laten stoppen; die gebruikt de database nog.
-        if not stop.is_set():
-            alarmtaak.cancel()
-        try:
-            await alarmtaak
-        except asyncio.CancelledError:
-            pass
+        # Eerst de neventaken laten stoppen; die gebruiken de database nog.
+        for taak in (alarmtaak, opnametaak):
+            if not stop.is_set():
+                taak.cancel()
+            try:
+                await taak
+            except asyncio.CancelledError:
+                pass
         db.sluit()
         log.info("opslag gestopt")

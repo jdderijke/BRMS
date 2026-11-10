@@ -11,6 +11,7 @@ Opdrachten:
   shelly-reader       de Shelly-reader-service starten (§5.2.1, §5.2.4)
   opslag              de opslag-service starten (§5.3)
   alarm               de alarmlaag starten (§5.5)
+  camera              de camera-reader-service starten (§5.7)
   web                 de webservice starten (§5.6)
   monitor [sensor..]  monitor in tmux: busverkeer, of met sensor(en) de trace (§10.2)
   monitor stop        het monitorvak sluiten; de shell blijft
@@ -45,7 +46,7 @@ def _check_config(cfg_pad: str) -> int:
             print(f"  - {f}", file=sys.stderr)
         return 1
     print(f"Configuratie {cfg_pad} is in orde: {len(cfg.sensoren)} sensoren, "
-          f"{len(cfg.alarmen)} alarmregels.")
+          f"{len(cfg.alarmen)} alarmregels, {len(cfg.cameras)} camera's.")
     # Geen fout, wel het melden waard (§5.5.4 punt 7).
     if not cfg.melding.ingesteld and any(r.melding != "uit" for r in cfg.alarmen):
         print("Let op: er is geen meldingskanaal ingesteld ([melding.telegram] of "
@@ -121,6 +122,9 @@ async def _service(naam: str, cfg: config.Config) -> None:
         elif naam == "alarm":
             from brms import alarms
             await alarms.draai(cfg, bus, stop)
+        elif naam == "camera":
+            from brms.readers import camera
+            await camera.draai(cfg, bus, stop)
         else:
             from brms import storage
             await storage.draai(cfg, bus, stop)
@@ -235,6 +239,7 @@ services (worden door systemd gestart – niet met de hand; gebruik brms herstar
   shelly-reader          Shelly-reader   (systemd-unit brms-shelly-reader)
   opslag                 opslag-service  (systemd-unit brms-opslag)
   alarm                  alarmlaag       (systemd-unit brms-alarm)
+  camera                 camera-reader   (systemd-unit brms-camera)
   web                    webinterface    (systemd-unit brms-web)
 """
 
@@ -268,6 +273,7 @@ def main(argv=None) -> int:
     p.add_argument("opdracht",
                    choices=("check-config", "grootheden", "start", "stop", "herstart", "update",
                             "monitor", "sim", "simuleer", "ble-reader", "shelly-reader", "opslag", "alarm",
+                            "camera",
                             "web",
                             "monitor-vak"))
     p.add_argument("sensoren", nargs="*",

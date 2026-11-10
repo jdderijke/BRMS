@@ -355,6 +355,100 @@ class TestConfig(unittest.TestCase):
                          "onbekende sleutel 'kleur'", "meer dan eens"]:
             self.assertIn(verwacht, tekst_fouten)
 
+    def test_camera_en_opnames(self):
+        cfg = _toml("""
+            [opnames]
+            map = "data/fotos"
+            foto_bewaren = "7d"
+            video_ruimte = 5
+
+            [[camera]]
+            id = "dek"
+            naam = "Dek"
+            gebruiker = "brms"
+            wachtwoord = "geheim"
+            foto_url = "http://192.168.1.20:89/snap?usr={gebruiker}&pwd={wachtwoord}"
+            video_url = "rtsp://{gebruiker}:{wachtwoord}@192.168.1.20:89/videoMain"
+            foto_interval = "1m"
+
+            [[camera]]
+            id = "kajuit-cam"
+            foto_url = "https://camera.local/snap.jpg"
+        """)
+        dek, kajuit = cfg.cameras["dek"], cfg.cameras["kajuit-cam"]
+        self.assertEqual((dek.naam, dek.gebruiker, dek.wachtwoord, dek.foto_interval, dek.video_duur),
+                         ("Dek", "brms", "geheim", 60.0, 120.0))
+        self.assertTrue(dek.video_url.startswith("rtsp://"))
+        # Zonder naam geldt het ID; zonder account en zonder video mag ook.
+        self.assertEqual((kajuit.naam, kajuit.gebruiker, kajuit.video_url, kajuit.foto_interval),
+                         ("kajuit-cam", None, None, 180.0))
+        self.assertEqual(cfg.opnames, config.OpnamenConfig(
+            os.path.join(config.PROJECTMAP, "data", "fotos"), 7 * 86400.0, 5.0))
+
+    def test_zonder_camera(self):
+        cfg = _toml("")
+        self.assertEqual(cfg.cameras, {})
+        self.assertEqual(cfg.opnames.map, os.path.join(config.PROJECTMAP, "data", "opnames"))
+        self.assertEqual((cfg.opnames.foto_bewaren, cfg.opnames.video_ruimte), (14 * 86400.0, 20.0))
+
+    def test_fouten_in_camera_en_opnames(self):
+        tekst = """
+            [opnames]
+            foto_bewaren = "14"
+            video_ruimte = 0
+            kleur = "rood"
+
+            [[camera]]
+            id = "dek"
+            foto_url = "http://camera/snap?pwd=GEHEIM-in-het-adres {wachtwoord}"
+
+            [[camera]]
+            id = "dek"
+            foto_url = "ftp://camera/snap.jpg"
+            video_url = "http://camera/video"
+            wachtwoord = "w"
+            foto_interval = "1s"
+
+            [[camera]]
+            id = "voor dek"
+            foto_url = "http://camera/snap?pwd={wachtwoord}"
+        """
+        with self.assertRaises(config.ConfigFout) as ctx:
+            _toml(tekst)
+        fouten = "\n".join(ctx.exception.fouten)
+        for verwacht in ["'foto_bewaren' moet een tijdsduur", "'video_ruimte'",
+                         "onbekende sleutel 'kleur'", "zonder spaties", "'foto_url' moet een adres",
+                         "'video_url' moet een adres", "horen bij elkaar",
+                         "'foto_interval' moet tussen", "'id' ontbreekt of bevat",
+                         "maar 'gebruiker' en 'wachtwoord' ontbreken"]:
+            self.assertIn(verwacht, fouten)
+        # Een adres komt nooit in een foutmelding: er kan een wachtwoord in staan.
+        self.assertNotIn("GEHEIM", fouten)
+
+    def test_camera_id_botst_niet_met_sensor_of_camera(self):
+        with self.assertRaises(config.ConfigFout) as ctx:
+            _toml("""
+                [[sensor]]
+                id = "shelly-bilge"
+                type = "shelly-uni"
+                naam = "bilge"
+                adres = "192.168.1.50"
+                bron = { bilge = "input:0" }
+
+                [[camera]]
+                id = "shelly-bilge"
+                foto_url = "http://camera/a.jpg"
+
+                [[camera]]
+                id = "dek"
+                foto_url = "http://camera/a.jpg"
+
+                [[camera]]
+                id = "dek"
+                foto_url = "http://camera/b.jpg"
+            """)
+        self.assertEqual(sum("komt meer dan eens voor" in f for f in ctx.exception.fouten), 2)
+
     def test_ontbrekend_bestand(self):
         with self.assertRaises(config.ConfigFout):
             config.lees(os.path.join(tempfile.gettempdir(), "bestaat-niet-brms.toml"))

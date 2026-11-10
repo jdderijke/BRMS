@@ -218,6 +218,40 @@ class Alarmregel:
     prioriteit: str = "normaal"
 
 
+# Grenzen van de camera-instellingen (§5.7), in seconden.
+MIN_FOTO_INTERVAL, MAX_FOTO_INTERVAL = 10.0, 86400.0
+MIN_VIDEO_DUUR, MAX_VIDEO_DUUR = 5.0, 600.0
+# De invulplaatsen voor het account in een camera-adres (§5.7 punt 7).
+PLAATS_GEBRUIKER, PLAATS_WACHTWOORD = "{gebruiker}", "{wachtwoord}"
+
+
+@dataclass(frozen=True)
+class Camera:
+    """Eén blok [[camera]] uit de configuratie (§5.7 punt 7). Tijden in seconden."""
+    id: str                      # vaste naam; staat in de database en in de bestandsnaam
+    naam: str
+    # Het snapshot-adres (http/https). Op de plaats van het account staan {gebruiker} en
+    # {wachtwoord}; de camera-reader vult die in.
+    foto_url: str = field(repr=False)
+    # Het adres van de RTSP-stroom voor video's; None = deze camera maakt geen video's.
+    video_url: str | None = field(default=None, repr=False)
+    gebruiker: str | None = None
+    # Een geheim: komt niet in logregels of foutmeldingen (zie TelegramConfig). Ook de
+    # adressen staan niet in de repr: iemand kan het wachtwoord er letterlijk in zetten.
+    wachtwoord: str | None = field(default=None, repr=False)
+    foto_interval: float = 180.0
+    video_duur: float = 120.0
+
+
+@dataclass(frozen=True)
+class OpnamenConfig:
+    """Het blok [opnames] (§5.7 punt 7)."""
+    # De opnamemap; een relatief pad geldt vanaf de projectmap (zoals de database).
+    map: str = os.path.normpath(os.path.join(PROJECTMAP, "data", "opnames"))
+    foto_bewaren: float = 14 * 86400.0   # seconden
+    video_ruimte: float = 20.0           # GB
+
+
 @dataclass(frozen=True)
 class Config:
     mqtt: MqttConfig
@@ -226,6 +260,8 @@ class Config:
     web: WebConfig = WebConfig()
     melding: MeldingConfig = MeldingConfig()
     alarmen: tuple[Alarmregel, ...] = ()
+    cameras: dict[str, Camera] = field(default_factory=dict)   # id -> Camera
+    opnames: OpnamenConfig = OpnamenConfig()
 
 
 def levert(sensor: Sensor) -> tuple[str, ...]:
@@ -441,6 +477,114 @@ def _melding(fouten, data: dict) -> MeldingConfig:
     return MeldingConfig(telegram, email)
 
 
+def _tijd(fouten, plek, d: dict, sleutel: str, standaard: float, laagste: float,
+          hoogste: float) -> float:
+    """Haalt een optionele tijdsduur op ("3m", "120s") en controleert de grenzen; bij een
+    fout wordt die gemeld en geldt de standaardwaarde."""
+    if sleutel not in d:
+        return standaard
+    try:
+        seconden = duur(d[sleutel])
+    except ValueError as e:
+        fouten.append(f"{plek}: '{sleutel}' {e}")
+        return standaard
+    if not laagste <= seconden <= hoogste:
+        fouten.append(f"{plek}: '{sleutel}' moet tussen {laagste:g} en {hoogste:g} seconden liggen")
+        return standaard
+    return seconden
+
+
+def _adres(fouten, plek, c: dict, sleutel: str, schemas: tuple[str, ...]) -> str | None:
+    """Controleert een camera-adres. De waarde zelf komt niet in de melding: er kan een
+    wachtwoord in staan."""
+    w = c.get(sleutel)
+    if not isinstance(w, str) or not w.startswith(schemas) or any(t.isspace() for t in w):
+        fouten.append(f"{plek}: '{sleutel}' moet een adres zijn dat begint met "
+                      f"{' of '.join(schemas)}, zonder spaties")
+        return None
+    return w
+
+
+def _cameras(fouten, data: dict, sensoren: dict[str, Sensor]) -> dict[str, Camera]:
+    """Controleert de blokken [[camera]] (§5.7 punt 7)."""
+    lijst = data.get("camera", [])
+    if not isinstance(lijst, list):
+        fouten.append("[[camera]] moet een lijst van tabellen zijn")
+        return {}
+    cameras: dict[str, Camera] = {}
+    for n, c in enumerate(lijst, 1):
+        plek = f"[[camera]] nr. {n}"
+        if not isinstance(c, dict):
+            fouten.append(f"{plek}: moet een tabel zijn")
+            continue
+        _onbekend(fouten, plek, c, ("id", "naam", "foto_url", "video_url", "gebruiker",
+                                    "wachtwoord", "foto_interval", "video_duur"))
+        aantal_fouten = len(fouten)
+
+        cid = c.get("id")
+        if not isinstance(cid, str) or not _VRIJ_ID.match(cid):
+            fouten.append(f"{plek}: 'id' ontbreekt of bevat andere tekens dan letters, cijfers, "
+                          f"'-' en '_' (bijv. \"dek\")")
+            cid = None
+        else:
+            plek = f"{plek} ({cid})"
+            # Het ID wordt een mapnaam en een topic; het mag niet botsen met een sensor.
+            if cid in cameras or cid in sensoren:
+                fouten.append(f"{plek}: id {cid} komt meer dan eens voor")
+        # Zonder naam geldt het ID als naam.
+        naam = c.get("naam", cid or "?")
+        if not isinstance(naam, str) or not naam.strip():
+            fouten.append(f"{plek}: 'naam' moet een niet-lege tekst zijn")
+
+        foto_url = _adres(fouten, plek, c, "foto_url", ("http://", "https://"))
+        video_url = None
+        if "video_url" in c:
+            video_url = _adres(fouten, plek, c, "video_url", ("rtsp://", "rtsps://"))
+
+        # Het account: beide of geen van beide. Staat er een invulplaats in een adres, dan
+        # moet het account er zijn (anders gaat de tekst {wachtwoord} naar de camera).
+        gebruiker, wachtwoord = c.get("gebruiker"), c.get("wachtwoord")
+        for sleutel, w in (("gebruiker", gebruiker), ("wachtwoord", wachtwoord)):
+            if w is not None and (not isinstance(w, str) or not w):
+                fouten.append(f"{plek}: '{sleutel}' moet een niet-lege tekst zijn")
+        if (gebruiker is None) != (wachtwoord is None):
+            fouten.append(f"{plek}: 'gebruiker' en 'wachtwoord' horen bij elkaar; een van de twee ontbreekt")
+        adressen = (foto_url or "") + (video_url or "")
+        if gebruiker is None and (PLAATS_GEBRUIKER in adressen or PLAATS_WACHTWOORD in adressen):
+            fouten.append(f"{plek}: een adres bevat {PLAATS_GEBRUIKER} of {PLAATS_WACHTWOORD}, "
+                          f"maar 'gebruiker' en 'wachtwoord' ontbreken")
+
+        foto_interval = _tijd(fouten, plek, c, "foto_interval", Camera.foto_interval,
+                              MIN_FOTO_INTERVAL, MAX_FOTO_INTERVAL)
+        video_duur = _tijd(fouten, plek, c, "video_duur", Camera.video_duur,
+                           MIN_VIDEO_DUUR, MAX_VIDEO_DUUR)
+        if len(fouten) == aantal_fouten:
+            cameras[cid] = Camera(cid, naam.strip(), foto_url, video_url, gebruiker, wachtwoord,
+                                  foto_interval, video_duur)
+    return cameras
+
+
+def _opnames(fouten, data: dict) -> OpnamenConfig:
+    """Controleert het blok [opnames] (§5.7 punt 7)."""
+    o = _tabel(fouten, data, "opnames")
+    plek = "[opnames]"
+    _onbekend(fouten, plek, o, ("map", "foto_bewaren", "video_ruimte"))
+    map_ = o.get("map", OpnamenConfig.map)
+    if not isinstance(map_, str) or not map_:
+        fouten.append(f"{plek}: 'map' moet een niet-leeg pad zijn")
+        map_ = OpnamenConfig.map
+    elif not os.path.isabs(map_):
+        map_ = os.path.normpath(os.path.join(PROJECTMAP, map_))
+    # Minstens een uur: korter is altijd een tikfout ("14" in plaats van "14d" is geen duur).
+    bewaren = _tijd(fouten, plek, o, "foto_bewaren", OpnamenConfig.foto_bewaren, 3600.0,
+                    3650 * 86400.0)
+    ruimte = o.get("video_ruimte", OpnamenConfig.video_ruimte)
+    if not _getal(ruimte) or ruimte <= 0:
+        fouten.append(f"{plek}: 'video_ruimte' moet een getal groter dan 0 zijn (GB)")
+        ruimte = OpnamenConfig.video_ruimte
+    return OpnamenConfig(map_, bewaren, float(ruimte))
+
+
 def _alarmen(fouten, data: dict, sensoren: dict[str, Sensor]) -> tuple[Alarmregel, ...]:
     """Controleert de blokken [[alarm]] (§5.5.3 punt 1) en zet ze om in Alarmregels."""
     lijst = data.get("alarm", [])
@@ -602,7 +746,7 @@ def controleer(data: dict) -> Config:
     """
     fouten: list[str] = []
     _onbekend(fouten, "bovenste niveau", data,
-              ("mqtt", "opslag", "web", "sensor", "melding", "alarm"))
+              ("mqtt", "opslag", "web", "sensor", "melding", "alarm", "camera", "opnames"))
 
     # --- [mqtt] ---
     m = _tabel(fouten, data, "mqtt")
@@ -743,7 +887,11 @@ def controleer(data: dict) -> Config:
     melding = _melding(fouten, data)
     alarmen = _alarmen(fouten, data, sensoren)
 
+    # --- [[camera]] en [opnames] (§5.7) ---
+    cameras = _cameras(fouten, data, sensoren)
+    opnames = _opnames(fouten, data)
+
     if fouten:
         raise ConfigFout(fouten)
     return Config(MqttConfig(host, port), OpslagConfig(database), sensoren,
-                  WebConfig(web_host, web_port), melding, alarmen)
+                  WebConfig(web_host, web_port), melding, alarmen, cameras, opnames)

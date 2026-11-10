@@ -8,7 +8,7 @@ Zie `CLAUDE.md` voor ontwerp, hardware en architectuur.
 ## Structuur
 ```
 brms/            Python-package
-  readers/       één module per sensortype (BTHome, Ruuvi, Victron, Shelly)
+  readers/       één module per sensortype (BTHome, Ruuvi, Victron, Shelly, camera)
   storage.py     SQLite (WAL)
   alarms.py      alarmlaag: alarmregels beoordelen
   melding.py     meldingen via Telegram en e-mail
@@ -16,6 +16,6 @@ brms/            Python-package
   web/           Flask + Chart.js
 config/          brms.example.toml; eigen brms.toml ernaast (niet in git)
 deploy/systemd/  service-bestanden
-data/            SQLite-database (niet in git)
+data/            SQLite-database en camera-opnames (niet in git)
 tests/
 ```
