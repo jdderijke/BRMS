@@ -13,6 +13,9 @@ De sleutel van de bot en het wachtwoord van de mail zijn geheimen: ze komen nooi
 logregel of foutmelding (§5.5.4 punt 4). De token staat in het adres van de aanvraag aan
 Telegram; elke foutmelding wordt daarom eerst geschoond (zie _schoon).
 
+Een melding kan een foto bij zich hebben (§5.7 punt 15): Telegram toont die als
+afbeelding met de tekst als onderschrift, de e-mail krijgt hem als bijlage.
+
 Dit module bevat:
 - Melding: wat er verstuurd wordt;
 - telegram() en email(): één bericht over één kanaal (blokkerend; MeldFout bij mislukken);
@@ -25,6 +28,7 @@ import logging
 import smtplib
 import ssl
 import time
+import uuid
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -46,6 +50,9 @@ MAX_LEEFTIJD = 24 * 3600.0
 # alarmen vervallen de oudste.
 MAX_WACHTRIJ = 200
 
+# Het onderschrift van een foto in Telegram is hooguit zo lang.
+MAX_ONDERSCHRIFT = 1024
+
 
 class MeldFout(Exception):
     """Een bericht kon niet verstuurd worden. De tekst bevat geen geheimen."""
@@ -56,6 +63,10 @@ class Melding:
     titel: str                   # één regel, bijv. "Vorst – kajuit: temperatuur 1,8 °C"
     tekst: str = ""              # eventuele toelichting eronder
     prioriteit: str = "normaal"  # urgent, hoog of normaal (§5.5.2 punt 8)
+    # Een foto bij de melding (§5.7 punt 15): de bytes van een JPEG, en de bestandsnaam
+    # voor de bijlage. repr=False: de bytes horen niet in een afgedrukte Melding.
+    foto: bytes | None = field(default=None, repr=False)
+    foto_naam: str = "foto.jpg"
 
 
 def _schoon(tekst: str, *geheimen: str) -> str:
@@ -66,17 +77,42 @@ def _schoon(tekst: str, *geheimen: str) -> str:
     return tekst
 
 
+def _formulier(velden: dict[str, str], naam: str, bestandsnaam: str, data: bytes) -> tuple[bytes, str]:
+    """Bouwt een formulier met een bestand erin (multipart/form-data), zoals Telegram een
+    foto wil ontvangen. Geeft (inhoud, Content-Type). De standaardbibliotheek heeft hier
+    geen kant-en-klare functie voor."""
+    grens = uuid.uuid4().hex
+    delen = []
+    for sleutel, waarde in velden.items():
+        delen.append(f'--{grens}\r\nContent-Disposition: form-data; name="{sleutel}"\r\n\r\n'
+                     f'{waarde}\r\n'.encode())
+    delen.append(f'--{grens}\r\nContent-Disposition: form-data; name="{naam}"; '
+                 f'filename="{bestandsnaam}"\r\nContent-Type: image/jpeg\r\n\r\n'.encode())
+    delen.append(data)
+    delen.append(f"\r\n--{grens}--\r\n".encode())
+    return b"".join(delen), f"multipart/form-data; boundary={grens}"
+
+
 def telegram(cfg: TelegramConfig, m: Melding, timeout: float = TIMEOUT) -> None:
-    """Stuurt één bericht via de Telegram-bot. Blokkeert; MeldFout als het niet lukt."""
-    inhoud = json.dumps({
-        "chat_id": cfg.chat,
-        "text": m.titel + (f"\n{m.tekst}" if m.tekst else ""),
-        # 'normaal' komt binnen zonder geluid; 'hoog' en 'urgent' met (§5.5.4 punt 5).
-        "disable_notification": m.prioriteit == "normaal",
-    }).encode()
+    """Stuurt één bericht via de Telegram-bot. Blokkeert; MeldFout als het niet lukt.
+    Met een foto: als afbeelding met de tekst als onderschrift (sendPhoto)."""
+    tekst = m.titel + (f"\n{m.tekst}" if m.tekst else "")
+    # 'normaal' komt binnen zonder geluid; 'hoog' en 'urgent' met (§5.5.4 punt 5).
+    stil = m.prioriteit == "normaal"
+    if m.foto is None:
+        methode = "sendMessage"
+        inhoud = json.dumps({"chat_id": cfg.chat, "text": tekst,
+                             "disable_notification": stil}).encode()
+        soort = "application/json"
+    else:
+        methode = "sendPhoto"
+        inhoud, soort = _formulier(
+            {"chat_id": cfg.chat, "caption": tekst[:MAX_ONDERSCHRIFT],
+             "disable_notification": "true" if stil else "false"},
+            "photo", m.foto_naam, m.foto)
     aanvraag = urllib.request.Request(
-        f"https://api.telegram.org/bot{cfg.token}/sendMessage", data=inhoud,
-        headers={"Content-Type": "application/json"})
+        f"https://api.telegram.org/bot{cfg.token}/{methode}", data=inhoud,
+        headers={"Content-Type": soort})
     try:
         with urllib.request.urlopen(aanvraag, timeout=timeout) as r:
             antwoord = json.loads(r.read(65536))
@@ -103,6 +139,8 @@ def email(cfg: EmailConfig, m: Melding, timeout: float = TIMEOUT) -> None:
     bericht["From"] = cfg.van
     bericht["To"] = ", ".join(cfg.aan)
     bericht.set_content(m.titel + (f"\n\n{m.tekst}" if m.tekst else "") + "\n")
+    if m.foto is not None:
+        bericht.add_attachment(m.foto, maintype="image", subtype="jpeg", filename=m.foto_naam)
     try:
         context = ssl.create_default_context()
         if cfg.poort == 465:

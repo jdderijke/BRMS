@@ -191,6 +191,11 @@ ALARM_SOORTEN = (GRENS, AANTAL, STIL)
 MELDINGEN = ("uit", "eenmalig", "herhaald")
 # Prioriteit van een melding (§5.5.2 punt 8).
 PRIORITEITEN = ("urgent", "hoog", "normaal")
+# Foto bij een notificatie (§5.5.3 punt 5): bij het begin van het alarm, of ook bij elke
+# herinnering.
+FOTO_BIJ = ("begin", "elke")
+# Acties die gebouwd zijn (§5.5.3 punt 6); het relais volgt nog.
+ACTIES = ("video", "foto")
 
 
 @dataclass(frozen=True)
@@ -216,6 +221,10 @@ class Alarmregel:
     herhaling: float | None = None  # tussenpoos van de herinnering bij 'herhaald'
     herstelmelding: bool = True
     prioriteit: str = "normaal"
+    # --- camera (§5.5.3 punt 5 en 6, §5.7 punt 15) ---
+    foto: str | None = None      # foto bij de notificatie: "begin" of "elke"; None = geen
+    acties: tuple[str, ...] = ()  # "video" en/of "foto": opname als het alarm afgaat
+    camera: str | None = None    # ID van de camera voor foto en acties
 
 
 # Grenzen van de camera-instellingen (§5.7), in seconden.
@@ -585,7 +594,62 @@ def _opnames(fouten, data: dict) -> OpnamenConfig:
     return OpnamenConfig(map_, bewaren, float(ruimte))
 
 
-def _alarmen(fouten, data: dict, sensoren: dict[str, Sensor]) -> tuple[Alarmregel, ...]:
+def _camera_bij_alarm(fouten, plek, a: dict, melding: str,
+                      cameras: dict[str, Camera]) -> tuple[str | None, tuple[str, ...], str | None]:
+    """Controleert 'foto', 'actie' en 'camera' van een alarmregel (§5.5.3 punt 5 en 6);
+    geeft (foto, acties, camera-ID)."""
+    # --- foto bij de notificatie ---
+    foto = a.get("foto")
+    if foto == "geen":
+        foto = None          # hetzelfde als het veld weglaten
+    if foto is not None and foto not in FOTO_BIJ:
+        fouten.append(f"{plek}: 'foto' moet \"geen\", \"begin\" of \"elke\" zijn")
+        foto = None
+    elif foto is not None and melding == "uit":
+        fouten.append(f"{plek}: 'foto' gaat mee met de melding, maar melding = \"uit\"; "
+                      f"gebruik voor een losse foto: actie = [{{ type = \"foto\" }}]")
+
+    # --- acties: een lijst van tabellen, elk met een type ---
+    acties: list[str] = []
+    lijst = a.get("actie", [])
+    if not isinstance(lijst, list) or not all(isinstance(x, dict) for x in lijst):
+        fouten.append(f"{plek}: 'actie' moet een lijst van tabellen zijn, "
+                      f"bijv. [{{ type = \"video\" }}]")
+        lijst = []
+    for actie in lijst:
+        type_ = actie.get("type")
+        if type_ == "relais":
+            fouten.append(f"{plek}: actie 'relais' is nog niet gebouwd (§5.2.6)")
+        elif type_ not in ACTIES:
+            fouten.append(f"{plek}: actie 'type' moet een van {', '.join(ACTIES)} zijn, niet {type_!r}")
+        elif type_ in acties:
+            fouten.append(f"{plek}: actie '{type_}' staat er meer dan eens")
+        else:
+            _onbekend(fouten, f"{plek}: actie '{type_}'", actie, ("type",))
+            acties.append(type_)
+
+    # --- camera: welke camera de foto of video maakt; zonder dit veld de eerste ---
+    camera = a.get("camera")
+    if foto is None and not acties:
+        if camera is not None:
+            fouten.append(f"{plek}: 'camera' zonder 'foto' of 'actie' doet niets")
+        return None, (), None
+    if camera is None:
+        if not cameras:
+            fouten.append(f"{plek}: 'foto' of 'actie' gevraagd, maar er is geen [[camera]] ingesteld")
+            return foto, tuple(acties), None
+        camera = next(iter(cameras))
+    elif camera not in cameras:
+        fouten.append(f"{plek}: onbekende camera {camera!r}"
+                      + (f"; ingesteld: {', '.join(cameras)}" if cameras else "; er is geen [[camera]]"))
+        return foto, tuple(acties), None
+    if "video" in acties and cameras[camera].video_url is None:
+        fouten.append(f"{plek}: actie 'video', maar camera {camera} heeft geen 'video_url'")
+    return foto, tuple(acties), camera
+
+
+def _alarmen(fouten, data: dict, sensoren: dict[str, Sensor],
+             cameras: dict[str, Camera]) -> tuple[Alarmregel, ...]:
     """Controleert de blokken [[alarm]] (§5.5.3 punt 1) en zet ze om in Alarmregels."""
     lijst = data.get("alarm", [])
     if not isinstance(lijst, list):
@@ -601,7 +665,7 @@ def _alarmen(fouten, data: dict, sensoren: dict[str, Sensor]) -> tuple[Alarmrege
         _onbekend(fouten, plek, a, (
             "id", "naam", "sensoren", "grootheid", "soort", "boven", "onder", "duur", "herstel",
             "herstelduur", "aantal", "venster", "melding", "herhaling", "herstelmelding",
-            "prioriteit", "foto", "actie"))
+            "prioriteit", "foto", "actie", "camera"))
         aantal_fouten = len(fouten)
 
         aid = a.get("id")
@@ -722,10 +786,8 @@ def _alarmen(fouten, data: dict, sensoren: dict[str, Sensor]) -> tuple[Alarmrege
         if prioriteit not in PRIORITEITEN:
             fouten.append(f"{plek}: 'prioriteit' moet een van {', '.join(PRIORITEITEN)} zijn")
 
-        # Foto's en acties (§5.5.3 punt 5 en 6) volgen in een latere bouwstap (punt 11).
-        for k in ("foto", "actie"):
-            if k in a:
-                fouten.append(f"{plek}: '{k}' is nog niet gebouwd (volgt met het relais en de camera)")
+        # Foto bij de notificatie en acties met de camera (§5.5.3 punt 5 en 6).
+        foto, acties, camera = _camera_bij_alarm(fouten, plek, a, melding, cameras)
 
         if len(fouten) == aantal_fouten:
             regels.append(Alarmregel(
@@ -734,7 +796,7 @@ def _alarmen(fouten, data: dict, sensoren: dict[str, Sensor]) -> tuple[Alarmrege
                 float(onder) if onder is not None else None,
                 float(herstel) if herstel is not None else None,
                 aantal, venster, regel_duur, herstelduur, melding, herhaling, herstelmelding,
-                prioriteit))
+                prioriteit, foto, acties, camera))
     return tuple(regels)
 
 
@@ -883,13 +945,14 @@ def controleer(data: dict) -> Config:
         sensoren[sid] = Sensor(sid, stype, snaam if isinstance(snaam, str) else "", correcties,
                                tuple(lijst_g) if lijst_g is not None else None, sleutel, **shelly)
 
-    # --- [melding] en [[alarm]] (§5.5.3, §5.5.4); de regels verwijzen naar de sensoren ---
-    melding = _melding(fouten, data)
-    alarmen = _alarmen(fouten, data, sensoren)
-
     # --- [[camera]] en [opnames] (§5.7) ---
     cameras = _cameras(fouten, data, sensoren)
     opnames = _opnames(fouten, data)
+
+    # --- [melding] en [[alarm]] (§5.5.3, §5.5.4); de regels verwijzen naar de sensoren
+    # en de camera's ---
+    melding = _melding(fouten, data)
+    alarmen = _alarmen(fouten, data, sensoren, cameras)
 
     if fouten:
         raise ConfigFout(fouten)

@@ -281,7 +281,7 @@ class TestConfig(unittest.TestCase):
                          "(c): 'duur' ontbreekt",
                          "'prioriteit' moet een van urgent, hoog, normaal zijn",
                          "'herstelmelding' moet true of false zijn",
-                         "'actie' is nog niet gebouwd",
+                         "'foto' of 'actie' gevraagd, maar er is geen [[camera]] ingesteld",
                          "nr. 5: 'id' ontbreekt of bevat andere tekens",
                          "'soort' moet een van grens, aantal, stil zijn"]:
             self.assertIn(verwacht, fouten)
@@ -384,6 +384,74 @@ class TestConfig(unittest.TestCase):
                          ("kajuit-cam", None, None, 180.0))
         self.assertEqual(cfg.opnames, config.OpnamenConfig(
             os.path.join(config.PROJECTMAP, "data", "fotos"), 7 * 86400.0, 5.0))
+
+    _MET_CAMERA = """
+        [[sensor]]
+        id = "A4:C1:38:00:00:01"
+        type = "bthome"
+        naam = "kajuit"
+
+        [[camera]]
+        id = "dek"
+        foto_url = "http://camera/snap.jpg"
+        video_url = "rtsp://camera/video"
+
+        [[camera]]
+        id = "kajuit-cam"
+        foto_url = "http://camera2/snap.jpg"
+
+        [[alarm]]
+        sensoren = ["kajuit"]
+        grootheid = "temperatuur"
+        soort = "grens"
+        onder = 2.0
+    """
+
+    def test_foto_en_acties_bij_een_alarm(self):
+        cfg = _toml(self._MET_CAMERA + """
+            id = "vorst"
+            foto = "elke"
+            herhaling = "1u"
+            actie = [{ type = "video" }, { type = "foto" }]
+
+            [[alarm]]
+            id = "vocht"
+            sensoren = ["kajuit"]
+            grootheid = "vocht"
+            soort = "grens"
+            boven = 85
+            foto = "begin"
+            camera = "kajuit-cam"
+
+            [[alarm]]
+            id = "stil"
+            sensoren = ["kajuit"]
+            soort = "stil"
+            duur = "30m"
+        """)
+        vorst, vocht, stil = cfg.alarmen
+        # Zonder 'camera' geldt de eerste camera uit de configuratie.
+        self.assertEqual((vorst.foto, vorst.acties, vorst.camera), ("elke", ("video", "foto"), "dek"))
+        self.assertEqual((vocht.foto, vocht.acties, vocht.camera), ("begin", (), "kajuit-cam"))
+        self.assertEqual((stil.foto, stil.acties, stil.camera), (None, (), None))
+
+    def test_fouten_in_foto_en_acties(self):
+        for regel, verwacht in [
+                ('foto = "altijd"', "'foto' moet \"geen\", \"begin\" of \"elke\" zijn"),
+                ('foto = "geen"\ncamera = "dek"', "'camera' zonder 'foto' of 'actie' doet niets"),
+                ('foto = "begin"\nmelding = "uit"', "'foto' gaat mee met de melding"),
+                ('actie = { type = "video" }', "'actie' moet een lijst van tabellen zijn"),
+                ('actie = [{ type = "relais", relais = "kachel" }]', "actie 'relais' is nog niet gebouwd"),
+                ('actie = [{ type = "sirene" }]', "actie 'type' moet een van video, foto zijn"),
+                ('actie = [{ type = "foto" }, { type = "foto" }]', "staat er meer dan eens"),
+                ('actie = [{ type = "foto", kleur = "rood" }]', "onbekende sleutel 'kleur'"),
+                ('camera = "dek"', "'camera' zonder 'foto' of 'actie' doet niets"),
+                ('foto = "begin"\ncamera = "mast"', "onbekende camera 'mast'; ingesteld: dek, kajuit-cam"),
+                # De tweede camera heeft geen videostroom.
+                ('actie = [{ type = "video" }]\ncamera = "kajuit-cam"', "heeft geen 'video_url'")]:
+            with self.assertRaises(config.ConfigFout, msg=regel) as ctx:
+                _toml(self._MET_CAMERA + 'id = "vorst"\n' + regel)
+            self.assertIn(verwacht, "\n".join(ctx.exception.fouten))
 
     def test_zonder_camera(self):
         cfg = _toml("")

@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.39 – concept** · 10 november 2026
+**Versie 0.40 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1072,10 +1072,10 @@ buitensensor mag geen vorstalarm geven.
 
 #### 5.5.3 Regels, notificaties, acties en de schakelaar (v0.31)
 
-*Stap (a) van punt 11 is gebouwd (v0.33): regels, notificaties, de tabel `alarm` en de
-grenzen in de grafieken. Nog niet gebouwd: de schakelaar (punt 7), acties (punt 6) en de
-foto bij een notificatie (punt 5); `check-config` weigert `actie` en `foto` tot die er
-zijn. Nog niet getest op de Pi en niet met echte meldingen.*
+*Gebouwd: stap (a) van punt 11 (v0.33): regels, notificaties, de tabel `alarm` en de
+grenzen in de grafieken; en met de camera (v0.40) de foto bij een notificatie (punt 5) en
+de acties `video` en `foto` (punt 6). Nog niet gebouwd: de schakelaar (punt 7) en de actie
+`relais`; `check-config` weigert die actie tot hij er is.*
 
 **Aanleiding.** Vastgelegd moest worden hoe een alarm wordt ingesteld, wat het teweegbrengt
 (een notificatie, een actie, of geen van beide), hoe opgetreden alarmen bewaard en getoond
@@ -1131,6 +1131,7 @@ betreffende reader uitvoert. Zo blijft er per apparaat één component die ermee
    | `prioriteit` | `urgent`, `hoog` of `normaal` (§5.5.2 punt 8, §5.5.4) |
    | `foto` | `geen`, `begin` of `elke` (punt 5) |
    | `actie` | lijst van acties (punt 6) |
+   | `camera` | het ID van de camera voor `foto` en `actie`; zonder dit veld de eerste camera uit de configuratie (v0.40) |
 
    Tijden worden geschreven als getal met eenheid: `"90s"`, `"15m"`, `"6u"`, `"7d"`.
    Een andere waarde voor een andere sensor is een tweede blok met een eigen `id`.
@@ -1185,7 +1186,9 @@ betreffende reader uitvoert. Zo blijft er per apparaat één component die ermee
    | `{ type = "relais", relais = "<sensor>" }` | relais aan als het alarm afgaat, uit bij herstel (§5.2.6) |
 
    Een regel kan nul of meer acties hebben. Een opdracht aan de MultiPlus is niet
-   voorzien: Instant Readout is alleen lezen (§5.2.2).
+   voorzien: Instant Readout is alleen lezen (§5.2.2). Een actie wordt alleen uitgevoerd
+   als het alarm afgaat (niet bij een herinnering of bij herstel), ook als de regel
+   `melding = "uit"` heeft (v0.40).
 7. **Schakelaar:** in het web is elke regel **aan of uit** te zetten (§5.6).
    - Uit geldt voor de **hele regel**: geen beoordeling, geen notificatie, geen actie. Een
      alarm dat op dat moment actief is, wordt afgesloten en een relais dat door de regel
@@ -1360,11 +1363,11 @@ met toegang tot het web een alarmregel uitzetten.
 
 ### 5.7 Camera
 
-*Stap (a) en (b) van punt 17 zijn gebouwd: de camera-reader met een foto per interval en
-op verzoek (poll-nu), de tabel `opname` en het opruimen van oude foto's (v0.38), en video
-op verzoek met de maximale ruimte (v0.39). Nog niet gebouwd: foto en video bij een alarm
-(punt 15), en bekijken en verwijderen in het web. Foto's zijn getest met de testcamera
-(Foscam); video nog niet.*
+*Stap (a), (b) en (c) van punt 17 zijn gebouwd: de camera-reader met een foto per
+interval en op verzoek (poll-nu), de tabel `opname` en het opruimen van oude foto's
+(v0.38), video op verzoek met de maximale ruimte (v0.39), en foto en video bij een alarm
+(v0.40, punt 15). Nog niet gebouwd: bekijken en verwijderen in het web. Foto's en video's
+zijn getest met de testcamera (Foscam); de foto bij een alarm nog niet.*
 
 **Redenering.** De camera bekijkt het dek. Een regelmatige foto toont de toestand van de
 boot; een video legt een gebeurtenis vast (iemand stapt aan boord, storm). Een IP-camera
@@ -1482,9 +1485,20 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
     (alleen-lezen). Telegram krijgt de foto als afbeelding met de meldingstekst als
     onderschrift, de e-mail als bijlage. Welke camera, staat in de regel (`camera =
     "<id>"`); zonder dat veld de eerste camera uit de configuratie.
+
+    Gebouwd in v0.40, met deze invulling:
+    - Het wachten gebeurt naast de alarmlaag: metingen worden intussen gewoon beoordeeld.
+    - Gaat dezelfde regel voor meer sensoren tegelijk af, dan delen die meldingen één
+      opdracht en één foto.
+    - Een herstelmelding krijgt geen foto. Een foto groter dan 10 MB gaat niet mee (de
+      grens van Telegram).
+    - Mislukt het versturen, dan blijft de foto bij de melding voor de volgende poging
+      (§5.5.4 punt 6).
+    - `foto` kan niet samen met `melding = "uit"`; een losse foto is een actie.
+    - De alarmlaag leest alleen een pad van de vaste vorm van punt 10.
 16. De camera wordt **niet gesimuleerd** (§10.3): de reader is te testen met een echte
     camera. De testcamera thuis is een Foscam HD-camera (192.168.178.202, webpoort 89),
-    met deze adressen (het foto-adres is beproefd, v0.38; het video-adres nog niet):
+    met deze adressen (beide beproefd, v0.39):
 
     ```toml
     [[camera]]
@@ -1951,7 +1965,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.39** | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (b) gebouwd (§5.7 punt 11 en 5): video op verzoek met `ffmpeg` (pakket in `deploy/pakketten.txt`), oudste video's weg als de maximale ruimte vol is. |
+| **0.40** | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (c) gebouwd (§5.5.3 punt 5 en 6, §5.7 punt 15): foto bij een notificatie (Telegram als afbeelding, e-mail als bijlage), acties `video` en `foto`, veld `camera` in een alarmregel. |
+| 0.39 | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (b) gebouwd (§5.7 punt 11 en 5): video op verzoek met `ffmpeg` (pakket in `deploy/pakketten.txt`), oudste video's weg als de maximale ruimte vol is. |
 | 0.38 | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (a) gebouwd (§5.7): service `brms-camera`, blokken `[[camera]]` en `[opnames]`, foto per interval en op poll-nu, tabel `opname`, opruimen van oude foto's. |
 | 0.37 | 2026-11-10 | Claude Code, Fable 5.2 | OPEN-24 besloten en de camera uitgewerkt (§5.7 punt 6–17): foto via het snapshot-adres, video via RTSP met `ffmpeg`; blokken `[[camera]]` en `[opnames]`; service `brms-camera`; foto bij een alarm; bouwvolgorde. Testcamera thuis: Foscam. Nog niet gebouwd. |
 | 0.36 | 2026-11-10 | Claude Code, Fable 5.2 | Web: de pagina laadt zichzelf opnieuw na een herstart van de webservice, zodat nieuwe sensoren en alarmregels meteen gelden (§5.6). |

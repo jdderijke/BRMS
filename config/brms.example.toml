@@ -180,6 +180,14 @@ naam = "motorruim"
 #   herhaling   bij "herhaald": de tussenpoos van de herinnering
 #   herstelmelding   false = geen melding bij herstel
 #   prioriteit  "urgent", "hoog" (met geluid in Telegram) of "normaal" (zonder geluid)
+# Met een camera (zie [[camera]] hierboven):
+#   foto        "begin": de melding krijgt een foto mee van het moment dat het alarm
+#               afgaat; "elke": ook elke herinnering. Komt de foto niet binnen 15 s, dan
+#               gaat de melding zonder foto.
+#   actie       wat er gebeurt als het alarm afgaat, los van de melding:
+#               actie = [{ type = "video" }]   een video-opname
+#               actie = [{ type = "foto" }]    een extra foto tussen de intervalfoto's
+#   camera      het id van de camera voor foto en actie (zonder: de eerste camera)
 # Tijden: een getal met eenheid: "90s", "15m", "6u", "7d".
 
 [[alarm]]
@@ -295,3 +303,5 @@ herhaling = "7d"
 # venster = "60s"
 # herstelduur = "10m"
 # herstelmelding = false
+# foto = "begin"
+# actie = [{ type = "video" }]

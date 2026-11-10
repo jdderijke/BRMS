@@ -63,6 +63,30 @@ class TestTelegram(unittest.TestCase):
             with self.assertRaises(MeldFout):
                 melding.telegram(TG, VORST)
 
+    def test_met_foto_als_afbeelding_met_onderschrift(self):
+        jpeg = b"\xff\xd8\xff\xe0beeld\r\n--nog-meer"
+        m = Melding("Titel", "Toelichting", prioriteit="hoog", foto=jpeg, foto_naam="dek-203000.jpg")
+        with mock.patch("urllib.request.urlopen", return_value=_Antwoord(b'{"ok": true}')) as u:
+            melding.telegram(TG, m)
+        aanvraag = u.call_args.args[0]
+        self.assertEqual(aanvraag.full_url, f"https://api.telegram.org/bot{TOKEN}/sendPhoto")
+        soort = aanvraag.get_header("Content-type")
+        self.assertTrue(soort.startswith("multipart/form-data; boundary="))
+        # Het formulier is te lezen met de e-mailparser van Python: zo leest Telegram het ook.
+        import email
+        bericht = email.message_from_bytes(
+            b"Content-Type: " + soort.encode() + b"\r\n\r\n" + aanvraag.data)
+        delen = {d.get_param("name", header="content-disposition"): d for d in bericht.get_payload()}
+        self.assertEqual(delen["chat_id"].get_payload(), "-100200300")
+        self.assertEqual(delen["caption"].get_payload(decode=True).decode(), "Titel\nToelichting")
+        self.assertEqual(delen["disable_notification"].get_payload(), "false")
+        self.assertEqual(delen["photo"].get_filename(), "dek-203000.jpg")
+        self.assertEqual(delen["photo"].get_content_type(), "image/jpeg")
+        self.assertEqual(delen["photo"].get_payload(decode=True), jpeg)
+
+    def test_foto_niet_in_repr(self):
+        self.assertNotIn("beeld", repr(Melding("Titel", foto=b"beeld")))
+
     def test_token_niet_in_repr(self):
         self.assertNotIn(TOKEN, repr(MeldingConfig(TG, MAIL)))
         self.assertNotIn(MAIL.wachtwoord, repr(MeldingConfig(TG, MAIL)))
@@ -82,6 +106,17 @@ class TestEmail(unittest.TestCase):
         self.assertEqual((bericht["From"], bericht["To"]),
                          ("boot@voorbeeld.nl", "ik@voorbeeld.nl, jij@voorbeeld.nl"))
         self.assertIn("Vorst – kajuit", bericht.get_content())
+
+    def test_met_foto_als_bijlage(self):
+        jpeg = b"\xff\xd8\xff\xe0beeld"
+        with mock.patch("smtplib.SMTP") as smtp:
+            melding.email(MAIL, Melding("Titel", foto=jpeg, foto_naam="dek-203000.jpg"))
+        bericht = smtp.return_value.send_message.call_args.args[0]
+        (bijlage,) = list(bericht.iter_attachments())
+        self.assertEqual((bijlage.get_content_type(), bijlage.get_filename()),
+                         ("image/jpeg", "dek-203000.jpg"))
+        self.assertEqual(bijlage.get_content(), jpeg)
+        self.assertIn("Titel", bericht.get_body().get_content())
 
     def test_ssl_op_465(self):
         cfg = EmailConfig("smtp.voorbeeld.nl", 465, "u", "w", "a@b.nl", ("c@d.nl",))

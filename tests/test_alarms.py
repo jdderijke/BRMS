@@ -1,11 +1,14 @@
 """Tests van de alarmlaag (ARCHITECTURE.md §5.5.2, §5.5.3) – zonder broker en zonder
 netwerk, met een nep-klok."""
 
+import asyncio
 import json
+import os
+import tempfile
 import unittest
 
 from brms import alarms, config
-from brms.alarms import BEGIN, HERSTEL, Alarmlaag, Bewaker, Gebeurtenis
+from brms.alarms import BEGIN, HERSTEL, Alarmlaag, Bewaker, Fotograaf, Gebeurtenis, MetFoto, Opdracht
 from brms.config import Alarmregel, Config, MqttConfig, OpslagConfig, Sensor
 from brms.melding import Melding
 from brms.meting import maak
@@ -237,6 +240,164 @@ class TestAlarmlaag(unittest.TestCase):
         melding = [m for m in self._meet(laag, 20.0) if isinstance(m, Melding)][0]
         self.assertEqual(melding.titel,
                          "✅ Hersteld: Sensor stil – kajuit: levert weer waarden (was 40 min stil)")
+
+    def test_foto_bij_begin_niet_bij_herinnering_of_herstel(self):
+        laag = self._laag(_regel(onder=2.0, herstel=3.0, melding="herhaald", herhaling=3600,
+                                 foto="begin", camera="dek"))
+        _, begin = self._meet(laag, 1.5)
+        self.assertEqual((type(begin), begin.camera_id, begin.aanleiding), (MetFoto, "dek", "alarm:vorst"))
+        self.assertIn("Vorst – kajuit", begin.melding.titel)
+        self.klok.t += 3600
+        self.assertEqual([type(x) for x in laag.tik()], [Melding])          # herinnering
+        self.assertEqual([type(x) for x in self._meet(laag, 3.5)], [Gebeurtenis, Melding])
+
+    def test_foto_bij_elke_herinnering(self):
+        laag = self._laag(_regel(onder=2.0, melding="herhaald", herhaling=3600, foto="elke",
+                                 camera="dek"))
+        self._meet(laag, 1.5)
+        self.klok.t += 3600
+        (herinnering,) = laag.tik()
+        self.assertIsInstance(herinnering, MetFoto)
+        self.assertIn("Herinnering", herinnering.melding.titel)
+
+    def test_acties_ook_zonder_melding(self):
+        laag = self._laag(_regel(onder=2.0, melding="uit", acties=("video", "foto"), camera="dek"))
+        uit = self._meet(laag, 1.5)
+        self.assertEqual(uit[1:], [Opdracht("dek", "video", "alarm:vorst"),
+                                   Opdracht("dek", "foto", "alarm:vorst")])
+        self.assertEqual(json.loads(uit[1].naar_json()),
+                         {"camera_id": "dek", "type": "video", "aanleiding": "alarm:vorst"})
+        # Alleen als het alarm afgaat; niet bij herstel.
+        self.assertEqual([type(x) for x in self._meet(laag, 5.0)], [Gebeurtenis])
+
+
+class NepBus:
+    verbonden = True
+
+    def __init__(self):
+        self.berichten = []          # (topic, inhoud als dict)
+        self.callbacks = {}
+        self.q = None
+
+    def wachtrij(self, topic, qos):
+        self.q = asyncio.Queue()
+        return self.q
+
+    def abonneer(self, topic, qos, callback):
+        self.callbacks[topic] = callback
+
+    def publiceer(self, topic, payload, qos=0):
+        self.berichten.append((topic, json.loads(payload)))
+        return True
+
+
+JPEG = b"\xff\xd8\xff\xe0beeld"
+FOTO = "dek/2026/11/10/203000.jpg"
+
+
+def _opname(aanleiding="alarm:vorst", bestand=FOTO, type_="foto", camera_id="dek"):
+    return json.dumps({"ts": 1, "camera_id": camera_id, "type": type_, "duur": None,
+                       "bestand": bestand, "bytes": len(JPEG), "aanleiding": aanleiding}).encode()
+
+
+class TestFotograaf(unittest.TestCase):
+    """De foto bij een melding (§5.7 punt 15), met een nep-bus en een echte map."""
+
+    def setUp(self):
+        self._map = tempfile.TemporaryDirectory()
+        self.map = self._map.name
+        pad = os.path.join(self.map, *FOTO.split("/"))
+        os.makedirs(os.path.dirname(pad))
+        with open(pad, "wb") as f:
+            f.write(JPEG)
+        self.bus = NepBus()
+
+    def tearDown(self):
+        self._map.cleanup()
+
+    def _proef(self, antwoorden, aantal=1, wachttijd=0.5):
+        """Vraagt `aantal` keer tegelijk een foto en geeft na 0,1 s de antwoorden van de
+        camera-reader; geeft de resultaten."""
+        async def proef():
+            f = Fotograaf(self.bus, self.map, wachttijd)
+            taken = [asyncio.create_task(f.foto("dek", "alarm:vorst")) for _ in range(aantal)]
+            await asyncio.sleep(0.1)
+            for a in antwoorden:
+                f.bij_opname(a)
+            return await asyncio.gather(*taken)
+        return asyncio.run(proef())
+
+    def test_foto_komt_op_tijd(self):
+        self.assertEqual(self._proef([_opname()]), [(JPEG, "dek-2026-11-10-203000.jpg")])
+        self.assertEqual(self.bus.berichten, [("brms/opdracht/camera/poll-nu", {
+            "camera_id": "dek", "type": "foto", "aanleiding": "alarm:vorst"})])
+
+    def test_andere_opnames_tellen_niet(self):
+        # Een intervalfoto, een foto van een andere camera, een video en onzin: niet de
+        # gevraagde foto. Daarna komt de goede.
+        with self.assertNoLogs("brms.alarms", "WARNING"):
+            uit = self._proef([_opname("interval"), _opname(camera_id="mast"),
+                               _opname(type_="video"), b"kapot", b"[1]", _opname()])
+        self.assertEqual(uit, [(JPEG, "dek-2026-11-10-203000.jpg")])
+
+    def test_te_laat_gaat_de_melding_zonder_foto(self):
+        with self.assertLogs("brms.alarms", "WARNING") as log:
+            self.assertEqual(self._proef([], wachttijd=0.3), [None])
+        self.assertIn("zonder foto", log.output[0])
+
+    def test_drie_meldingen_tegelijk_delen_een_foto(self):
+        uit = self._proef([_opname()], aantal=3)
+        self.assertEqual(uit, [(JPEG, "dek-2026-11-10-203000.jpg")] * 3)
+        self.assertEqual(len(self.bus.berichten), 1)          # één opdracht
+
+    def test_onleesbaar_of_onverwacht_bestand(self):
+        for bestand in ("dek/2026/11/10/999999.jpg", "../../etc/passwd", "dek/2026/11/10/203000.mp4"):
+            with self.assertLogs("brms.alarms", "WARNING") as log:
+                self.assertEqual(self._proef([_opname(bestand=bestand)]), [None])
+            self.assertIn("niet te lezen", log.output[0])
+
+
+class TestDienst(unittest.TestCase):
+    """De service-lus met een foto bij de melding, zonder broker en zonder internet."""
+
+    def test_melding_met_foto_en_actie(self):
+        with tempfile.TemporaryDirectory() as map_:
+            pad = os.path.join(map_, *FOTO.split("/"))
+            os.makedirs(os.path.dirname(pad))
+            with open(pad, "wb") as f:
+                f.write(JPEG)
+            verstuurd = []
+            regel = _regel(onder=2.0, foto="begin", acties=("video",), camera="dek")
+            cfg = Config(MqttConfig(), OpslagConfig("x"), {MAC: KAJUIT}, alarmen=(regel,),
+                         opnames=config.OpnamenConfig(map_))
+            bus = NepBus()
+
+            async def proef():
+                stop = asyncio.Event()
+                taak = asyncio.create_task(alarms.draai(cfg, bus, stop))
+                await asyncio.sleep(0.1)
+                bus.q.put_nowait(("t", maak(1, MAC, "temperatuur", 1.5).naar_json()))
+                await asyncio.sleep(0.3)
+                # De camera-reader meldt de foto (in het echt vanuit de thread van paho).
+                bus.callbacks["brms/opname/#"]("brms/opname/dek", _opname())
+                await asyncio.sleep(1.5)
+                stop.set()
+                await asyncio.wait_for(taak, 5)
+
+            from unittest import mock
+            from brms import melding
+            with mock.patch.object(melding, "kanalen", lambda c: {"Nep": verstuurd.append}), \
+                    self.assertLogs("brms.alarms", "INFO"), self.assertLogs("brms.melding", "INFO"):
+                asyncio.run(proef())
+
+        # Op de bus: de video (actie) en de foto (voor de melding) zijn gevraagd.
+        opdrachten = [b[1] for b in bus.berichten if b[0] == "brms/opdracht/camera/poll-nu"]
+        self.assertEqual([(o["type"], o["aanleiding"]) for o in opdrachten],
+                         [("video", "alarm:vorst"), ("foto", "alarm:vorst")])
+        # De melding is één keer verstuurd, met de foto erbij.
+        self.assertEqual([(m.foto, m.foto_naam) for m in verstuurd],
+                         [(JPEG, "dek-2026-11-10-203000.jpg")])
+        self.assertIn("Vorst – kajuit", verstuurd[0].titel)
 
 
 if __name__ == "__main__":
