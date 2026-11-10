@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.22 – concept** · 10 november 2026
+**Versie 0.23 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1111,6 +1111,12 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
 
    **`deploy/update.sh --terug`** gaat terug naar de weggeschreven vorige commit.
 
+   Welke services er zijn, leest het script uit de units in `deploy/systemd/` ná het
+   ophalen van de nieuwe code (v0.23): een service die met de update nieuw is, wordt
+   vanzelf geïnstalleerd, aangezet en gestart. Is de code al bij, dan controleert het
+   script of elke service aanstaat en draait, en herstelt dat zo nodig. De gebruiker
+   hoeft voor een update nooit zelf een `systemctl`-opdracht te geven.
+
    De gebruiker start dit met **`brms update`** en **`brms update --terug`** (v0.21). De
    opdracht doet zelf niets anders dan het script uitvoeren, en vervangt daarbij zijn eigen
    proces door het script: tijdens de update verandert de code van BRMS, en zo draait er
@@ -1361,7 +1367,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.22** | 2026-11-10 | Claude Code, Fable 5.2 | Webinterface (§5.6): testpagina met grafieken per sensor uit de bus (live) of de database (historie); ingebouwde Flask-server als service `brms-web` op poort 8080 (`[web]` in de configuratie); Chart.js als bestand in de repo. |
+| **0.23** | 2026-11-10 | Claude Code, Fable 5.2 | `update.sh` (§10.1 punt 3): services volgen uit `deploy/systemd/`; een nieuwe service wordt vanzelf aangezet en gestart; bij "al bijgewerkt" worden niet-actieve services hersteld. |
+| 0.22 | 2026-11-10 | Claude Code, Fable 5.2 | Webinterface (§5.6): testpagina met grafieken per sensor uit de bus (live) of de database (historie); ingebouwde Flask-server als service `brms-web` op poort 8080 (`[web]` in de configuratie); Chart.js als bestand in de repo. |
 | 0.21 | 2026-11-10 | Claude Code, Fable 5.2 | Monitor (§10.2): vaste plaats per meting en per ketenstap in plaats van een doorlopende lijst; optioneel veld `deel` in traceberichten (§3.3). `brms update [--terug]` voert `deploy/update.sh` uit (§10.1 punt 3). |
 | 0.20 | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie (§10.3): `brms simuleer <sensor>` stuurt een testreeks door de keten; de BLE-reader maakt de advertenties zelf aan en negeert zolang de echte sensor (§5.2.1 punt 8); startsein via `brms/opdracht/simulatie/aan` (§3.3); gesimuleerde waarden komen in de database. |
 | 0.19 | 2026-11-10 | Claude Code, Fable 5.2 | Bilge (§5.2.4): vastgelegd waarom de Shelly Plus Uni via wifi wordt uitgelezen en niet via Bluetooth. Ruuvi-decoder gebouwd (§5.2.1): bewegingsteller loopt van 0 t/m 254, 255 = ongeldig (§5.3.2); geen `beweging` bij de eerste ontvangst na een herstart (§5.2.3 punt 5). |

@@ -36,7 +36,6 @@ set -euo pipefail
 BRMS="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 # Hier staat de commit van vóór de laatste geslaagde update (voor --terug).
 VORIGE="$BRMS/data/vorige-commit"
-SERVICES="brms-opslag brms-ble-reader brms-web"
 GEBRUIKER="$(id -un)"
 
 if [ "$EUID" -eq 0 ]; then
@@ -44,6 +43,27 @@ if [ "$EUID" -eq 0 ]; then
     exit 1
 fi
 cd "$BRMS"
+
+# Alle BRMS-services: de units in deploy/systemd/ (bijv. brms-opslag). De lijst wordt
+# gelezen op het moment van aanroepen, dus ná het uitchecken zit een service die met de
+# update nieuw is er vanzelf bij.
+services() {
+    for unit in deploy/systemd/brms-*.service; do
+        basename "$unit" .service
+    done
+}
+
+# Zet de units uit deploy/systemd/ in systemd en zorgt dat elke service bij het opstarten
+# van de Pi start ('enable'). Mag altijd opnieuw; vraagt het sudo-wachtwoord.
+installeer_units() {
+    # De units bevatten plaatshouders (zie install.sh); die worden hier ingevuld.
+    for unit in deploy/systemd/brms-*.service; do
+        sed -e "s|@BRMS@|$BRMS|g" -e "s|@GEBRUIKER@|$GEBRUIKER|g" "$unit" \
+            | sudo tee "/etc/systemd/system/$(basename "$unit")" >/dev/null
+    done
+    sudo systemctl daemon-reload
+    sudo systemctl enable -q $(services)
+}
 
 # --- 1. Huidige commit en doel bepalen ---------------------------------------
 huidig=$(git rev-parse HEAD)
@@ -60,6 +80,22 @@ if [ "$doel" = "$huidig" ]; then
     echo "Al op $(git log -1 --format='%h %s' "$huidig")."
     # Toch controleren of er systeempakketten ontbreken (bijv. na een handmatige wijziging).
     bash deploy/pakketten.sh
+    # En of elke service aanstaat en draait. Dat is niet zo als een service nieuw is en de
+    # update nog door een oudere versie van dit script is uitgevoerd, die hem niet kende.
+    # Dan volstaat nog een keer 'brms update'; een los systemctl-commando is niet nodig.
+    ontbreekt=""
+    for s in $(services); do
+        if ! systemctl -q is-enabled "$s" 2>/dev/null || ! systemctl -q is-active "$s"; then
+            ontbreekt="$ontbreekt $s"
+        fi
+    done
+    if [ -n "$ontbreekt" ]; then
+        echo "Niet actief:$ontbreekt – wordt aangezet en gestart."
+        brms check-config
+        installeer_units
+        sudo systemctl start $ontbreekt
+        echo "Gestart:$ontbreekt"
+    fi
     exit 0
 fi
 
@@ -93,16 +129,10 @@ trap - ERR
 
 # --- 5. Onthouden, units bijwerken, herstarten -------------------------------
 echo "$huidig" > "$VORIGE"
-# Units kunnen in een update veranderd zijn: plaatshouders invullen (zie install.sh) en
-# systemd ze opnieuw laten lezen.
-for unit in deploy/systemd/brms-*.service; do
-    sed -e "s|@BRMS@|$BRMS|g" -e "s|@GEBRUIKER@|$GEBRUIKER|g" "$unit" \
-        | sudo tee "/etc/systemd/system/$(basename "$unit")" >/dev/null
-done
-sudo systemctl daemon-reload
-# 'enable': een service die met deze update nieuw is, start voortaan ook bij het opstarten.
-sudo systemctl enable -q $SERVICES
-sudo systemctl restart $SERVICES
+# Units kunnen in een update veranderd of nieuw zijn: opnieuw in systemd zetten en
+# aanzetten. Daarna alle services herstarten, ook een service die nieuw is.
+installeer_units
+sudo systemctl restart $(services)
 echo "Bijgewerkt en services herstart. Terug kan met: brms update --terug"
 exit 0
 }
