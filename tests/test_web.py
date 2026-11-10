@@ -402,6 +402,24 @@ class TestOpnames(unittest.TestCase):
                          [1300, 1200, 1180])
         self.assertEqual([o["ts"] for o in self._lijst("van=86400&tot=172800")["opnames"]], [90000])
 
+    def test_hele_dag_voor_het_dagoverzicht(self):
+        from unittest import mock
+        # De lijst toont hooguit MAX_OPNAMES; het dagoverzicht (alles=1) de hele dag.
+        with mock.patch.object(web, "MAX_OPNAMES", 2):
+            d = self._lijst()
+            self.assertEqual(([o["ts"] for o in d["opnames"]], d["vol"]), ([1300, 1200], True))
+            d = self._lijst("van=0&tot=86400&alles=1")
+            self.assertEqual(([o["ts"] for o in d["opnames"]], d["vol"]),
+                             ([1300, 1200, 1180, 1000], False))
+        with mock.patch.object(web, "MAX_DAG", 3):
+            self.assertTrue(self._lijst("van=0&tot=86400&alles=1")["vol"])
+
+    def test_pagina_heeft_het_dagoverzicht(self):
+        tekst = self.client.get("/opnames").get_data(as_text=True)
+        for verwacht in ['<option value="dag">dagoverzicht</option>', "DUUR_INTERVAL = 500",
+                         "DUUR_GEBEURTENIS = 5000", 'id="verder"']:
+            self.assertIn(verwacht, tekst)
+
     def test_ongeldige_vragen(self):
         for vraag, code in [("van=5&tot=5", 400), ("van=0&tot=9&camera=onbekend", 404),
                             ("van=0&tot=9&type=film", 400)]:
@@ -416,6 +434,8 @@ class TestOpnames(unittest.TestCase):
     def test_bestand_van_een_opname(self):
         r = self.client.get("/opname/dek/1970/01/01/001640.jpg")
         self.assertEqual((r.status_code, r.mimetype, r.data), (200, "image/jpeg", self.JPEG))
+        # De browser mag het bestand een dag bewaren: een opname verandert niet meer.
+        self.assertEqual(r.cache_control.max_age, web.BEWAAR_OPNAME)
         r.close()
         # Een deel van een video opvragen (spoelen).
         r = self.client.get("/opname/dek/1970/01/01/002000.mp4", headers={"Range": "bytes=2-5"})

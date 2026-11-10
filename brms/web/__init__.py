@@ -23,6 +23,7 @@ Adressen:
     /api/alarmen      ?sensor=<id>&grootheid=<naam>&van=<ts>&tot=<ts>  alarmperioden (§5.5.3)
     /opnames          de pagina met foto's en video's van de camera's (§5.6 punt 2)
     /api/opnames      ?van=<ts>&tot=<ts>[&camera=<id>][&type=foto|video][&interval=0]
+                      [&alles=1]  (alles=1: de hele dag, voor het dagoverzicht)
     /opname/<pad>     het bestand van één opname (JPEG of MP4)
     /api/opnames/verwijder   (POST) opnames verwijderen; gaat als opdracht naar de opslag
     /api/opnames/nu          (POST) nu een foto of video laten maken (poll-nu)
@@ -56,6 +57,14 @@ TOPIC_POLL_NU = "brms/opdracht/camera/poll-nu"
 # Zoveel opnames toont de pagina hooguit in één keer, en zoveel mag één verwijderopdracht
 # noemen.
 MAX_OPNAMES = 500
+# Het dagoverzicht (§5.6 punt 2) speelt alle opnames van een dag af: 480 intervalfoto's
+# bij één foto per 3 minuten, meer bij een korter interval of meer camera's. Dit is het
+# vangnet.
+MAX_DAG = 5000
+# Zo lang mag de browser het bestand van een opname bewaren zonder het opnieuw te vragen
+# (seconden). Een opname verandert nooit meer; bij terugspoelen in het dagoverzicht hoeft
+# de foto dan niet opnieuw over de (mobiele) verbinding.
+BEWAAR_OPNAME = 24 * 3600
 # Het pad van een opname binnen de opnamemap (zie brms/storage.py); alleen deze vorm wordt
 # uitgeleverd.
 _BESTAND = re.compile(r"^[A-Za-z0-9_-]+/\d{4}/\d{2}/\d{2}/\d{6}\.(jpg|mp4)$")
@@ -280,8 +289,9 @@ def lees_alarmen(pad: str, sensor_id: str, grootheid: str, van: int, tot: int) -
 
 
 def lees_opnames(pad: str, van: int, tot: int, camera_id: str | None = None,
-                 type_: str | None = None, interval: bool = True) -> tuple[list, dict]:
-    """Leest de opnames tussen `van` en `tot` (de nieuwste eerst, hooguit MAX_OPNAMES), en
+                 type_: str | None = None, interval: bool = True,
+                 limiet: int = MAX_OPNAMES) -> tuple[list, dict]:
+    """Leest de opnames tussen `van` en `tot` (de nieuwste eerst, hooguit `limiet`), en
     de totalen van alle opnames per type.
 
     camera_id, type_  alleen deze camera of dit type (None = alle)
@@ -308,7 +318,7 @@ def lees_opnames(pad: str, van: int, tot: int, camera_id: str | None = None,
         rijen = con.execute(
             "SELECT ts, camera_id, type, duur, bestand, bytes, aanleiding FROM opname "
             f"WHERE {' AND '.join(waar)} ORDER BY ts DESC, camera_id LIMIT ?",
-            (*waarden, MAX_OPNAMES)).fetchall()
+            (*waarden, limiet)).fetchall()
         for type__, aantal, bytes_ in con.execute(
                 "SELECT type, COUNT(*), SUM(bytes) FROM opname GROUP BY type"):
             if type__ in totalen:
@@ -492,10 +502,13 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
             return jsonify(fout="onbekende camera"), 404
         if type_ not in (None, "foto", "video"):
             return jsonify(fout="'type' moet foto of video zijn"), 400
+        # alles=1: het dagoverzicht wil de hele dag, niet alleen wat in de lijst past.
+        limiet = MAX_DAG if request.args.get("alles") == "1" else MAX_OPNAMES
         opnames, totalen = lees_opnames(cfg.opslag.database, van, tot, camera, type_,
-                                        interval=request.args.get("interval") != "0")
+                                        interval=request.args.get("interval") != "0",
+                                        limiet=limiet)
         # 'vol': er zijn er meer dan de pagina in één keer toont.
-        return jsonify(opnames=opnames, totalen=totalen, vol=len(opnames) >= MAX_OPNAMES)
+        return jsonify(opnames=opnames, totalen=totalen, vol=len(opnames) >= limiet)
 
     @app.get("/opname/<path:bestand>")
     def opname(bestand):
@@ -504,7 +517,8 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
         # video opvragen (spoelen) zonder het hele bestand te halen.
         if not _BESTAND.match(bestand):
             abort(404)
-        return send_from_directory(cfg.opnames.map, bestand, conditional=True)
+        return send_from_directory(cfg.opnames.map, bestand, conditional=True,
+                                   max_age=BEWAAR_OPNAME)
 
     def _opdracht(topic: str, inhoud: dict):
         """Zet een opdracht op de bus (§5.6 punt 3); een foutantwoord als dat niet kan."""

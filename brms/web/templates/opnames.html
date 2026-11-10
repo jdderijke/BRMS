@@ -14,6 +14,11 @@
   één schrijver). Daarom wordt de lijst kort na een opdracht opnieuw opgehaald.
 
   "Foto nu" en "Video nu" geven de camera-reader een opdracht (poll-nu, §5.7 punt 12).
+
+  Dagoverzicht (tweede weergave): de opnames van de dag worden van oud naar nieuw
+  afgespeeld als een versnelde film. Een intervalfoto staat 0,5 s in beeld, een foto bij
+  een gebeurtenis (alarm, op verzoek) 5 s, en een video wordt helemaal afgespeeld (met
+  "verder" over te slaan). Dat gebeurt in de browser: de Pi maakt er geen videobestand van.
 -->
 <head>
 <meta charset="utf-8">
@@ -56,6 +61,22 @@
   #bij { margin: 8px 0 0; }
   #bij .tijd { font-weight: 600; margin-right: 8px; }
   #bij .rest { color: var(--zacht); }
+  /* Het dagoverzicht: de tijdbalk van de dag (00:00 links, 24:00 rechts). */
+  #balk { position: relative; height: 26px; background: var(--raster); border-radius: 4px;
+          cursor: pointer; overflow: hidden; }
+  #balk .bereik { position: absolute; top: 0; bottom: 0; background: var(--rand); }
+  #balk .merk { position: absolute; top: 0; bottom: 0; width: 3px; margin-left: -1px;
+                background: var(--fout); }
+  #balk .merk.video { background: var(--link); }
+  #balk .wijzer { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px;
+                  background: var(--tekst); }
+  #uren { display: flex; justify-content: space-between; color: var(--zacht); font-size: 12px;
+          margin: 2px 0 8px; }
+  #uitleg-dag { color: var(--zacht); font-size: 13px; }
+  #uitleg-dag i { display: inline-block; width: 3px; height: 11px; vertical-align: middle;
+                  margin: 0 5px 0 12px; background: var(--fout); }
+  #uitleg-dag i.video { background: var(--link); }
+  #teller { color: var(--zacht); font-variant-numeric: tabular-nums; }
   /* De lijst. */
   table { width: 100%; border-collapse: collapse; }
   th { text-align: left; font-weight: 600; font-size: 13px; color: var(--zacht);
@@ -85,12 +106,16 @@
     <button id="volgende" title="Een dag later">▶</button>
     <button id="vandaag">vandaag</button>
     <label>Camera <select id="camera"></select></label>
-    <label>Soort <select id="type">
+    <label>Weergave <select id="weergave" title="Lijst: opnames kiezen en verwijderen. Dagoverzicht: de dag afspelen als versnelde film.">
+      <option value="lijst">lijst</option>
+      <option value="dag">dagoverzicht</option>
+    </select></label>
+    <label class="alleen-lijst">Soort <select id="type">
       <option value="">foto's en video's</option>
       <option value="foto">alleen foto's</option>
       <option value="video">alleen video's</option>
     </select></label>
-    <label title="Uit: alleen wat op verzoek of bij een alarm is gemaakt">
+    <label class="alleen-lijst" title="Uit: alleen wat op verzoek of bij een alarm is gemaakt">
       <input type="checkbox" id="interval" checked> intervalfoto's</label>
     <span class="ruimte"></span>
     <button id="foto-nu" title="Laat de camera nu een foto maken">Foto nu</button>
@@ -104,13 +129,27 @@
     <div class="rij" id="bij" hidden>
       <span><span class="tijd"></span><span class="rest"></span></span>
       <span class="ruimte"></span>
-      <button id="ouder" title="De opname ervoor (pijl links)">◀ ouder</button>
-      <button id="nieuwer" title="De opname erna (pijl rechts)">nieuwer ▶</button>
+      <button id="ouder" class="alleen-lijst" title="De opname ervoor (pijl links)">◀ ouder</button>
+      <button id="nieuwer" class="alleen-lijst" title="De opname erna (pijl rechts)">nieuwer ▶</button>
+    </div>
+    <!-- De bediening van het dagoverzicht. -->
+    <div id="speler" class="alleen-dag" hidden>
+      <div id="balk" title="Klik om naar dat tijdstip te springen"></div>
+      <div id="uren"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div>
+      <div class="rij">
+        <button id="speel" title="Afspelen of pauzeren (spatiebalk)">▶ Afspelen</button>
+        <button id="vorig-beeld" title="Eén opname terug (pijl links)">◀</button>
+        <button id="volgend-beeld" title="Eén opname verder (pijl rechts)">▶</button>
+        <button id="verder" title="Deze video overslaan" hidden>verder ▶▶</button>
+        <span id="teller"></span>
+        <span class="ruimte"></span>
+        <span id="uitleg-dag"><i></i>foto bij een gebeurtenis<i class="video"></i>video</span>
+      </div>
     </div>
   </section>
 
   <!-- De opnames van de gekozen dag. -->
-  <section class="blok">
+  <section class="blok alleen-lijst">
     <div class="rij">
       <button id="alles">Alles selecteren</button>
       <button id="geen">Niets selecteren</button>
@@ -169,7 +208,9 @@ function meld(tekst, fout) {
 
 // --- ophalen ---------------------------------------------------------------------------
 // De gekozen dag loopt van middernacht tot middernacht in de tijd van de browser.
-async function laad() {
+function laad() { return weergave === "dag" ? laadFilm() : laadLijst(); }
+
+async function laadLijst() {
   const begin = new Date(el("dag").value + "T00:00:00");
   if (isNaN(begin)) return;
   const eind = new Date(begin); eind.setDate(eind.getDate() + 1);
@@ -292,6 +333,182 @@ function stap(richting) {
   if (tr) tr.scrollIntoView({block: "nearest"});
 }
 
+// --- dagoverzicht ----------------------------------------------------------------------
+// De opnames van de dag als versnelde film (§5.6 punt 2), van oud naar nieuw.
+const DUUR_INTERVAL = 500;       // ms dat een intervalfoto in beeld staat
+const DUUR_GEBEURTENIS = 5000;   // ms voor een foto bij een gebeurtenis (alarm, op verzoek)
+const VOORUIT = 4;               // zoveel volgende foto's alvast ophalen
+let weergave = "lijst";          // "lijst" of "dag"
+let film = [];                   // de opnames van de dag, de oudste eerst
+let plek = 0;                    // welke opname van de film in beeld is
+let speelt = false;
+let wekker = null;               // de timer naar de volgende opname
+let beurt = 0;                   // volgnummer: een foto die te laat binnenkomt telt niet meer
+let dagBegin = 0;                // middernacht van de gekozen dag (Unix-seconden)
+let voorraad = [];               // de alvast opgehaalde foto's (vasthouden, anders stopt het ophalen)
+
+const gebeurtenis = o => o.aanleiding !== "interval";
+// De plaats van een tijdstip op de tijdbalk, in procenten van de dag.
+const opBalk = ts => Math.min(100, Math.max(0, (ts - dagBegin) / 864)) + "%";
+
+async function laadFilm() {
+  const begin = new Date(el("dag").value + "T00:00:00");
+  if (isNaN(begin)) return;
+  const eind = new Date(begin); eind.setDate(eind.getDate() + 1);
+  dagBegin = Math.floor(begin / 1000);
+  // Alle opnames van de dag: de soort en de intervalfoto's zijn hier geen keuze.
+  const vraag = new URLSearchParams({van: dagBegin, tot: Math.floor(eind / 1000), alles: "1"});
+  if (el("camera").value) vraag.set("camera", el("camera").value);
+  const mijn = ++aanvraag;
+  pauze();
+  try {
+    const a = await fetch("/api/opnames?" + vraag);
+    if (!a.ok) throw new Error("fout " + a.status);
+    const d = await a.json();
+    if (mijn !== aanvraag) return;
+    film = d.opnames.reverse();          // het antwoord is van nieuw naar oud
+    toonTotalen(d.totalen);
+    plek = 0;
+    tekenBalk();
+    toonPlek();
+    // Vooraf zeggen wat afspelen kost: over de mobiele verbinding van de boot telt dat.
+    const bytes = film.reduce((som, o) => som + o.bytes, 0);
+    meld(film.length ? "Dagoverzicht: " + film.length + " opnames, samen " + grootte(bytes) + "."
+                     : "");
+    if (d.vol) meld("Deze dag heeft meer opnames dan het dagoverzicht aankan; alleen de laatste "
+                    + film.length + " worden afgespeeld.");
+  } catch (e) {
+    if (mijn === aanvraag) meld("De opnames konden niet worden opgehaald (" + e.message + ").", true);
+  }
+}
+
+// De tijdbalk: het stuk van de dag waarin opnames zijn, en een streep per gebeurtenis.
+function tekenBalk() {
+  const balk = el("balk");
+  balk.replaceChildren();
+  if (!film.length) return;
+  const stuk = (klasse, ts) => { const d = document.createElement("div");
+    d.className = klasse; d.style.left = opBalk(ts); balk.append(d); return d; };
+  const bereik = stuk("bereik", film[0].ts);
+  bereik.style.right = "calc(100% - " + opBalk(film[film.length - 1].ts) + ")";
+  for (const o of film)
+    if (gebeurtenis(o)) {
+      const merk = stuk(o.type === "video" ? "merk video" : "merk", o.ts);
+      merk.title = tijd(o.ts) + " " + soort(o) + " (" + aanleiding(o.aanleiding) + ")";
+    }
+  stuk("wijzer", film[0].ts).id = "wijzer";
+}
+
+// Zet de opname op `plek` in beeld. Loopt het overzicht, dan gaat het vanzelf verder: bij
+// een foto na de vaste tijd, bij een video als die afgelopen is.
+function toonPlek() {
+  const mijn = ++beurt;
+  clearTimeout(wekker);
+  const o = film[plek];
+  el("verder").hidden = !o || o.type !== "video";
+  el("vorig-beeld").disabled = plek <= 0;
+  el("volgend-beeld").disabled = plek >= film.length - 1;
+  el("speel").disabled = !film.length;
+  el("teller").textContent = film.length ? (plek + 1) + " / " + film.length : "";
+  if (!o) {
+    el("beeld").innerHTML = '<div class="leeg">Geen opnames op deze dag.</div>';
+    el("bij").hidden = true;
+    return;
+  }
+  el("bij").hidden = false;
+  el("bij").querySelector(".tijd").textContent = el("dag").value + " " + tijd(o.ts);
+  el("bij").querySelector(".rest").textContent =
+    cameraNaam(o.camera_id) + " · " + soort(o) + " · " + aanleiding(o.aanleiding);
+  if (el("wijzer")) el("wijzer").style.left = opBalk(o.ts);
+  const adres = "/opname/" + o.bestand;
+
+  if (o.type === "video") {
+    const video = document.createElement("video");
+    video.controls = true;
+    video.muted = true;           // er is geen geluid; zo mag de browser vanzelf afspelen
+    video.playsInline = true;
+    video.src = adres;
+    // Afgelopen, of niet af te spelen (bestand weg): verder met de volgende opname.
+    video.onended = video.onerror = () => { if (mijn === beurt && speelt) volgende(); };
+    el("beeld").replaceChildren(video);
+    if (speelt) video.play().catch(() => {});
+    return;
+  }
+
+  // Een foto: eerst ophalen, dan pas in beeld zetten. Zo blijft de vorige foto staan tot
+  // de nieuwe er is (geen zwart beeld ertussen) en begint de tijd pas te lopen als de
+  // foto er staat. Het overzicht wacht dus op een trage verbinding en slaat niets over.
+  // Staat er nog een video in beeld (overgeslagen met "verder"), dan stopt die meteen; hij
+  // blijft als stilstaand beeld staan tot de foto er is.
+  const oud = el("beeld").querySelector("video");
+  if (oud) oud.pause();
+  const foto = new Image();
+  foto.onload = () => {
+    if (mijn !== beurt) return;
+    let img = el("beeld").querySelector("img");
+    if (!img) { img = document.createElement("img"); el("beeld").replaceChildren(img); }
+    img.src = adres;
+    img.alt = "Foto van " + cameraNaam(o.camera_id) + " om " + tijd(o.ts);
+    if (speelt) wekker = setTimeout(volgende, gebeurtenis(o) ? DUUR_GEBEURTENIS : DUUR_INTERVAL);
+  };
+  // Het bestand is er niet meer (bijvoorbeeld net opgeruimd): overslaan.
+  foto.onerror = () => { if (mijn === beurt && speelt) volgende(); };
+  foto.src = adres;
+  // De volgende foto's alvast ophalen terwijl deze in beeld is.
+  voorraad = [foto];
+  for (const volgend of film.slice(plek + 1, plek + 1 + VOORUIT))
+    if (volgend.type === "foto") {
+      const alvast = new Image();
+      alvast.src = "/opname/" + volgend.bestand;
+      voorraad.push(alvast);
+    }
+}
+
+function volgende() {
+  if (plek >= film.length - 1) { pauze(); return; }   // einde van de dag
+  plek++;
+  toonPlek();
+}
+
+function speel() {
+  if (!film.length) return;
+  if (plek >= film.length - 1) plek = 0;              // aan het einde: opnieuw van voren
+  speelt = true;
+  el("speel").textContent = "⏸ Pauze";
+  // Een video die op pauze stond gaat verder waar hij was; al het andere begint opnieuw.
+  const video = el("beeld").querySelector("video");
+  if (video && film[plek].type === "video" && !video.ended) video.play().catch(() => {});
+  else toonPlek();
+}
+
+function pauze() {
+  speelt = false;
+  clearTimeout(wekker);
+  el("speel").textContent = "▶ Afspelen";
+  const video = el("beeld").querySelector("video");
+  if (video) video.pause();
+}
+
+// Eén opname terug of verder; het afspelen stopt dan.
+function verspring(naar) {
+  if (naar < 0 || naar >= film.length) return;
+  pauze();
+  plek = naar;
+  toonPlek();
+}
+
+function zetWeergave(nieuw) {
+  weergave = nieuw === "dag" ? "dag" : "lijst";
+  el("weergave").value = weergave;
+  pauze();
+  for (const e of document.querySelectorAll(".alleen-lijst")) e.hidden = weergave !== "lijst";
+  for (const e of document.querySelectorAll(".alleen-dag")) e.hidden = weergave !== "dag";
+  try { localStorage.setItem("brms-opnames-weergave", weergave); } catch (e) { /* mag mislukken */ }
+  gekozen = null;
+  meld("");
+  laad();
+}
+
 // --- opdrachten ------------------------------------------------------------------------
 async function opdracht(adres, inhoud) {
   const a = await fetch(adres, {method: "POST", headers: {"Content-Type": "application/json"},
@@ -379,12 +596,49 @@ el("video-nu").addEventListener("click", () => opnameNu("video"));
 // Pijltjes bladeren door de opnames, behalve als de datum of een keuzelijst de invoer heeft.
 document.addEventListener("keydown", e => {
   if (["INPUT", "SELECT", "VIDEO"].includes(document.activeElement.tagName)) return;
+  if (weergave === "dag") {
+    // In het dagoverzicht: pijltjes één opname terug of verder, de spatiebalk speelt of
+    // pauzeert.
+    if (e.key === "ArrowLeft") verspring(plek - 1);
+    if (e.key === "ArrowRight") verspring(plek + 1);
+    if (e.key === " " && document.activeElement.tagName !== "BUTTON") {
+      e.preventDefault();
+      speelt ? pauze() : speel();
+    }
+    return;
+  }
   if (e.key === "ArrowLeft") stap(1);
   if (e.key === "ArrowRight") stap(-1);
 });
 
+// Het dagoverzicht.
+el("weergave").addEventListener("change", () => zetWeergave(el("weergave").value));
+el("speel").addEventListener("click", () => speelt ? pauze() : speel());
+el("vorig-beeld").addEventListener("click", () => verspring(plek - 1));
+el("volgend-beeld").addEventListener("click", () => verspring(plek + 1));
+// "verder": de video overslaan; het overzicht loopt door als het liep.
+el("verder").addEventListener("click", () => {
+  if (plek >= film.length - 1) { pauze(); return; }
+  plek++;
+  toonPlek();
+});
+// Een klik op de tijdbalk springt naar de eerste opname vanaf dat tijdstip.
+el("balk").addEventListener("click", e => {
+  if (!film.length) return;
+  const vak = el("balk").getBoundingClientRect();
+  const ts = dagBegin + (e.clientX - vak.left) / vak.width * 86400;
+  const i = film.findIndex(o => o.ts >= ts);
+  const doel = i < 0 ? film.length - 1 : i;
+  // Liep het overzicht, dan loopt het vanaf daar door.
+  plek = doel;
+  toonPlek();
+});
+
 el("dag").value = datum(new Date());
-laad();
+// De laatst gekozen weergave onthouden (alleen in deze browser).
+let bewaard = "lijst";
+try { bewaard = localStorage.getItem("brms-opnames-weergave") || "lijst"; } catch (e) { /* geen opslag */ }
+zetWeergave(bewaard);
 </script>
 </body>
 </html>
