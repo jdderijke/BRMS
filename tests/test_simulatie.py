@@ -4,6 +4,7 @@ met een nep-bus en nep-klok."""
 import contextlib
 import io
 import json
+import random
 import unittest
 
 from brms import simulatie, trace
@@ -55,6 +56,32 @@ class TestTestreeks(unittest.TestCase):
         self.assertEqual(simulatie.waarden(0.0)["temperatuur"], 25.0)
         self.assertEqual(simulatie.waarden(1.0)["temperatuur"], -5.0)
         self.assertEqual(simulatie.waarden(0.5)["vocht"], 67.5)
+
+    def test_ruis_blijft_rond_de_testreeks(self):
+        toeval = random.Random(1)
+        strak = simulatie.waarden(0.5)
+        reeks = [simulatie.waarden(0.5, toeval) for _ in range(500)]
+        for g, afwijking in simulatie.RUIS.items():
+            ws = [w[g] for w in reeks]
+            # Er is ruis (niet elke waarde gelijk), maar hij blijft klein en zonder
+            # verschuiving: het gemiddelde ligt op de testreeks.
+            self.assertGreater(max(ws) - min(ws), afwijking)
+            self.assertLess(max(abs(w - strak[g]) for w in ws), 6 * afwijking)
+            self.assertAlmostEqual(sum(ws) / len(ws), strak[g], delta=afwijking / 2)
+
+    def test_ruis_blijft_binnen_wat_een_sensor_kan_uitzenden(self):
+        # Ook aan de randen van de testreeks moeten de bytes te maken en te decoderen zijn.
+        toeval = random.Random(2)
+        for fractie in (0.0, 1.0):
+            for n in range(300):
+                for sensor in SENSOREN.values():
+                    sd, fd = simulatie.advertentie(sensor, fractie, n, toeval)
+                    if sensor.type == "bthome":
+                        w = bthome.decodeer(sd[bthome.FCD2_UUID])
+                    else:
+                        w = ruuvi.decodeer(fd[ruuvi.FABRIKANT_ID])
+                    self.assertTrue(0 <= w["vocht"] <= 100)
+                    self.assertIn("temperatuur", w)
 
     def test_bthome_bytes_door_de_echte_decoder(self):
         # Wat de simulator maakt, moet de echte decoder precies teruggeven.

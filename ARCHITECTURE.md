@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.25 – concept** · 10 november 2026
+**Versie 0.26 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1328,7 +1328,11 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
    | `luchtdruk` | 1020 → 980 hPa | Ruuvi |
    | `versnelling_x` / `_y` / `_z` | 0 → 200 / 0 → −100 / 1000 → 975 mG | Ruuvi |
    | `beweging` | 1 per advertentie (de teller loopt telkens één op) | Ruuvi |
-   | `rssi` | vast −60 dBm (er is geen adapter die hem meet) | BTHome, Ruuvi |
+   | `rssi` | rond −60 dBm (er is geen adapter die hem meet) | BTHome, Ruuvi |
+
+   Op elke waarde komt een beetje **ruis** (v0.26), zodat een gesimuleerde reeks eruitziet
+   als een echte, ook voor demonstraties: standaardafwijking 0,15 °C, 0,5 % vocht, 0,005 V,
+   0,15 hPa, 8 mG en 2 dBm. Het verloop van de testreeks blijft goed zichtbaar.
 
    De lijst `grootheden` en de `correctie` van de sensor (§5.4.2) gelden ook voor
    gesimuleerde waarden.
@@ -1401,7 +1405,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.25** | 2026-11-10 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4): zelf grafieken toevoegen (live of database), per grafiek reeksen van meerdere sensoren en grootheden; een strook per eenheid; indeling onthouden in de browser. Simulatie (§10.3): `brms sim`, meerdere sensoren of `all`, geen wachttijd, standaard 10 minuten, opdracht keert direct terug, `brms sim stop`. |
+| **0.26** | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie (§10.3 punt 5): ruis op de testreeks en op de signaalsterkte. |
+| 0.25 | 2026-11-10 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4): zelf grafieken toevoegen (live of database), per grafiek reeksen van meerdere sensoren en grootheden; een strook per eenheid; indeling onthouden in de browser. Simulatie (§10.3): `brms sim`, meerdere sensoren of `all`, geen wachttijd, standaard 10 minuten, opdracht keert direct terug, `brms sim stop`. |
 | 0.24 | 2026-11-10 | Claude Code, Fable 5.2 | Testpagina (§5.6 punt 4): live-venster te kiezen (laatste 50/100 metingen, 10 min t/m 24 uur); de webservice bewaart 24 uur aan metingen in het geheugen; vanaf 1 uur samengevat per tijdvak. |
 | 0.23 | 2026-11-10 | Claude Code, Fable 5.2 | `update.sh` (§10.1 punt 3): services volgen uit `deploy/systemd/`; een nieuwe service wordt vanzelf aangezet en gestart; bij "al bijgewerkt" worden niet-actieve services hersteld. |
 | 0.22 | 2026-11-10 | Claude Code, Fable 5.2 | Webinterface (§5.6): testpagina met grafieken per sensor uit de bus (live) of de database (historie); ingebouwde Flask-server als service `brms-web` op poort 8080 (`[web]` in de configuratie); Chart.js als bestand in de repo. |

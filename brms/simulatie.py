@@ -33,6 +33,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import subprocess
 import threading
 import time
@@ -50,9 +51,10 @@ STANDAARD_DUUR = 600  # seconden; de standaard van 10 minuten (§10.3 punt 2)
 MAX_DUUR = 3600       # langer dan een uur simuleren is altijd een vergissing
 STAP = 2.0            # seconden tussen twee gesimuleerde advertenties
 
-# Signaalsterkte van een gesimuleerde advertentie. Er is geen adapter die hem meet; een
-# vaste waarde maakt in de database herkenbaar dat het om simulatie ging.
+# Signaalsterkte van een gesimuleerde advertentie (er is geen adapter die hem meet), en de
+# ruis daarop: de standaardafwijking in dBm.
 RSSI = -60
+RSSI_RUIS = 2
 
 # Sensortypen die gesimuleerd kunnen worden.
 TYPES = ("bthome", "ruuvi")
@@ -77,12 +79,37 @@ REEKS: dict[str, tuple[float, float]] = {
 }
 
 
-def waarden(fractie: float) -> dict[str, float]:
+# Ruis op de testreeks: per grootheid de standaardafwijking, in de eenheid van de grootheid.
+# Een echte sensor levert nooit een strakke lijn; met wat ruis ziet een gesimuleerde reeks
+# er in de grafieken uit als een echte (ook voor demonstraties). De waarden zijn zo gekozen
+# dat het verloop van de testreeks goed zichtbaar blijft.
+RUIS: dict[str, float] = {
+    "temperatuur": 0.15,        # °C
+    "vocht": 0.5,               # %
+    "batterijspanning": 0.005,  # V
+    "luchtdruk": 0.15,          # hPa
+    "versnelling_x": 8,         # mG
+    "versnelling_y": 8,         # mG
+    "versnelling_z": 8,         # mG
+}
+
+
+def waarden(fractie: float, toeval: random.Random | None = None) -> dict[str, float]:
     """De waarden van de testreeks op een punt in de simulatie.
 
     fractie: 0.0 = begin, 1.0 = einde.
+    toeval:  bron van toevalsgetallen voor de ruis (RUIS). Zonder: de strakke testreeks
+             zonder ruis, zodat tests exacte waarden kunnen controleren.
     """
-    return {g: begin + (eind - begin) * fractie for g, (begin, eind) in REEKS.items()}
+    w = {g: begin + (eind - begin) * fractie for g, (begin, eind) in REEKS.items()}
+    if toeval is not None:
+        for g, afwijking in RUIS.items():
+            w[g] += toeval.gauss(0, afwijking)
+        # Binnen wat een sensor kan uitzenden blijven: vocht is 0–100 %, en de spanning
+        # moet in het bericht passen (Ruuvi: 1,6–3,6 V).
+        w["vocht"] = min(100.0, max(0.0, w["vocht"]))
+        w["batterijspanning"] = min(3.6, max(1.6, w["batterijspanning"]))
+    return w
 
 
 def bthome_bytes(w: dict[str, float], n: int) -> bytes:
@@ -120,10 +147,13 @@ def ruuvi_bytes(w: dict[str, float], n: int, mac: str) -> bytes:
             + bytes.fromhex(mac.replace(":", "")))
 
 
-def advertentie(sensor: Sensor, fractie: float, n: int) -> tuple[dict, dict]:
+def advertentie(sensor: Sensor, fractie: float, n: int,
+                toeval: random.Random | None = None) -> tuple[dict, dict]:
     """Eén gesimuleerde advertentie voor deze sensor, in de vorm waarin bleak hem aanlevert:
-    (service data {UUID: bytes}, manufacturer data {fabrikant-ID: bytes})."""
-    w = waarden(fractie)
+    (service data {UUID: bytes}, manufacturer data {fabrikant-ID: bytes}).
+
+    toeval: bron voor de ruis op de waarden (zie waarden); zonder: geen ruis."""
+    w = waarden(fractie, toeval)
     if sensor.type == "bthome":
         return {bthome.FCD2_UUID: bthome_bytes(w, n)}, {}
     if sensor.type == "ruuvi":
@@ -158,6 +188,8 @@ class Simulator:
         self._klok = klok
         self._lock = threading.Lock()
         self._lopend: dict[str, _Loop] = {}
+        # Bron voor de ruis op de testreeks; elke start van de reader geeft andere ruis.
+        self._toeval = random.Random()
 
     def start(self) -> None:
         """Luistert naar simulatie-opdrachten op de bus."""
@@ -239,8 +271,10 @@ class Simulator:
         """
         while not stop.is_set():
             for sensor, fractie, n in self.stappen():
-                service_data, fabrikant_data = advertentie(sensor, fractie, n)
-                ontvang(sensor.id, service_data, fabrikant_data, RSSI, True)
+                # Met ruis op de waarden en op de signaalsterkte, zoals bij een echte sensor.
+                service_data, fabrikant_data = advertentie(sensor, fractie, n, self._toeval)
+                rssi = RSSI + round(self._toeval.gauss(0, RSSI_RUIS))
+                ontvang(sensor.id, service_data, fabrikant_data, rssi, True)
             try:
                 await asyncio.wait_for(stop.wait(), STAP)
             except asyncio.TimeoutError:
