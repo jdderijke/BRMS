@@ -13,3 +13,6 @@ config/brms.toml
 .idea/workspace.xml
 .idea/shelf/
 .idea/usage.statistics.xml
+
+# Eigen bestanden van de gebruiker die niet in git horen (bevat geheimen)
+diversen/

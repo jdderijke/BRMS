@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.34 – concept** · 10 november 2026
+**Versie 0.35 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1725,7 +1725,11 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
    Bij een **Shelly** (v0.29) maakt de Shelly-reader bij elke poll zelf het antwoord aan,
    in de vorm van `Shelly.GetStatus`, en verwerkt dat als een echt antwoord. De echte
    Shelly wordt zolang niet gepolld; hij hoeft er dus niet te zijn.
-5. **Testreeks:** elke grootheid loopt lineair van begin- naar eindwaarde over de duur.
+5. **Testreeks:** elke grootheid loopt lineair van begin- naar eindwaarde **en weer
+   terug**, en doet dat binnen de duur **twee keer** (v0.35): begin → eind → begin → eind
+   → begin, elk stuk een kwart van de duur. Door het teruglopen is ook het herstellen van
+   een alarm te testen. De simulatie eindigt op de beginwaarden. De tabellen hieronder
+   geven één heengang; dat geldt ook voor de Victron-apparaten en de bilge.
 
    | Grootheid | Verloop | Sensortype |
    |---|---|---|
@@ -1838,7 +1842,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.34** | 2026-11-10 | Claude Code, Fable 5.2 | Fout hersteld: na een herstart van de Pi bleef een alarm in de database (en de grafiek) open staan. De alarmlaag meldt nu elke minuut welke alarmen actief zijn; de opslag sluit de rest af (§3.3, §5.5.3 punt 8). |
+| **0.35** | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie: de testreeks loopt binnen de duur twee keer heen en weer, zodat ook het herstellen van een alarm te testen is (§10.3 punt 5). |
+| 0.34 | 2026-11-10 | Claude Code, Fable 5.2 | Fout hersteld: na een herstart van de Pi bleef een alarm in de database (en de grafiek) open staan. De alarmlaag meldt nu elke minuut welke alarmen actief zijn; de opslag sluit de rest af (§3.3, §5.5.3 punt 8). |
 | 0.33 | 2026-11-10 | Claude Code, Fable 5.2 | Alarmlaag stap (a) gebouwd (§5.5.3, §5.5.4): service `brms-alarm`, alarmregels `[[alarm]]` en kanalen `[melding.telegram]`/`[melding.email]` in `brms.toml`, tabel `alarm`, grenzen en alarmperioden in de grafieken. Meldingen worden hooguit een dag opnieuw geprobeerd. |
 | 0.32 | 2026-11-10 | Claude Code, Fable 5.2 | OPEN-14 besloten (§5.5.4): meldingen via een Telegram-bot, met e-mail (SMTP) als tweede kanaal; ntfy vervalt. Ontwerp, nog niet gebouwd. |
 | 0.31 | 2026-11-10 | Claude Code, Fable 5.2 | Ontwerp, nog niet gebouwd. Alarmlaag (§5.5.3): alarmregels in `brms.toml` met notificatie (uit, eenmalig, herhaald), foto en acties; aan/uit-schakelaar per regel via het web; tabellen `alarm` en `alarm_uit` (§5.3.1); grenzen en alarmperioden in de grafieken. Afgeleide grootheden (§5.2.5): aparte module na de correctie, eerste afleiding `helling`. Relais (§5.2.6): sensortype `shelly-relais`, grootheid `relais`, beveiligd met een uitschakeltijd in de Shelly. |

@@ -97,6 +97,23 @@ REEKS: dict[str, tuple[float, float]] = {
 
 
 # Ruis op de testreeks: per grootheid de standaardafwijking, in de eenheid van de grootheid.
+# Hoe vaak de testreeks binnen de duur van een simulatie heen en weer doorlopen wordt
+# (§10.3 punt 5): van begin naar eind en weer terug. Door het teruglopen is ook het
+# herstellen van een alarm te testen.
+RONDES = 2
+
+
+def verloop(voortgang: float) -> float:
+    """Zet de voortgang van een simulatie (0.0 = start, 1.0 = duur om) om in de plaats in
+    de testreeks (fractie: 0.0 = beginwaarde, 1.0 = eindwaarde).
+
+    De reeks wordt RONDES keer heen en weer doorlopen, in een zaagtand: bij twee rondes
+    is de fractie 0 → 1 → 0 → 1 → 0. Aan het einde staat alles dus weer op de beginwaarde.
+    """
+    in_ronde = (min(max(voortgang, 0.0), 1.0) * RONDES) % 1.0
+    return 2 * in_ronde if in_ronde < 0.5 else 2 * (1 - in_ronde)
+
+
 # Een echte sensor levert nooit een strakke lijn; met wat ruis ziet een gesimuleerde reeks
 # er in de grafieken uit als een echte (ook voor demonstraties). De waarden zijn zo gekozen
 # dat het verloop van de testreeks goed zichtbaar blijft.
@@ -426,8 +443,9 @@ class Simulator:
     def stappen(self) -> list[tuple[Sensor, float, int]]:
         """De advertenties die nu aangemaakt moeten worden: (sensor, fractie, volgnummer).
 
-        Is de duur van een simulatie om, dan volgt nog één laatste advertentie met de
-        eindwaarden (fractie 1.0) en stopt de simulatie.
+        De fractie loopt binnen de duur heen en weer (zie verloop). Is de duur van een
+        simulatie om, dan volgt nog één laatste advertentie, weer met de beginwaarden
+        (fractie 0.0), en stopt de simulatie.
         """
         uit = []
         with self._lock:
@@ -435,12 +453,12 @@ class Simulator:
             for sensor_id, loop in list(self._lopend.items()):
                 sensor = self._sensoren[sensor_id]
                 if nu >= loop.einde:
-                    fractie = 1.0
+                    fractie = verloop(1.0)
                     del self._lopend[sensor_id]
                     log.info("simulatie afgelopen voor %s (%s); echte sensor telt weer mee",
                              sensor.naam, sensor_id)
                 else:
-                    fractie = (nu - loop.begin) / (loop.einde - loop.begin)
+                    fractie = verloop((nu - loop.begin) / (loop.einde - loop.begin))
                 uit.append((sensor, fractie, loop.n))
                 loop.n += 1
         return uit
@@ -450,7 +468,8 @@ class Simulator:
         simulatie loopt, anders None. De reader vraagt dit bij elke poll en maakt dan zelf
         het antwoord aan in plaats van de echte sensor te pollen.
 
-        Is de duur om, dan volgt nog één laatste stap met fractie 1.0 en stopt de simulatie.
+        De fractie loopt binnen de duur heen en weer (zie verloop). Is de duur om, dan
+        volgt nog één laatste stap, weer met fractie 0.0, en stopt de simulatie.
         """
         with self._lock:
             loop = self._lopend.get(sensor_id)
@@ -458,13 +477,13 @@ class Simulator:
                 return None
             nu = self._klok()
             if nu >= loop.einde:
-                fractie = 1.0
+                fractie = verloop(1.0)
                 del self._lopend[sensor_id]
                 sensor = self._sensoren[sensor_id]
                 log.info("simulatie afgelopen voor %s (%s); echte sensor telt weer mee",
                          sensor.naam, sensor_id)
             else:
-                fractie = (nu - loop.begin) / (loop.einde - loop.begin)
+                fractie = verloop((nu - loop.begin) / (loop.einde - loop.begin))
             loop.n += 1
             return fractie, loop.n - 1
 

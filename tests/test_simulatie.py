@@ -187,14 +187,27 @@ class TestSimulator(unittest.TestCase):
         self.assertTrue(self.sim.actief(MAC))
         self.assertFalse(self.sim.actief(RMAC))
 
+        # De reeks gaat binnen de duur twee keer heen en weer (§10.3 punt 5).
         self.assertEqual(self.sim.stappen(), [(SENSOREN[MAC], 0.0, 0)])
-        self.klok.t += 30
+        self.klok.t += 7.5
         self.assertEqual(self.sim.stappen(), [(SENSOREN[MAC], 0.5, 1)])
-        # Duur om: nog één advertentie met de eindwaarden, daarna is de simulatie voorbij.
-        self.klok.t += 31
+        self.klok.t += 7.5    # een kwart van de duur: de eindwaarden
         self.assertEqual(self.sim.stappen(), [(SENSOREN[MAC], 1.0, 2)])
+        self.klok.t += 15     # halverwege: terug op de beginwaarden
+        self.assertEqual(self.sim.stappen(), [(SENSOREN[MAC], 0.0, 3)])
+        self.klok.t += 15     # driekwart: weer de eindwaarden
+        self.assertEqual(self.sim.stappen(), [(SENSOREN[MAC], 1.0, 4)])
+        # Duur om: nog één advertentie met de beginwaarden, daarna is de simulatie voorbij.
+        self.klok.t += 16
+        self.assertEqual(self.sim.stappen(), [(SENSOREN[MAC], 0.0, 5)])
         self.assertFalse(self.sim.actief(MAC))
         self.assertEqual(self.sim.stappen(), [])
+
+    def test_verloop_is_een_zaagtand(self):
+        for voortgang, fractie in [(0.0, 0.0), (0.125, 0.5), (0.25, 1.0), (0.375, 0.5),
+                                   (0.5, 0.0), (0.75, 1.0), (0.875, 0.5), (1.0, 0.0),
+                                   (-1.0, 0.0), (2.0, 0.0)]:
+            self.assertAlmostEqual(simulatie.verloop(voortgang), fractie)
 
     def test_uit(self):
         _opdracht(self.sim, simulatie.TOPIC_AAN, MAC, duur=60)
@@ -251,17 +264,18 @@ class TestOntvanger(unittest.TestCase):
         _opdracht(self.sim, simulatie.TOPIC_AAN, MAC, duur=60)
         self.ontvang(MAC, {bthome.FCD2_UUID: PVVX}, {}, -70)
         self.assertEqual(self._temperaturen(), [25.06])
-        self.klok.t += 30
+        self.klok.t += 7.5    # een achtste van de duur: halverwege de eerste heengang
         self._simuleer_stap()
         self.assertEqual(self._temperaturen(), [25.06, 10.0])
         self.assertEqual([m.waarde for m in self.bus.metingen if m.grootheid == "rssi"][-1],
                          simulatie.RSSI)
 
-        # Simulatie voorbij: de echte sensor telt weer mee.
-        self.klok.t += 31
+        # Simulatie voorbij (laatste advertentie: weer de beginwaarde); de echte sensor
+        # telt weer mee.
+        self.klok.t += 53
         self._simuleer_stap()
         self.ontvang(MAC, {bthome.FCD2_UUID: PVVX}, {}, -70)
-        self.assertEqual(self._temperaturen(), [25.06, 10.0, -5.0, 25.06])
+        self.assertEqual(self._temperaturen(), [25.06, 10.0, 25.0, 25.06])
 
     def test_andere_sensor_loopt_door(self):
         _opdracht(self.sim, simulatie.TOPIC_AAN, RMAC, duur=60)

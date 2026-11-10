@@ -204,13 +204,15 @@ class TestPoller(unittest.TestCase):
     def test_simulatie_slaat_de_echte_shelly_over(self):
         opdracht = json.dumps({"sensor_id": ID, "duur": 100}).encode()
         self.simulator.bij_opdracht(simulatie.TOPIC_AAN, opdracht)
-        self.klok.t += 84     # fractie 0,84: de pomp loopt en de vlotter staat aan
+        # 21 van de 100 s: in de eerste heengang op fractie 0,84 (de reeks gaat twee keer
+        # heen en weer); de pomp loopt en de vlotter staat aan.
+        self.klok.t += 21
         self.assertEqual(self._poll(), {"bilge": 1.0, "bilgepomp": 1.0,
                                         "rssi": self.bus.metingen[-1].waarde})
         self.assertEqual(self.gevraagd, [])                       # niet gepolld (bypass)
         self.assertTrue(self.tracer.stappen[0][1].startswith("SIMULATIE"))
         # Na afloop nog één laatste stap, daarna telt de echte Shelly weer mee.
-        self.klok.t += 20
+        self.klok.t += 80
         self._poll()
         self.assertEqual(self.gevraagd, [])
         self._poll()
@@ -272,7 +274,7 @@ class TestSimulatie(unittest.TestCase):
         sim = simulatie.Simulator(NepBus(), {ID: sensor}, klok=klok, types=simulatie.SHELLY_TYPES)
         sim.bij_opdracht(simulatie.TOPIC_AAN, opdracht)
         self.assertEqual(sim.stap(ID), (0.0, 0))
-        klok.t += 30
+        klok.t += 7.5         # een achtste van de duur: halverwege de eerste heengang
         self.assertEqual(sim.stap(ID), (0.5, 1))
         sim.bij_opdracht(simulatie.TOPIC_UIT, opdracht)
         self.assertIsNone(sim.stap(ID))
