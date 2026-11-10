@@ -54,9 +54,13 @@
   #status.fout { color: var(--fout); }
   #totalen { color: var(--zacht); font-size: 13px; margin: 0 2px 10px; }
   /* De weergave: de opname past altijd in de breedte en blijft binnen het venster. */
-  #beeld { display: flex; justify-content: center; align-items: center; min-height: 200px;
+  /* Het vak heeft een vaste vorm (16:9, de vorm van het camerabeeld) en de foto of video
+     vult dat vak. Zonder vaste vorm verspringt de pagina bij elke wissel tussen foto en
+     video: een video heeft nog geen afmetingen zolang hij niet geladen is. */
+  #beeld { display: flex; justify-content: center; align-items: center; width: 100%;
+           aspect-ratio: 16 / 9; max-height: 70vh;
            background: #000; border-radius: 6px; overflow: hidden; }
-  #beeld img, #beeld video { max-width: 100%; max-height: 70vh; display: block; }
+  #beeld img, #beeld video { width: 100%; height: 100%; object-fit: contain; display: block; }
   #beeld .leeg { color: #bbb; padding: 40px 12px; text-align: center; }
   #bij { margin: 8px 0 0; }
   #bij .tijd { font-weight: 600; margin-right: 8px; }
@@ -312,6 +316,7 @@ function toon(o) {
     inhoud = document.createElement("img");
     inhoud.alt = "Foto van " + cameraNaam(o.camera_id) + " om " + tijd(o.ts);
   }
+  if (o.type === "foto") inhoud.addEventListener("load", () => zetVorm(inhoud));
   inhoud.src = adres;
   beeld.replaceChildren(inhoud);
   el("bij").hidden = false;
@@ -322,6 +327,14 @@ function toon(o) {
   // De lijst loopt van nieuw naar oud: "ouder" is verder naar beneden.
   el("ouder").disabled = i < 0 || i >= opnames.length - 1;
   el("nieuwer").disabled = i <= 0;
+}
+
+// Geeft het vak de vorm van het echte camerabeeld (standaard 16:9; een andere camera kan
+// 4:3 leveren). Alleen bij een foto: die van dezelfde camera hebben steeds dezelfde vorm,
+// dus het vak verspringt daarna niet meer.
+function zetVorm(foto) {
+  if (foto.naturalWidth && foto.naturalHeight)
+    el("beeld").style.aspectRatio = foto.naturalWidth + " / " + foto.naturalHeight;
 }
 
 function stap(richting) {
@@ -428,8 +441,42 @@ function toonPlek() {
     video.muted = true;           // er is geen geluid; zo mag de browser vanzelf afspelen
     video.playsInline = true;
     video.src = adres;
-    // Afgelopen, of niet af te spelen (bestand weg): verder met de volgende opname.
-    video.onended = video.onerror = () => { if (mijn === beurt && speelt) volgende(); };
+    // Na de video verder met de volgende opname. Dat mag maar één keer gebeuren, en alleen
+    // als deze video nog in beeld is (mijn === beurt).
+    let klaar = false;
+    const door = () => {
+      if (klaar || mijn !== beurt) return;
+      klaar = true;
+      clearInterval(wacht);
+      if (speelt) volgende();
+    };
+    // Afgelopen, of niet af te spelen (bestand weg).
+    video.addEventListener("ended", door);
+    video.addEventListener("error", door);
+    // Vangnet: niet elke browser meldt het einde van elke video. Staat de video op zijn
+    // einde stil, dan geldt hij ook als afgelopen.
+    let laatst = -1;
+    const wacht = setInterval(() => {
+      if (mijn !== beurt) { clearInterval(wacht); return; }
+      const bijnaUit = isFinite(video.duration) && video.duration - video.currentTime < 0.5;
+      if (video.ended || (speelt && bijnaUit && video.currentTime === laatst)) door();
+      laatst = video.currentTime;
+    }, 1000);
+    // De knoppen van de video zelf horen bij het overzicht: start de gebruiker de video
+    // daar, dan loopt het overzicht (en gaat het na de video verder); zet hij hem daar op
+    // pauze, dan staat het overzicht stil.
+    video.addEventListener("play", () => {
+      if (mijn !== beurt || speelt) return;
+      speelt = true;
+      el("speel").textContent = "⏸ Pauze";
+    });
+    video.addEventListener("pause", () => {
+      // Aan het einde van een video meldt de browser ook een pauze; die telt niet.
+      const uit = video.ended || (isFinite(video.duration) && video.duration - video.currentTime < 0.5);
+      if (mijn !== beurt || !speelt || uit) return;
+      speelt = false;
+      el("speel").textContent = "▶ Afspelen";
+    });
     el("beeld").replaceChildren(video);
     if (speelt) video.play().catch(() => {});
     return;
@@ -449,6 +496,7 @@ function toonPlek() {
     if (!img) { img = document.createElement("img"); el("beeld").replaceChildren(img); }
     img.src = adres;
     img.alt = "Foto van " + cameraNaam(o.camera_id) + " om " + tijd(o.ts);
+    zetVorm(foto);
     if (speelt) wekker = setTimeout(volgende, gebeurtenis(o) ? DUUR_GEBEURTENIS : DUUR_INTERVAL);
   };
   // Het bestand is er niet meer (bijvoorbeeld net opgeruimd): overslaan.
