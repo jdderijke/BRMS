@@ -1,0 +1,32 @@
+# systemd-service voor de alarmlaag (ARCHITECTURE.md §3.1, §5.5).
+#
+# Dit is een sjabloon: deploy/install.sh en deploy/update.sh vullen @BRMS@ (de projectmap,
+# bijv. /home/jandirk/BRMS) en @GEBRUIKER@ (bijv. jandirk) in en zetten het resultaat in
+# /etc/systemd/system/.
+
+[Unit]
+Description=BRMS alarmlaag (metingen beoordelen, meldingen versturen)
+# Broker en netwerk eerst starten (§3.1 punt 6). 'Wants' i.p.v. 'Requires': valt de broker
+# weg, dan blijft de alarmlaag draaien en verbindt opnieuw zodra hij terug is.
+Wants=mosquitto.service network-online.target
+After=mosquitto.service network-online.target
+
+[Service]
+# Draait als de beheerder van de Pi (§10.1 punt 5).
+User=@GEBRUIKER@
+Environment=PYTHONPATH=@BRMS@
+WorkingDirectory=@BRMS@
+ExecStart=@BRMS@/.venv/bin/python -m brms alarm
+# Altijd opnieuw starten na een crash of fout, na 5 s (§3.1 punt 1).
+Restart=always
+RestartSec=5
+
+# Beperkingen: de alarmlaag hoeft nergens te schrijven (de opslag legt de alarmen vast).
+# Systeem en home zijn alleen-lezen.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

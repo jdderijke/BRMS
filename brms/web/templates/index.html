@@ -17,6 +17,10 @@
   eigen strook met een eigen verticale as, onder elkaar op dezelfde tijdas. Twee schalen
   door elkaar in één vlak zijn niet af te lezen.
 
+  Alarmen (§5.5.3 punt 9): geldt voor een reeks een alarmregel met een grens, dan staat de
+  grens als streeplijn in de grafiek (de herstelgrens als stippellijn). De perioden waarin
+  een alarm actief was, zijn gearceerd.
+
   De indeling (welke grafieken, welke reeksen) wordt in de browser onthouden.
   Chart.js komt uit static/ (geen CDN): de pagina werkt ook zonder internet.
 -->
@@ -62,7 +66,13 @@
   .legenda .reeks { display: inline-flex; align-items: center; gap: 6px; }
   .legenda i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
   .legenda .waarde { color: var(--zacht); }
-  .melding { color: var(--zacht); font-size: 13px; min-height: 1.3em; }
+  .melding, .uitleg { color: var(--zacht); font-size: 13px; min-height: 1.3em; }
+  .uitleg { min-height: 0; }
+  .uitleg i { display: inline-block; vertical-align: middle; margin: 0 5px 0 0; }
+  .uitleg i.vlak { width: 14px; height: 10px; background: var(--fout); opacity: .18; }
+  .uitleg i.streep { width: 16px; border-top: 2px dashed var(--zacht); }
+  .uitleg i.stippel { width: 16px; border-top: 1px dotted var(--zacht); }
+  .uitleg span { margin-right: 14px; white-space: nowrap; }
   .doek { position: relative; height: 240px; }
   [hidden] { display: none !important; }
 </style>
@@ -116,6 +126,11 @@
     <div class="legenda"></div>
     <div class="doek"><canvas></canvas></div>
     <div class="melding"></div>
+    <div class="uitleg" hidden>
+      <span><i class="vlak"></i>alarm actief</span>
+      <span><i class="streep"></i>alarmgrens</span>
+      <span><i class="stippel"></i>herstelgrens</span>
+    </div>
   </section>
 </template>
 
@@ -125,12 +140,16 @@
 // grootheid de eenheid en de soort (§5.3.3).
 const SENSOREN = {{ sensoren | tojson }};
 const GROOTHEDEN = {{ grootheden | tojson }};
+// De alarmregels per sensor en grootheid (§5.5.3): {sensor-ID: {grootheid: [regel, ...]}}.
+const REGELS = {{ regels | tojson }};
+const regelsVan = r => (REGELS[r.sensor] || {})[r.grootheid] || [];
 
 const LIVE_INTERVAL = 2000;   // ms tussen twee vragen aan /api/live
 const GAT = 900;              // s; een groter gat in de historie wordt niet doorverbonden
 const MAX_REEKSEN = 8;        // per grafiek; er zijn acht goed te onderscheiden kleuren
 const STROOK = 220;           // px hoogte per eenheid in een grafiek
 const BEWAARSLEUTEL = "brms-grafieken";
+const ALARM_INTERVAL = 30000; // ms tussen twee keer ophalen van de alarmperioden (live)
 
 // Live-vensters van een uur en langer worden samengevat per tijdvak (venster in s ->
 // breedte van een vak in s), zodat een reeks hooguit ongeveer 720 punten heeft. Alle
@@ -150,7 +169,8 @@ const eenheid = g => (GROOTHEDEN[g] || {eenheid: ""}).eenheid;
 // Eén reeks:
 //   {sensor (ID), grootheid, kleur (1..8), data: [{x: ms, y}], en voor live:
 //    geladen, na, vanaf – wat er al opgehaald is (zie vraagLive),
-//    eerder – of de webservice nog oudere metingen heeft dan dit venster}
+//    eerder – of de webservice nog oudere metingen heeft dan dit venster,
+//    alarmen – de alarmperioden van deze reeks als [[begin ms, einde ms of null], ...]}
 let grafieken = [];
 
 // De tijd van de Pi (Unix-seconden) uit het laatste antwoord van /api/live. Vensters
@@ -261,7 +281,8 @@ function voegReeksToe(g, sensorId, grootheid, gewensteKleur) {
   const bezet = g.reeksen.map(r => r.kleur);
   let k = gewensteKleur && !bezet.includes(gewensteKleur) ? gewensteKleur : 1;
   while (bezet.includes(k)) k++;
-  g.reeksen.push({sensor: sensorId, grootheid, kleur: k, data: [], geladen: false, na: 0, vanaf: null, eerder: false});
+  g.reeksen.push({sensor: sensorId, grootheid, kleur: k, data: [], geladen: false, na: 0, vanaf: null,
+                  eerder: false, alarmen: []});
   return "";
 }
 
@@ -282,8 +303,85 @@ function ververs(g) {
   zetEerder(g);
   bouwChart(g);
   if (!g.reeksen.length) { meld(g, "Kies een sensor en een grootheid en klik op Toevoegen."); return; }
-  if (g.bron === "live") { meld(g, "Live: laden …"); vraagLive(); }
+  if (g.bron === "live") { meld(g, "Live: laden …"); vraagLive(); laadAlarmen(g); }
   else laadHistorie(g);
+}
+
+// --- alarmen in de grafiek (§5.5.3 punt 9) ---------------------------------------------
+// Haalt voor elke reeks met een alarmregel de alarmperioden uit de database en tekent de
+// grafiek opnieuw. Zonder `van` en `tot` (live): de laatste 24 uur, zoveel als de
+// live-grafiek hooguit toont.
+async function laadAlarmen(g, van, tot) {
+  if (van === undefined) {
+    tot = (piTijd !== null ? piTijd : Math.floor(Date.now() / 1000)) + 60;
+    van = tot - 86400;
+  }
+  const reeksen = g.reeksen.filter(r => regelsVan(r).length);
+  if (!reeksen.length) return;
+  try {
+    await Promise.all(reeksen.map(async r => {
+      const a = await fetch("/api/alarmen?sensor=" + encodeURIComponent(r.sensor)
+                            + "&grootheid=" + encodeURIComponent(r.grootheid) + "&van=" + van + "&tot=" + tot);
+      if (!a.ok) throw new Error("fout " + a.status);
+      r.alarmen = (await a.json()).perioden.map(p => [p[0] * 1000, p[1] === null ? null : p[1] * 1000]);
+    }));
+    if (g.chart) g.chart.update();
+  } catch (e) { /* de grafiek zelf werkt ook zonder alarmperioden */ }
+}
+
+// Een kleur als #rrggbb met doorzichtigheid, voor het arceren.
+function doorzichtig(hex, alfa) {
+  const n = parseInt(hex.replace("#", ""), 16);
+  return "rgba(" + (n >> 16 & 255) + "," + (n >> 8 & 255) + "," + (n & 255) + "," + alfa + ")";
+}
+
+// Tekent in een grafiek de alarmperioden (vóór de lijnen, als vlak) en de grenzen (ná de
+// lijnen). Elke reeks tekent in de strook van zijn eigen verticale as.
+function alarmPlugin(g) {
+  return {
+    id: "alarmen",
+    beforeDatasetsDraw: chart => {
+      const ctx = chart.ctx, vlak = chart.chartArea, x = chart.scales.x;
+      ctx.save();
+      ctx.fillStyle = doorzichtig(kleur("--fout"), 0.14);
+      g.reeksen.forEach((r, i) => {
+        const y = chart.scales[chart.data.datasets[i] && chart.data.datasets[i].yAxisID];
+        if (!y) return;
+        for (const [begin, einde] of r.alarmen) {
+          // Een alarm dat nog actief is, loopt door tot de rechterrand.
+          const links = Math.max(vlak.left, x.getPixelForValue(begin));
+          const rechts = Math.min(vlak.right, einde === null ? vlak.right : x.getPixelForValue(einde));
+          // Een heel kort alarm blijft zichtbaar als een streep van 2 px.
+          if (rechts >= vlak.left && links <= vlak.right)
+            ctx.fillRect(links, y.top, Math.max(2, rechts - links), y.bottom - y.top);
+        }
+      });
+      ctx.restore();
+    },
+    afterDatasetsDraw: chart => {
+      const ctx = chart.ctx, vlak = chart.chartArea;
+      ctx.save();
+      g.reeksen.forEach((r, i) => {
+        const y = chart.scales[chart.data.datasets[i] && chart.data.datasets[i].yAxisID];
+        if (!y) return;
+        ctx.strokeStyle = kleur("--reeks-" + r.kleur);
+        const lijn = (waarde, streep, dikte) => {
+          // Een grens buiten het bereik van de as wordt niet getekend: de as volgt de
+          // metingen, niet de grens.
+          if (waarde === undefined || waarde < y.min || waarde > y.max) return;
+          const py = Math.round(y.getPixelForValue(waarde)) + 0.5;
+          ctx.setLineDash(streep);
+          ctx.lineWidth = dikte;
+          ctx.beginPath(); ctx.moveTo(vlak.left, py); ctx.lineTo(vlak.right, py); ctx.stroke();
+        };
+        for (const regel of regelsVan(r)) {
+          lijn(regel.boven !== undefined ? regel.boven : regel.onder, [7, 4], 1.5);
+          lijn(regel.herstel, [2, 3], 1);
+        }
+      });
+      ctx.restore();
+    },
+  };
 }
 
 // De knop "eerder" van een live-grafiek werkt alleen als de webservice nog oudere metingen
@@ -330,6 +428,8 @@ function bouwChart(g) {
   }
   if (!eenheden.length) schalen.y0 = {display: false};
   g.vak.querySelector(".doek").style.height = Math.max(1, eenheden.length) * STROOK + "px";
+  // De uitleg van arcering en grenslijnen alleen tonen als er een alarmregel meespeelt.
+  g.vak.querySelector(".uitleg").hidden = !g.reeksen.some(r => regelsVan(r).length);
 
   g.chart = new Chart(g.vak.querySelector("canvas"), {
     type: "line",
@@ -344,7 +444,7 @@ function bouwChart(g) {
     }))},
     // Een lijn tussen de stroken, zodat duidelijk is waar de ene schaal ophoudt en de
     // andere begint.
-    plugins: [{id: "stroken", afterDraw: chart => {
+    plugins: [alarmPlugin(g), {id: "stroken", afterDraw: chart => {
       const ctx = chart.ctx, vlak = chart.chartArea;
       ctx.save();
       ctx.strokeStyle = kleur("--rand");
@@ -595,6 +695,7 @@ async function laadHistorie(g) {
     g.chart.options.scales.x.max = tot * 1000;
     g.chart.update();
     toonWaarden(g);
+    laadAlarmen(g, van, tot);
     const bereik = datum(van * 1000) + " " + klok(van * 1000) + "  –  " + datum(tot * 1000) + " " + klok(tot * 1000);
     meld(g, rijen ? "Database: " + bereik + "  ·  " + rijen + " rijen (gemiddelde per 5 minuten)."
                   : "Database: geen gegevens tussen " + bereik + ".");
@@ -622,6 +723,9 @@ if (Array.isArray(vorigeKeer)) {
 el("leeg").hidden = grafieken.length > 0;
 if (!SENSOREN.length) status("Er staan geen sensoren in de configuratie.");
 setInterval(vraagLive, LIVE_INTERVAL);
+// De alarmperioden van de live-grafieken af en toe verversen: een alarm kan beginnen of
+// eindigen terwijl de pagina openstaat.
+setInterval(() => { for (const g of grafieken) if (g.bron === "live") laadAlarmen(g); }, ALARM_INTERVAL);
 </script>
 </body>
 </html>

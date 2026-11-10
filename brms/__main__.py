@@ -10,6 +10,7 @@ Opdrachten:
   ble-reader          de BLE-reader-service starten (§5.2.1)
   shelly-reader       de Shelly-reader-service starten (§5.2.1, §5.2.4)
   opslag              de opslag-service starten (§5.3)
+  alarm               de alarmlaag starten (§5.5)
   web                 de webservice starten (§5.6)
   monitor [sensor..]  monitor in tmux: busverkeer, of met sensor(en) de trace (§10.2)
   monitor stop        het monitorvak sluiten; de shell blijft
@@ -43,7 +44,12 @@ def _check_config(cfg_pad: str) -> int:
         for f in e.fouten:
             print(f"  - {f}", file=sys.stderr)
         return 1
-    print(f"Configuratie {cfg_pad} is in orde: {len(cfg.sensoren)} sensoren.")
+    print(f"Configuratie {cfg_pad} is in orde: {len(cfg.sensoren)} sensoren, "
+          f"{len(cfg.alarmen)} alarmregels.")
+    # Geen fout, wel het melden waard (§5.5.4 punt 7).
+    if not cfg.melding.ingesteld and any(r.melding != "uit" for r in cfg.alarmen):
+        print("Let op: er is geen meldingskanaal ingesteld ([melding.telegram] of "
+              "[melding.email]);\nalarmen worden vastgelegd, maar er gaat geen melding uit.")
     return 0
 
 
@@ -112,6 +118,9 @@ async def _service(naam: str, cfg: config.Config) -> None:
         elif naam == "shelly-reader":
             from brms.readers import shelly
             await shelly.draai(cfg, bus, stop)
+        elif naam == "alarm":
+            from brms import alarms
+            await alarms.draai(cfg, bus, stop)
         else:
             from brms import storage
             await storage.draai(cfg, bus, stop)
@@ -225,6 +234,7 @@ services (worden door systemd gestart – niet met de hand; gebruik brms herstar
   ble-reader             BLE-reader      (systemd-unit brms-ble-reader)
   shelly-reader          Shelly-reader   (systemd-unit brms-shelly-reader)
   opslag                 opslag-service  (systemd-unit brms-opslag)
+  alarm                  alarmlaag       (systemd-unit brms-alarm)
   web                    webinterface    (systemd-unit brms-web)
 """
 
@@ -257,7 +267,8 @@ def main(argv=None) -> int:
                    help="bij update: terug naar de versie van vóór de laatste update")
     p.add_argument("opdracht",
                    choices=("check-config", "grootheden", "start", "stop", "herstart", "update",
-                            "monitor", "sim", "simuleer", "ble-reader", "shelly-reader", "opslag", "web",
+                            "monitor", "sim", "simuleer", "ble-reader", "shelly-reader", "opslag", "alarm",
+                            "web",
                             "monitor-vak"))
     p.add_argument("sensoren", nargs="*",
                    help="bij monitor: naam of ID van sensor(en) voor trace; "

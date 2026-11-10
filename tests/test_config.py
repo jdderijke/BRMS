@@ -16,6 +16,10 @@ class TestConfig(unittest.TestCase):
     def test_voorbeeldbestand_is_geldig(self):
         cfg = config.lees(VOORBEELD)
         self.assertEqual(len(cfg.sensoren), 3)
+        # De alarmregels van §5.5.2 die bij de drie voorbeeldsensoren passen.
+        self.assertEqual([r.id for r in cfg.alarmen],
+                         ["vorst", "vocht", "sensor-stil", "sensorbatterij"])
+        self.assertFalse(cfg.melding.ingesteld)   # de kanalen staan uitgecommentarieerd
         self.assertEqual(cfg.opslag.database, os.path.join(config.PROJECTMAP, "data", "brms.db"))
         self.assertEqual(cfg.mqtt, config.MqttConfig("localhost", 1883))
 
@@ -161,6 +165,167 @@ class TestConfig(unittest.TestCase):
                          "'bilgepomp' staat in 'grootheden' maar heeft geen 'bron'",
                          "kajuit): 'adres' hoort alleen bij een Shelly"]:
             self.assertIn(verwacht, fouten)
+
+    SENSOREN = ('[[sensor]]\nid = "A4:C1:38:00:00:01"\ntype = "bthome"\nnaam = "kajuit"\n'
+                '[[sensor]]\nid = "A4:C1:38:00:00:02"\ntype = "bthome"\nnaam = "vooronder"\n'
+                'grootheden = ["temperatuur"]\n'
+                '[[sensor]]\nid = "CB:B8:33:4C:88:4F"\ntype = "ruuvi"\nnaam = "motorruim"\n')
+
+    def test_tijdsduur(self):
+        self.assertEqual([config.duur(t) for t in ("90s", "15m", "6u", "7d", " 2 u ", "0,5m")],
+                         [90, 900, 21600, 604800, 7200, 30])
+        for fout in ("15", "15 min", "m", "-5m", 900, None, ""):
+            with self.assertRaises(ValueError):
+                config.duur(fout)
+
+    def test_alarmregels(self):
+        cfg = _toml(self.SENSOREN + """
+            [[alarm]]
+            id = "vorst"
+            naam = "Vorst"
+            sensoren = ["kajuit", "a4:c1:38:00:00:02"]
+            grootheid = "temperatuur"
+            soort = "grens"
+            onder = 2
+            duur = "15m"
+            herstel = 3.0
+            herhaling = "12u"
+            prioriteit = "hoog"
+            [[alarm]]
+            id = "beweging"
+            sensoren = ["motorruim"]
+            grootheid = "beweging"
+            soort = "aantal"
+            aantal = 5
+            venster = "60s"
+            herstelduur = "10m"
+            melding = "uit"
+            [[alarm]]
+            id = "stil"
+            sensoren = ["kajuit"]
+            soort = "stil"
+            duur = "30m"
+            herstelmelding = false
+        """)
+        vorst, beweging, stil = cfg.alarmen
+        # Sensoren op naam of ID; de regel onthoudt de ID's.
+        self.assertEqual(vorst.sensoren, ("A4:C1:38:00:00:01", "A4:C1:38:00:00:02"))
+        self.assertEqual((vorst.onder, vorst.boven, vorst.herstel, vorst.duur), (2.0, None, 3.0, 900))
+        # 'herhaling' zonder 'melding' betekent herhaald.
+        self.assertEqual((vorst.melding, vorst.herhaling, vorst.prioriteit), ("herhaald", 43200, "hoog"))
+        self.assertEqual((beweging.naam, beweging.aantal, beweging.venster, beweging.herstelduur,
+                          beweging.melding), ("beweging", 5, 60, 600, "uit"))
+        self.assertEqual((stil.grootheid, stil.duur, stil.melding, stil.herstelmelding),
+                         (None, 1800, "eenmalig", False))
+
+    def test_fouten_in_alarmregels(self):
+        with self.assertRaises(config.ConfigFout) as ctx:
+            _toml(self.SENSOREN + """
+                [[alarm]]
+                id = "a"
+                sensoren = ["salon", "kajuit", "kajuit"]
+                grootheid = "temperatuur"
+                soort = "grens"
+                onder = 2
+                boven = 30
+                duur = "15 minuten"
+                aantal = 3
+                [[alarm]]
+                id = "a"
+                sensoren = ["kajuit"]
+                grootheid = "luchtdruk"
+                soort = "grens"
+                onder = 2
+                herstel = 1
+                melding = "herhaald"
+                kleur = "rood"
+                [[alarm]]
+                id = "b"
+                sensoren = ["vooronder"]
+                grootheid = "vocht"
+                soort = "aantal"
+                aantal = 0
+                herhaling = "10s"
+                melding = "eenmalig"
+                [[alarm]]
+                id = "c"
+                sensoren = ["kajuit"]
+                soort = "stil"
+                grootheid = "temperatuur"
+                prioriteit = "paniek"
+                herstelmelding = "ja"
+                actie = [{ type = "video" }]
+                [[alarm]]
+                id = "met spatie"
+                sensoren = []
+                soort = "drempel"
+            """)
+        fouten = "\n".join(ctx.exception.fouten)
+        for verwacht in ["(a): onbekende sensor 'salon'",
+                         "sensor 'kajuit' staat meer dan eens",
+                         "geef precies één van 'boven' of 'onder'",
+                         "'duur' moet een tijdsduur zijn",
+                         "'aantal' hoort niet bij soort 'grens'",
+                         "id a komt meer dan eens voor",
+                         "sensor 'kajuit' levert geen 'luchtdruk'",
+                         "'herstel' moet gelijk aan of hoger dan 'onder' zijn",
+                         "bij melding 'herhaald' hoort een 'herhaling'",
+                         "onbekende sleutel 'kleur'",
+                         # vooronder heeft alleen 'temperatuur' in zijn lijst 'grootheden'
+                         "(b): sensor 'vooronder' levert geen 'vocht'",
+                         "'aantal' moet een geheel getal van 1 of meer zijn",
+                         "(b): 'venster' ontbreekt",
+                         "soort 'aantal' kan alleen bij een toename of een toestand",
+                         "'herhaling' heeft alleen betekenis bij melding 'herhaald'",
+                         "bij soort 'stil' hoort geen 'grootheid'",
+                         "(c): 'duur' ontbreekt",
+                         "'prioriteit' moet een van urgent, hoog, normaal zijn",
+                         "'herstelmelding' moet true of false zijn",
+                         "'actie' is nog niet gebouwd",
+                         "nr. 5: 'id' ontbreekt of bevat andere tekens",
+                         "'soort' moet een van grens, aantal, stil zijn"]:
+            self.assertIn(verwacht, fouten)
+
+    def test_meldingskanalen(self):
+        cfg = _toml("""
+            [melding.telegram]
+            token = "123:abc"
+            chat = -100200300
+            [melding.email]
+            server = "smtp.voorbeeld.nl"
+            gebruiker = "boot@voorbeeld.nl"
+            wachtwoord = "geheim"
+            aan = "ik@voorbeeld.nl"
+        """)
+        self.assertEqual(cfg.melding.telegram, config.TelegramConfig("123:abc", "-100200300"))
+        # Standaard poort 587, afzender = gebruiker, één ontvanger mag als tekst.
+        self.assertEqual(cfg.melding.email, config.EmailConfig(
+            "smtp.voorbeeld.nl", 587, "boot@voorbeeld.nl", "geheim", "boot@voorbeeld.nl",
+            ("ik@voorbeeld.nl",)))
+        self.assertTrue(cfg.melding.ingesteld)
+        self.assertFalse(_toml("").melding.ingesteld)
+
+    def test_fouten_in_meldingskanalen(self):
+        with self.assertRaises(config.ConfigFout) as ctx:
+            _toml("""
+                [melding]
+                sms = 1
+                [melding.telegram]
+                token = "GEHEIME-token"
+                [melding.email]
+                server = "smtp.voorbeeld.nl"
+                gebruiker = "boot"
+                wachtwoord = "GEHEIM-wachtwoord"
+                poort = 0
+                aan = ["geen adres"]
+            """)
+        fouten = "\n".join(ctx.exception.fouten)
+        for verwacht in ["[melding]: onbekende sleutel 'sms'", "[melding.telegram]: 'chat' ontbreekt",
+                         "'poort' moet een geheel getal", "'aan' moet een e-mailadres zijn",
+                         "'van' moet een e-mailadres zijn"]:
+            self.assertIn(verwacht, fouten)
+        # Geheimen komen nooit in een melding.
+        self.assertNotIn("GEHEIM", fouten)
 
     def test_alle_fouten_tegelijk(self):
         tekst = """

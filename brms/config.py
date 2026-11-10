@@ -20,6 +20,9 @@ Opbouw van het bestand (zie config/brms.example.toml):
                 bij een Victron-apparaat ook 'sleutel' (§5.2.2);
                 bij een Shelly ook 'adres', 'interval', 'bron', 'drempel', 'omgekeerd'
                 (§5.2.4)
+    [melding.telegram]  token, chat     – meldingen via een Telegram-bot (§5.5.4)
+    [melding.email]     server, poort, gebruiker, wachtwoord, van, aan – tweede kanaal
+    [[alarm]]   id, naam, sensoren, grootheid, soort, ... – één blok per alarmregel (§5.5.3)
 """
 
 import os
@@ -153,11 +156,76 @@ class Sensor:
 
 
 @dataclass(frozen=True)
+class TelegramConfig:
+    """Meldingen via een Telegram-bot (§5.5.4 punt 2). De token is een geheim: hij komt
+    niet in logregels of foutmeldingen (repr=False houdt hem ook uit een afgedrukte Config)."""
+    token: str = field(repr=False)
+    chat: str = ""      # het gesprek waarheen de meldingen gaan (chat-ID)
+
+
+@dataclass(frozen=True)
+class EmailConfig:
+    """Meldingen via e-mail (SMTP), het tweede kanaal (§5.5.4 punt 3)."""
+    server: str
+    poort: int
+    gebruiker: str
+    wachtwoord: str = field(repr=False)   # een geheim, zie TelegramConfig
+    van: str = ""
+    aan: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class MeldingConfig:
+    telegram: TelegramConfig | None = None
+    email: EmailConfig | None = None
+
+    @property
+    def ingesteld(self) -> bool:
+        return self.telegram is not None or self.email is not None
+
+
+# Soorten alarmregel (§5.5.3 punt 2).
+GRENS, AANTAL, STIL = "grens", "aantal", "stil"
+ALARM_SOORTEN = (GRENS, AANTAL, STIL)
+# Notificatie bij een alarm (§5.5.3 punt 4).
+MELDINGEN = ("uit", "eenmalig", "herhaald")
+# Prioriteit van een melding (§5.5.2 punt 8).
+PRIORITEITEN = ("urgent", "hoog", "normaal")
+
+
+@dataclass(frozen=True)
+class Alarmregel:
+    """Eén blok [[alarm]] uit de configuratie (§5.5.3 punt 1). Tijden in seconden."""
+    id: str                      # vaste naam; staat in de database
+    naam: str                    # tekst voor meldingen
+    sensoren: tuple[str, ...]    # sensor-ID's waarvoor de regel geldt
+    soort: str                   # grens, aantal of stil
+    grootheid: str | None = None  # None bij 'stil'
+    # --- soort grens: precies één van boven/onder ---
+    boven: float | None = None   # alarm als de waarde hierboven ligt
+    onder: float | None = None   # alarm als de waarde hieronder ligt
+    herstel: float | None = None  # herstelgrens; het verschil met de grens is de hysterese
+    # --- soort aantal ---
+    aantal: int | None = None    # zoveel (of meer) binnen het venster
+    venster: float | None = None
+    # --- tijden ---
+    duur: float = 0.0            # zo lang moet de voorwaarde onafgebroken gelden
+    herstelduur: float = 0.0     # zo lang moet de herstelvoorwaarde onafgebroken gelden
+    # --- notificatie ---
+    melding: str = "eenmalig"    # uit, eenmalig of herhaald
+    herhaling: float | None = None  # tussenpoos van de herinnering bij 'herhaald'
+    herstelmelding: bool = True
+    prioriteit: str = "normaal"
+
+
+@dataclass(frozen=True)
 class Config:
     mqtt: MqttConfig
     opslag: OpslagConfig
     sensoren: dict[str, Sensor]  # id -> Sensor
     web: WebConfig = WebConfig()
+    melding: MeldingConfig = MeldingConfig()
+    alarmen: tuple[Alarmregel, ...] = ()
 
 
 def levert(sensor: Sensor) -> tuple[str, ...]:
@@ -292,6 +360,240 @@ def _shelly(fouten, plek, s: dict, lijst_g) -> dict:
             "omgekeerd": tuple(omgekeerd)}
 
 
+# Een tijdsduur in de configuratie: getal met eenheid, bijv. "90s", "15m", "6u", "7d".
+_DUUR = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*([smud])\s*$")
+_SECONDEN = {"s": 1, "m": 60, "u": 3600, "d": 86400}
+
+
+def duur(tekst) -> float:
+    """Zet een tijdsduur uit de configuratie om in seconden; ValueError als het geen
+    geldige tijdsduur is. "90s" -> 90, "15m" -> 900, "6u" -> 21600, "7d" -> 604800."""
+    m = _DUUR.match(tekst) if isinstance(tekst, str) else None
+    if m is None:
+        raise ValueError('moet een tijdsduur zijn als "90s", "15m", "6u" of "7d"')
+    return float(m.group(1).replace(",", ".")) * _SECONDEN[m.group(2)]
+
+
+def _tekst(fouten, plek, d: dict, sleutel: str) -> str | None:
+    """Haalt een verplichte, niet-lege tekst op; meldt een fout en geeft None als hij
+    ontbreekt. De waarde zelf komt niet in de melding (kan een geheim zijn)."""
+    w = d.get(sleutel)
+    if not isinstance(w, str) or not w.strip():
+        fouten.append(f"{plek}: '{sleutel}' ontbreekt of is leeg")
+        return None
+    return w.strip()
+
+
+def _melding(fouten, data: dict) -> MeldingConfig:
+    """Controleert [melding.telegram] en [melding.email] (§5.5.4)."""
+    m = _tabel(fouten, data, "melding")
+    _onbekend(fouten, "[melding]", m, ("telegram", "email"))
+
+    telegram = None
+    t = m.get("telegram")
+    if t is not None:
+        plek = "[melding.telegram]"
+        if not isinstance(t, dict):
+            fouten.append(f"{plek} moet een tabel zijn")
+        else:
+            _onbekend(fouten, plek, t, ("token", "chat"))
+            token = _tekst(fouten, plek, t, "token")
+            # Het chat-ID is een getal (soms negatief, bij een groep); als getal of als
+            # tekst geschreven is beide goed.
+            chat = t.get("chat")
+            if isinstance(chat, int) and not isinstance(chat, bool):
+                chat = str(chat)
+            if not isinstance(chat, str) or not chat.strip():
+                fouten.append(f"{plek}: 'chat' ontbreekt (het chat-ID van het gesprek met de bot)")
+                chat = None
+            if token and chat:
+                telegram = TelegramConfig(token, chat.strip())
+
+    email = None
+    e = m.get("email")
+    if e is not None:
+        plek = "[melding.email]"
+        if not isinstance(e, dict):
+            fouten.append(f"{plek} moet een tabel zijn")
+        else:
+            _onbekend(fouten, plek, e, ("server", "poort", "gebruiker", "wachtwoord", "van", "aan"))
+            server = _tekst(fouten, plek, e, "server")
+            gebruiker = _tekst(fouten, plek, e, "gebruiker")
+            wachtwoord = _tekst(fouten, plek, e, "wachtwoord")
+            poort = e.get("poort", 587)
+            if isinstance(poort, bool) or not isinstance(poort, int) or not 1 <= poort <= 65535:
+                fouten.append(f"{plek}: 'poort' moet een geheel getal tussen 1 en 65535 zijn")
+                poort = None
+            # Eén ontvanger als tekst, of meerdere als lijst.
+            aan = e.get("aan")
+            aan = [aan] if isinstance(aan, str) else aan
+            if (not isinstance(aan, list) or not aan
+                    or not all(isinstance(a, str) and "@" in a for a in aan)):
+                fouten.append(f"{plek}: 'aan' moet een e-mailadres zijn, of een lijst van adressen")
+                aan = None
+            # Zonder 'van' is de afzender de gebruikersnaam (meestal het mailadres zelf).
+            van = e.get("van", gebruiker)
+            if not isinstance(van, str) or "@" not in van:
+                fouten.append(f"{plek}: 'van' moet een e-mailadres zijn (de afzender)")
+                van = None
+            if server and gebruiker and wachtwoord and poort and aan and van:
+                email = EmailConfig(server, poort, gebruiker, wachtwoord, van, tuple(aan))
+    return MeldingConfig(telegram, email)
+
+
+def _alarmen(fouten, data: dict, sensoren: dict[str, Sensor]) -> tuple[Alarmregel, ...]:
+    """Controleert de blokken [[alarm]] (§5.5.3 punt 1) en zet ze om in Alarmregels."""
+    lijst = data.get("alarm", [])
+    if not isinstance(lijst, list):
+        fouten.append("[[alarm]] moet een lijst van tabellen zijn")
+        return ()
+    regels: list[Alarmregel] = []
+    ids: set[str] = set()
+    for n, a in enumerate(lijst, 1):
+        plek = f"[[alarm]] nr. {n}"
+        if not isinstance(a, dict):
+            fouten.append(f"{plek}: moet een tabel zijn")
+            continue
+        _onbekend(fouten, plek, a, (
+            "id", "naam", "sensoren", "grootheid", "soort", "boven", "onder", "duur", "herstel",
+            "herstelduur", "aantal", "venster", "melding", "herhaling", "herstelmelding",
+            "prioriteit", "foto", "actie"))
+        aantal_fouten = len(fouten)
+
+        aid = a.get("id")
+        if not isinstance(aid, str) or not _VRIJ_ID.match(aid):
+            fouten.append(f"{plek}: 'id' ontbreekt of bevat andere tekens dan letters, cijfers, "
+                          f"'-' en '_' (bijv. \"vorst\")")
+            aid = None
+        else:
+            plek = f"{plek} ({aid})"
+            if aid in ids:
+                fouten.append(f"{plek}: id {aid} komt meer dan eens voor")
+            ids.add(aid)
+        naam = a.get("naam", aid)
+        if not isinstance(naam, str) or not naam:
+            fouten.append(f"{plek}: 'naam' moet een niet-lege tekst zijn")
+
+        soort = a.get("soort")
+        if soort not in ALARM_SOORTEN:
+            fouten.append(f"{plek}: 'soort' moet een van {', '.join(ALARM_SOORTEN)} zijn, "
+                          f"niet {soort!r}")
+            continue
+
+        # --- sensoren: op naam of ID; elke sensor wordt apart beoordeeld ---
+        gekozen: list[Sensor] = []
+        namen = a.get("sensoren")
+        if not isinstance(namen, list) or not namen or not all(isinstance(s, str) for s in namen):
+            fouten.append(f"{plek}: 'sensoren' moet een niet-lege lijst van sensornamen zijn")
+        else:
+            for s in namen:
+                sensor = (sensoren.get(s) or sensoren.get(s.upper())
+                          or next((x for x in sensoren.values() if x.naam.lower() == s.lower()), None))
+                if sensor is None:
+                    fouten.append(f"{plek}: onbekende sensor '{s}'")
+                elif sensor in gekozen:
+                    fouten.append(f"{plek}: sensor '{s}' staat meer dan eens in 'sensoren'")
+                else:
+                    gekozen.append(sensor)
+
+        # --- grootheid: niet bij 'stil' (elke waarde van de sensor telt dan) ---
+        grootheid = a.get("grootheid")
+        if soort == STIL:
+            if grootheid is not None:
+                fouten.append(f"{plek}: bij soort 'stil' hoort geen 'grootheid'")
+        elif grootheid not in grootheden.GROOTHEDEN:
+            fouten.append(f"{plek}: 'grootheid' ontbreekt of is onbekend: {grootheid!r}  "
+                          f"(zie: brms grootheden)")
+            grootheid = None
+        else:
+            for sensor in gekozen:
+                if grootheid not in levert(sensor):
+                    fouten.append(f"{plek}: sensor '{sensor.naam}' levert geen '{grootheid}'  "
+                                  f"(zie: brms grootheden {sensor.type})")
+
+        def tijd(sleutel, standaard=0.0, verplicht=False):
+            """Een tijdsduur uit de regel, in seconden."""
+            if sleutel not in a:
+                if verplicht:
+                    fouten.append(f"{plek}: '{sleutel}' ontbreekt")
+                return standaard
+            try:
+                return duur(a[sleutel])
+            except ValueError as e:
+                fouten.append(f"{plek}: '{sleutel}' {e}")
+                return standaard
+
+        def alleen_bij(sleutels, soorten):
+            for k in sleutels:
+                if k in a and soort not in soorten:
+                    fouten.append(f"{plek}: '{k}' hoort niet bij soort '{soort}'")
+
+        alleen_bij(("boven", "onder", "herstel"), (GRENS,))
+        alleen_bij(("aantal", "venster"), (AANTAL,))
+        alleen_bij(("herstelduur",), (GRENS, AANTAL))
+
+        boven = onder = herstel = aantal = venster = None
+        if soort == GRENS:
+            boven, onder, herstel = a.get("boven"), a.get("onder"), a.get("herstel")
+            if (boven is None) == (onder is None):
+                fouten.append(f"{plek}: geef precies één van 'boven' of 'onder' (de grens)")
+            for k, w in (("boven", boven), ("onder", onder), ("herstel", herstel)):
+                if w is not None and not _getal(w):
+                    fouten.append(f"{plek}: '{k}' moet een getal zijn")
+            if _getal(herstel) and _getal(boven) and herstel > boven:
+                fouten.append(f"{plek}: 'herstel' moet gelijk aan of lager dan 'boven' zijn")
+            if _getal(herstel) and _getal(onder) and herstel < onder:
+                fouten.append(f"{plek}: 'herstel' moet gelijk aan of hoger dan 'onder' zijn")
+        elif soort == AANTAL:
+            aantal = a.get("aantal")
+            if isinstance(aantal, bool) or not isinstance(aantal, int) or aantal < 1:
+                fouten.append(f"{plek}: 'aantal' moet een geheel getal van 1 of meer zijn")
+            venster = tijd("venster", None, verplicht=True)
+            if venster is not None and venster <= 0:
+                fouten.append(f"{plek}: 'venster' moet langer dan 0 zijn")
+            # Tellen kan alleen bij een toename (som) of een toestand (overgangen 0 -> 1).
+            if grootheid and grootheden.soort(grootheid) == grootheden.DOORLOPEND:
+                fouten.append(f"{plek}: soort 'aantal' kan alleen bij een toename of een "
+                              f"toestand, niet bij '{grootheid}'")
+        regel_duur = tijd("duur", 0.0, verplicht=(soort == STIL))
+        if soort == STIL and regel_duur <= 0 and "duur" in a:
+            fouten.append(f"{plek}: 'duur' moet langer dan 0 zijn")
+        herstelduur = tijd("herstelduur")
+
+        # --- notificatie ---
+        melding = a.get("melding", "herhaald" if "herhaling" in a else "eenmalig")
+        if melding not in MELDINGEN:
+            fouten.append(f"{plek}: 'melding' moet een van {', '.join(MELDINGEN)} zijn")
+        herhaling = tijd("herhaling", None)
+        if melding == "herhaald" and "herhaling" not in a:
+            fouten.append(f"{plek}: bij melding 'herhaald' hoort een 'herhaling' (de tussenpoos)")
+        elif melding in ("uit", "eenmalig") and "herhaling" in a:
+            fouten.append(f"{plek}: 'herhaling' heeft alleen betekenis bij melding 'herhaald'")
+        elif herhaling is not None and herhaling < 60:
+            fouten.append(f"{plek}: 'herhaling' moet minstens 1 minuut zijn")
+        herstelmelding = a.get("herstelmelding", True)
+        if not isinstance(herstelmelding, bool):
+            fouten.append(f"{plek}: 'herstelmelding' moet true of false zijn")
+        prioriteit = a.get("prioriteit", "normaal")
+        if prioriteit not in PRIORITEITEN:
+            fouten.append(f"{plek}: 'prioriteit' moet een van {', '.join(PRIORITEITEN)} zijn")
+
+        # Foto's en acties (§5.5.3 punt 5 en 6) volgen in een latere bouwstap (punt 11).
+        for k in ("foto", "actie"):
+            if k in a:
+                fouten.append(f"{plek}: '{k}' is nog niet gebouwd (volgt met het relais en de camera)")
+
+        if len(fouten) == aantal_fouten:
+            regels.append(Alarmregel(
+                aid, naam, tuple(s.id for s in gekozen), soort, grootheid,
+                float(boven) if boven is not None else None,
+                float(onder) if onder is not None else None,
+                float(herstel) if herstel is not None else None,
+                aantal, venster, regel_duur, herstelduur, melding, herhaling, herstelmelding,
+                prioriteit))
+    return tuple(regels)
+
+
 def controleer(data: dict) -> Config:
     """Controleert een ingelezen TOML-structuur en zet die om in een Config.
 
@@ -299,7 +601,8 @@ def controleer(data: dict) -> Config:
     zichtbaar is wat er gerepareerd moet worden.
     """
     fouten: list[str] = []
-    _onbekend(fouten, "bovenste niveau", data, ("mqtt", "opslag", "web", "sensor"))
+    _onbekend(fouten, "bovenste niveau", data,
+              ("mqtt", "opslag", "web", "sensor", "melding", "alarm"))
 
     # --- [mqtt] ---
     m = _tabel(fouten, data, "mqtt")
@@ -436,7 +739,11 @@ def controleer(data: dict) -> Config:
         sensoren[sid] = Sensor(sid, stype, snaam if isinstance(snaam, str) else "", correcties,
                                tuple(lijst_g) if lijst_g is not None else None, sleutel, **shelly)
 
+    # --- [melding] en [[alarm]] (§5.5.3, §5.5.4); de regels verwijzen naar de sensoren ---
+    melding = _melding(fouten, data)
+    alarmen = _alarmen(fouten, data, sensoren)
+
     if fouten:
         raise ConfigFout(fouten)
     return Config(MqttConfig(host, port), OpslagConfig(database), sensoren,
-                  WebConfig(web_host, web_port))
+                  WebConfig(web_host, web_port), melding, alarmen)

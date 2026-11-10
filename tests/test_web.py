@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 from brms import config, web
-from brms.config import Config, MqttConfig, OpslagConfig, Sensor
+from brms.config import Alarmregel, Config, MqttConfig, OpslagConfig, Sensor
 from brms.meting import maak
 from brms.storage import Database
 
@@ -16,9 +16,17 @@ MAC = "A4:C1:38:00:00:01"
 MAC2 = "A4:C1:38:00:00:02"
 
 
+ALARMEN = (
+    Alarmregel("vorst", "Vorst", (MAC, MAC2), "grens", "temperatuur", onder=2.0, herstel=3.0),
+    Alarmregel("beweging", "Beweging", (MAC2,), "aantal", "beweging", aantal=5, venster=60.0),
+    Alarmregel("stil", "Sensor stil", (MAC,), "stil", duur=1800.0),
+)
+
+
 def _config(database: str) -> Config:
     return Config(MqttConfig(), OpslagConfig(database),
-                  {MAC: Sensor(MAC, "bthome", "kajuit"), MAC2: Sensor(MAC2, "ruuvi", "motorruim")})
+                  {MAC: Sensor(MAC, "bthome", "kajuit"), MAC2: Sensor(MAC2, "ruuvi", "motorruim")},
+                  alarmen=ALARMEN)
 
 
 def _vraag(sensor_id, grootheid, **extra):
@@ -233,6 +241,48 @@ class TestWeb(unittest.TestCase):
                        {"sensor": "onbekend", "grootheid": "vocht"})
         self.assertEqual(d["punten"], [[[600, 6.0], [700, 7.0]], [[100, 1.0], [200, 2.0]], []])
         self.assertEqual(d["eerder"], [True, False, False])
+
+    def test_alarmregels_in_de_pagina(self):
+        # Per sensor en grootheid de regels met hun grenzen; 'stil' hoort bij geen grootheid.
+        regels = web._regels(_config(self.pad))
+        vorst = {"id": "vorst", "naam": "Vorst", "onder": 2.0, "herstel": 3.0}
+        self.assertEqual(regels, {
+            MAC: {"temperatuur": [vorst]},
+            MAC2: {"temperatuur": [vorst], "beweging": [{"id": "beweging", "naam": "Beweging"}]}})
+        tekst = self.client.get("/").get_data(as_text=True)
+        self.assertIn('"onder": 2.0, "herstel": 3.0', tekst)
+
+    def test_alarmperioden(self):
+        db = Database(self.pad)
+        db.alarm_begin(100, "vorst", MAC, "temperatuur", 1.5)
+        db.alarm_einde(200, "vorst", MAC, "herstel")
+        db.alarm_begin(500, "vorst", MAC, "temperatuur", 1.0)       # nog actief
+        db.alarm_begin(150, "vorst", MAC2, "temperatuur", 0.5)      # andere sensor
+        db.alarm_begin(160, "stil", MAC, None, None)                # geen grootheid
+        db.sluit()
+
+        def haal(van, tot, sensor=MAC):
+            return self.client.get(f"/api/alarmen?sensor={sensor}&grootheid=temperatuur"
+                                   f"&van={van}&tot={tot}").get_json()["perioden"]
+
+        self.assertEqual(haal(0, 1000), [[100, 200, "vorst"], [500, None, "vorst"]])
+        # Alleen wat (deels) in de periode valt; een actief alarm loopt door.
+        self.assertEqual(haal(150, 400), [[100, 200, "vorst"]])
+        self.assertEqual(haal(250, 400), [])
+        self.assertEqual(haal(900, 1000), [[500, None, "vorst"]])
+        self.assertEqual(haal(0, 1000, MAC2), [[150, None, "vorst"]])
+        adres = "/api/alarmen?sensor={}&grootheid={}&van={}&tot={}"
+        self.assertEqual(self.client.get(adres.format("onbekend", "vocht", 0, 9)).status_code, 404)
+        self.assertEqual(self.client.get(adres.format(MAC, "vocht", 9, 1)).status_code, 400)
+
+    def test_alarmperioden_zonder_tabel(self):
+        # Een database van vóór de alarmlaag heeft de tabel nog niet.
+        pad = os.path.join(self._map.name, "oud.db")
+        con = sqlite3.connect(pad)
+        con.execute("CREATE TABLE meting (ts INTEGER)")
+        con.close()
+        self.assertEqual(web.lees_alarmen(pad, MAC, "temperatuur", 0, 9), [])
+        self.assertEqual(web.lees_alarmen(os.path.join(self._map.name, "geen.db"), MAC, "x", 0, 9), [])
 
     def test_fouten(self):
         self.assertEqual(self.client.post("/api/live", json={"vragen": "x"}).status_code, 400)

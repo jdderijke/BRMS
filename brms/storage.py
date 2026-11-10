@@ -17,9 +17,15 @@ Verder:
 - Er wordt pas geschreven als de systeemklok gesynchroniseerd is (§4.2). Daarvóór zouden
   tijdstempels fout zijn; die metingen worden weggegooid.
 - De opslag-service is de enige die naar de database schrijft (§3.1).
+
+Daarnaast legt de opslag de opgetreden alarmen vast (§5.5.3 punt 8): de alarmlaag meldt
+begin en einde van een alarm op de bus (brms/alarm/<alarm_id>), en de opslag schrijft die
+direct in de tabel `alarm` – niet per 5 minuten, want het precieze tijdstip telt en het
+zijn er weinig.
 """
 
 import asyncio
+import json
 import logging
 import os
 import sqlite3
@@ -57,7 +63,30 @@ CREATE TABLE IF NOT EXISTS opname (
     aanleiding  TEXT    NOT NULL,
     PRIMARY KEY (camera_id, ts)
 ) WITHOUT ROWID;
+
+-- Opgetreden alarmen (§5.5.3 punt 8): één rij per alarm, met begin en einde.
+CREATE TABLE IF NOT EXISTS alarm (
+    alarm_id   TEXT    NOT NULL,  -- id van de alarmregel uit brms.toml, bijv. 'vorst'
+    sensor_id  TEXT    NOT NULL,
+    begin      INTEGER NOT NULL,  -- Unix-tijd UTC, seconden
+    grootheid  TEXT,              -- NULL bij een regel van soort 'stil'
+    waarde     REAL,              -- de waarde waarmee het alarm afging
+    einde      INTEGER,           -- NULL zolang het alarm actief is
+    reden      TEXT,              -- 'herstel', 'herstart' of 'uitgezet'
+    PRIMARY KEY (alarm_id, sensor_id, begin)
+) WITHOUT ROWID;
+
+-- Alarmregels die via het web zijn uitgezet (§5.5.3 punt 7). Nog niet in gebruik: de
+-- schakelaar volgt in een latere bouwstap.
+CREATE TABLE IF NOT EXISTS alarm_uit (
+    alarm_id   TEXT    PRIMARY KEY,
+    sinds      INTEGER NOT NULL
+) WITHOUT ROWID;
 """
+
+# Topics van de alarmlaag (zie brms/alarms.py).
+TOPIC_ALARM = "brms/alarm"
+TOPIC_HERSTART = "brms/alarm/herstart"
 
 # Eén rij in de tabel meting: (ts, sensor_id, grootheid, waarde).
 Rij = tuple[int, str, str, float]
@@ -91,6 +120,35 @@ class Database:
             self._con.executemany(
                 "INSERT OR REPLACE INTO meting (ts, sensor_id, grootheid, waarde) VALUES (?, ?, ?, ?)",
                 rijen)
+
+    # --- alarmen (§5.5.3 punt 8) ---------------------------------------------------
+    def alarm_begin(self, ts: int, alarm_id: str, sensor_id: str, grootheid: str | None,
+                    waarde: float | None) -> None:
+        """Legt het begin van een alarm vast. Staat er voor dezelfde regel en sensor nog
+        een alarm open (het einde is nooit gemeld, bijv. door een herstart), dan wordt dat
+        eerst afgesloten: er is per regel en sensor hooguit één alarm actief."""
+        with self._con:
+            self._con.execute(
+                "UPDATE alarm SET einde = ?, reden = 'herstart' "
+                "WHERE alarm_id = ? AND sensor_id = ? AND einde IS NULL", (ts, alarm_id, sensor_id))
+            self._con.execute(
+                "INSERT OR REPLACE INTO alarm (alarm_id, sensor_id, begin, grootheid, waarde) "
+                "VALUES (?, ?, ?, ?, ?)", (alarm_id, sensor_id, ts, grootheid, waarde))
+
+    def alarm_einde(self, ts: int, alarm_id: str, sensor_id: str, reden: str) -> None:
+        """Sluit het openstaande alarm van deze regel en sensor af."""
+        with self._con:
+            self._con.execute(
+                "UPDATE alarm SET einde = ?, reden = ? "
+                "WHERE alarm_id = ? AND sensor_id = ? AND einde IS NULL",
+                (ts, reden, alarm_id, sensor_id))
+
+    def alarm_herstart(self, ts: int) -> int:
+        """De alarmlaag is opnieuw gestart: geen enkel alarm is nog actief (§5.5.2 punt 6).
+        Sluit alle openstaande alarmen af; geeft het aantal terug."""
+        with self._con:
+            return self._con.execute(
+                "UPDATE alarm SET einde = ?, reden = 'herstart' WHERE einde IS NULL", (ts,)).rowcount
 
     def sluit(self) -> None:
         self._con.close()
@@ -229,6 +287,57 @@ def _trace_opslag(tracer, rijen: list[Rij], aantallen: dict, moment: int, result
         tracer.stuur(sid, "opgeslagen", tekst)
 
 
+def verwerk_alarm(db: Database, topic: str, payload: bytes) -> str:
+    """Legt één bericht van de alarmlaag vast in de tabel `alarm`. Geeft een korte
+    omschrijving terug (voor het log); ValueError bij een ongeldig bericht."""
+    try:
+        d = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise ValueError(f"geen geldige JSON: {e}") from None
+    if not isinstance(d, dict):
+        raise ValueError("bericht is geen JSON-object")
+    ts = d.get("ts")
+    if isinstance(ts, bool) or not isinstance(ts, int):
+        raise ValueError(f"ts is geen geheel getal: {ts!r}")
+    if topic == TOPIC_HERSTART:
+        return f"alarmlaag herstart: {db.alarm_herstart(ts)} openstaande alarmen afgesloten"
+    alarm_id, sensor_id, wat = d.get("alarm_id"), d.get("sensor_id"), d.get("gebeurtenis")
+    if not isinstance(alarm_id, str) or not alarm_id or not isinstance(sensor_id, str) or not sensor_id:
+        raise ValueError("alarm_id of sensor_id ontbreekt")
+    if wat == "begin":
+        grootheid, waarde = d.get("grootheid"), d.get("waarde")
+        if grootheid is not None and grootheid not in grootheden.GROOTHEDEN:
+            raise ValueError(f"onbekende grootheid: {grootheid!r}")
+        if isinstance(waarde, bool) or not isinstance(waarde, (int, float, type(None))):
+            raise ValueError(f"ongeldige waarde: {waarde!r}")
+        db.alarm_begin(ts, alarm_id, sensor_id, grootheid, waarde)
+    elif wat in ("herstel", "uitgezet"):
+        db.alarm_einde(ts, alarm_id, sensor_id, wat)
+    else:
+        raise ValueError(f"onbekende gebeurtenis: {wat!r}")
+    return f"alarm {alarm_id} voor {sensor_id}: {wat}"
+
+
+async def _alarmen(db: Database, q: asyncio.Queue, stop: asyncio.Event, klok_ok) -> None:
+    """Legt de berichten van de alarmlaag vast, direct bij ontvangst. Loopt naast de
+    hoofdlus in dezelfde asyncio-loop (en dus in dezelfde thread als de database)."""
+    while not stop.is_set():
+        try:
+            topic, payload = await asyncio.wait_for(q.get(), timeout=1.0)
+        except TimeoutError:
+            continue
+        # Net als metingen: pas schrijven als de klok klopt (§4.2).
+        if not klok_ok():
+            log.warning("klok niet gesynchroniseerd; alarmbericht op %s niet vastgelegd", topic)
+            continue
+        try:
+            log.info(verwerk_alarm(db, topic, payload))
+        except ValueError as e:
+            log.warning("ongeldig bericht op %s genegeerd: %s", topic, e)
+        except sqlite3.Error:
+            log.exception("vastleggen van alarm mislukt (%s)", topic)
+
+
 async def draai(config: Config, bus, stop: asyncio.Event, klok_ok=klok_gesynchroniseerd) -> None:
     """Hoofdlus van de opslag-service; loopt tot `stop` gezet wordt.
 
@@ -244,6 +353,9 @@ async def draai(config: Config, bus, stop: asyncio.Event, klok_ok=klok_gesynchro
     # Alle metingen van alle readers. QoS 1, zodat toestanden (met QoS 1 gepubliceerd)
     # ook met QoS 1 worden afgeleverd.
     q = bus.wachtrij(f"{TOPIC_PREFIX}/#", qos=1)
+    # De alarmen van de alarmlaag (§5.5.3 punt 8), in een eigen taak naast deze lus.
+    alarmtaak = asyncio.create_task(
+        _alarmen(db, bus.wachtrij(f"{TOPIC_ALARM}/#", qos=1), stop, klok_ok))
     moment = volgend_moment(time.time())
     log.info("opslag gestart; database %s", config.opslag.database)
     try:
@@ -301,5 +413,12 @@ async def draai(config: Config, bus, stop: asyncio.Event, klok_ok=klok_gesynchro
                 stap("opgenomen", f"interval tot {tot}: {agg.beschrijf(m, veranderd)}",
                      m.grootheid)
     finally:
+        # Eerst de alarmtaak laten stoppen; die gebruikt de database nog.
+        if not stop.is_set():
+            alarmtaak.cancel()
+        try:
+            await alarmtaak
+        except asyncio.CancelledError:
+            pass
         db.sluit()
         log.info("opslag gestopt")

@@ -20,6 +20,7 @@ Adressen:
     /                 de pagina
     /api/live         (POST) metingen van de bus voor een lijst reeksen, zie api_live
     /api/historie     ?sensor=<id>&grootheid=<naam>&van=<ts>&tot=<ts>  rijen uit de database
+    /api/alarmen      ?sensor=<id>&grootheid=<naam>&van=<ts>&tot=<ts>  alarmperioden (§5.5.3)
 
 Er is geen aanmelding: de pagina is alleen via Tailscale of het lokale netwerk bereikbaar
 (OPEN-15).
@@ -232,6 +233,49 @@ def lees_historie(pad: str, sensor_id: str, grootheid: str, van: int, tot: int) 
         con.close()
 
 
+def lees_alarmen(pad: str, sensor_id: str, grootheid: str, van: int, tot: int) -> list:
+    """Leest de alarmen van één reeks die (deels) tussen `van` en `tot` vallen:
+    [[begin, einde, alarm_id], ...], oplopend in de tijd. `einde` is None zolang het alarm
+    actief is. Voor het arceren van de alarmperioden in een grafiek (§5.5.3 punt 9).
+
+    Bestaat de database of de tabel (nog) niet, dan is het resultaat leeg.
+    """
+    if not pathlib.Path(pad).exists():
+        return []
+    con = sqlite3.connect(pathlib.Path(pad).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+    try:
+        rijen = con.execute(
+            "SELECT begin, einde, alarm_id FROM alarm "
+            "WHERE sensor_id = ? AND grootheid = ? AND begin <= ? AND (einde IS NULL OR einde >= ?) "
+            "ORDER BY begin", (sensor_id, grootheid, tot, van)).fetchall()
+        return [[begin, einde, alarm_id] for begin, einde, alarm_id in rijen]
+    except sqlite3.OperationalError as e:
+        # Bijv. de tabel bestaat nog niet (de opslag heeft nog niet gedraaid sinds de update).
+        log.debug("alarmen niet leesbaar: %s", e)
+        return []
+    finally:
+        con.close()
+
+
+def _regels(cfg: Config) -> dict:
+    """De alarmregels per sensor en grootheid, voor de grafieken (§5.5.3 punt 9):
+    {sensor-ID: {grootheid: [{"id", "naam", "boven"|"onder", "herstel"}, ...]}}.
+    Een regel zonder grens (soort 'aantal') staat er ook in: zijn alarmperioden worden wel
+    gearceerd, maar er is geen lijn te tekenen. Regels van soort 'stil' horen bij geen
+    enkele grootheid en staan er niet in."""
+    uit: dict = {}
+    for r in cfg.alarmen:
+        if r.grootheid is None:
+            continue
+        regel = {"id": r.id, "naam": r.naam}
+        for veld in ("boven", "onder", "herstel"):
+            if getattr(r, veld) is not None:
+                regel[veld] = getattr(r, veld)
+        for sensor_id in r.sensoren:
+            uit.setdefault(sensor_id, {}).setdefault(r.grootheid, []).append(regel)
+    return uit
+
+
 def _levert(sensor) -> list[str]:
     """De grootheden die deze sensor kan publiceren (zie config.levert). Dit is de keuze
     in de pagina."""
@@ -275,6 +319,7 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
             "index.html", versie=VERSION,
             sensoren=[{"id": s.id, "naam": s.naam, "type": s.type, "grootheden": _levert(s)}
                       for s in cfg.sensoren.values()],
+            regels=_regels(cfg),
             # Naam -> eenheid en soort, voor de assen en de vorm van de lijnen.
             grootheden={g.naam: {"eenheid": g.eenheid, "soort": g.soort}
                         for g in grootheden.GROOTHEDEN.values()})
@@ -338,6 +383,17 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
         van = max(van, tot - MAX_PERIODE)
         return jsonify(van=van, tot=tot,
                        punten=lees_historie(cfg.opslag.database, sensor.id, grootheid, van, tot))
+
+    @app.get("/api/alarmen")
+    def api_alarmen():
+        sensor = _sensor(cfg, request.args.get("sensor"))
+        grootheid = request.args.get("grootheid", "")
+        if sensor is None or grootheid not in grootheden.GROOTHEDEN:
+            return jsonify(fout="onbekende sensor of grootheid"), 404
+        van, tot = _getal(request.args.get("van"), 0), _getal(request.args.get("tot"), 0)
+        if tot <= van:
+            return jsonify(fout="'tot' moet later zijn dan 'van'"), 400
+        return jsonify(perioden=lees_alarmen(cfg.opslag.database, sensor.id, grootheid, van, tot))
 
     return app
 

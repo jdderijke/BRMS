@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.32 – concept** · 10 november 2026
+**Versie 0.33 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1072,7 +1072,10 @@ buitensensor mag geen vorstalarm geven.
 
 #### 5.5.3 Regels, notificaties, acties en de schakelaar (v0.31)
 
-*Ontworpen; nog niet gebouwd.*
+*Stap (a) van punt 11 is gebouwd (v0.33): regels, notificaties, de tabel `alarm` en de
+grenzen in de grafieken. Nog niet gebouwd: de schakelaar (punt 7), acties (punt 6) en de
+foto bij een notificatie (punt 5); `check-config` weigert `actie` en `foto` tot die er
+zijn. Nog niet getest op de Pi en niet met echte meldingen.*
 
 **Aanleiding.** Vastgelegd moest worden hoe een alarm wordt ingesteld, wat het teweegbrengt
 (een notificatie, een actie, of geen van beide), hoe opgetreden alarmen bewaard en getoond
@@ -1122,8 +1125,8 @@ betreffende reader uitvoert. Zo blijft er per apparaat één component die ermee
    | `herstel` | bij `grens`: de herstelgrens; het verschil met de grens is de hysterese |
    | `herstelduur` | hoe lang de herstelvoorwaarde moet gelden (§5.5.2 punt 2) |
    | `aantal`, `venster` | bij `aantal`: het aantal en het tijdvenster |
-   | `melding` | `uit`, `eenmalig` of `herhaald` (punt 4) |
-   | `herhaling` | bij `herhaald`: de tussenpoos |
+   | `melding` | `uit`, `eenmalig` of `herhaald` (punt 4). Zonder dit veld: `herhaald` als er een `herhaling` staat, anders `eenmalig` |
+   | `herhaling` | bij `herhaald`: de tussenpoos (minstens 1 minuut) |
    | `herstelmelding` | of bij herstel een melding volgt (standaard ja, §5.5.2 punt 3) |
    | `prioriteit` | `urgent`, `hoog` of `normaal` (§5.5.2 punt 8, §5.5.4) |
    | `foto` | `geen`, `begin` of `elke` (punt 5) |
@@ -1157,7 +1160,10 @@ betreffende reader uitvoert. Zo blijft er per apparaat één component die ermee
      telt de som; bij een toestand (`bilgepomp`) het aantal overgangen 0 → 1.
    - `stil`: de sensor levert de ingestelde duur geen enkele waarde.
 3. De **werking** per regel en per sensor is die van §5.5.2: duur, herstel, geen data is
-   geen herstel, en geen toestand over een herstart.
+   geen herstel, en geen toestand over een herstart. Een grens wordt alleen bij een nieuwe
+   waarde beoordeeld (v0.33): zonder data gaat een alarm niet af en herstelt het niet. Een
+   regel van soort `aantal` gebruikt de `herstelduur` als rustperiode (§5.5.1 punt 3): het
+   alarm herstelt pas als de telling zo lang onder het aantal is gebleven.
 4. **Notificatie** (via de meldingskanalen van §5.5.4):
    - `uit`: het alarm wordt vastgelegd en voert zijn acties uit, zonder melding;
    - `eenmalig`: één melding als het alarm afgaat;
@@ -1206,7 +1212,8 @@ betreffende reader uitvoert. Zo blijft er per apparaat één component die ermee
 
 #### 5.5.4 Meldingskanalen (besluit OPEN-14, v0.32)
 
-*Ontworpen; nog niet gebouwd.*
+*Gebouwd (v0.33), behalve de foto als bijlage. Nog niet getest met een echte Telegram-bot
+of een echt mailaccount.*
 
 **Aanleiding.** Open stond welke ntfy-server de meldingen verstuurt (OPEN-14). Daarbij kwam
 de vraag of een melding niet via Telegram, WhatsApp of e-mail kan.
@@ -1244,8 +1251,10 @@ versturen.
 5. **Prioriteit** (§5.5.2 punt 8): *urgent* en *hoog* komen in Telegram binnen met geluid,
    *normaal* zonder geluid. In de e-mail staat de prioriteit in het onderwerp.
 6. **Mislukt verzenden** (geen internet, dienst onbereikbaar): de alarmlaag probeert het
-   elke minuut opnieuw zolang het alarm actief is, en schrijft één waarschuwing in het
-   log. Zonder internet vanaf de boot komt er geen melding aan (§8).
+   elke minuut opnieuw, hooguit een dag lang (v0.33; ook als het alarm intussen hersteld
+   is, zodat na een storing van het internet alsnog te zien is wat er gebeurd is), en
+   schrijft één waarschuwing in het log. Wachtende meldingen staan alleen in het
+   werkgeheugen. Zonder internet vanaf de boot komt er geen melding aan (§8).
 7. Is er geen enkel kanaal ingesteld, dan worden alarmen wel vastgelegd en acties
    uitgevoerd, maar gaat er geen melding uit; `check-config` waarschuwt daarvoor.
 
@@ -1327,10 +1336,13 @@ schrijvers op dezelfde database en map.
 - *Een aparte webserver (gunicorn, waitress).* Extra afhankelijkheid (P3); voor één of
   enkele kijkers achter Tailscale volstaat de ingebouwde server.
 
-**Alarmen in het web (v0.31, ontworpen; §5.5.3).**
+**Alarmen in het web (v0.31; §5.5.3).**
 - Een overzicht van de alarmregels met per regel een **aan/uit-schakelaar**, de alarmen
-  die nu actief zijn, en de opgetreden alarmen uit de tabel `alarm`.
-- In de grafieken de grens en herstelgrens als lijn en de alarmperioden gearceerd.
+  die nu actief zijn, en de opgetreden alarmen uit de tabel `alarm`. *Nog niet gebouwd.*
+- In de grafieken de grens (streeplijn) en herstelgrens (stippellijn) in de kleur van de
+  reeks, en de alarmperioden gearceerd in de strook van die reeks. *Gebouwd (v0.33).* Een
+  grens buiten het bereik van de as wordt niet getekend: de as volgt de metingen. De
+  perioden komen van `/api/alarmen`; een live-grafiek ververst ze elke 30 s.
 - Het web leest de regels uit `brms.toml` en de alarmen uit de database; de schakelaar
   gaat als opdracht over MQTT (punt 3).
 
@@ -1824,7 +1836,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.32** | 2026-11-10 | Claude Code, Fable 5.2 | OPEN-14 besloten (§5.5.4): meldingen via een Telegram-bot, met e-mail (SMTP) als tweede kanaal; ntfy vervalt. Ontwerp, nog niet gebouwd. |
+| **0.33** | 2026-11-10 | Claude Code, Fable 5.2 | Alarmlaag stap (a) gebouwd (§5.5.3, §5.5.4): service `brms-alarm`, alarmregels `[[alarm]]` en kanalen `[melding.telegram]`/`[melding.email]` in `brms.toml`, tabel `alarm`, grenzen en alarmperioden in de grafieken. Meldingen worden hooguit een dag opnieuw geprobeerd. |
+| 0.32 | 2026-11-10 | Claude Code, Fable 5.2 | OPEN-14 besloten (§5.5.4): meldingen via een Telegram-bot, met e-mail (SMTP) als tweede kanaal; ntfy vervalt. Ontwerp, nog niet gebouwd. |
 | 0.31 | 2026-11-10 | Claude Code, Fable 5.2 | Ontwerp, nog niet gebouwd. Alarmlaag (§5.5.3): alarmregels in `brms.toml` met notificatie (uit, eenmalig, herhaald), foto en acties; aan/uit-schakelaar per regel via het web; tabellen `alarm` en `alarm_uit` (§5.3.1); grenzen en alarmperioden in de grafieken. Afgeleide grootheden (§5.2.5): aparte module na de correctie, eerste afleiding `helling`. Relais (§5.2.6): sensortype `shelly-relais`, grootheid `relais`, beveiligd met een uitschakeltijd in de Shelly. |
 | 0.30 | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie van Victron-apparaten (§10.3 punt 5, §5.2.2 punt 10): testreeks voor accu, zonnepaneel en walstroom; het bericht wordt versleuteld met de sleutel uit de configuratie. |
 | 0.29 | 2026-11-10 | Claude Code, Fable 5.2 | Shelly-reader gebouwd (§5.2.4 punt 4–9): sensortype `shelly-uni` met `adres`, `interval`, `bron`, `drempel`, `omgekeerd`; uitlezen via `Shelly.GetStatus`; service `brms-shelly-reader`; poll-nu. Simulatie van de bilge (§10.3). |

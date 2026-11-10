@@ -98,3 +98,164 @@ naam = "motorruim"
 # interval = 2
 # bron = { bilge = "input:0", bilgepomp = "voltmeter:100" }
 # drempel = 6.0
+
+# =============================================================================
+# Meldingen (ARCHITECTURE.md §5.5.4)
+# =============================================================================
+# Een melding gaat naar elk kanaal dat hier is ingesteld. Zonder kanaal worden alarmen wel
+# vastgelegd, maar gaat er geen melding uit. Haal het # weg en vul je eigen gegevens in.
+#
+# Telegram: maak in de Telegram-app een bot aan via @BotFather (/newbot); je krijgt een
+# token. Stuur de bot één bericht en open daarna
+#   https://api.telegram.org/bot<token>/getUpdates
+# in een browser: het getal bij "chat": {"id": ...} is het chat-ID.
+# [melding.telegram]
+# token = "123456789:AA..."
+# chat = 123456789
+#
+# E-mail: een mailaccount met SMTP. Gebruik een app-wachtwoord, niet je gewone wachtwoord.
+# Poort 587 (standaard) of 465. 'van' mag weg als de gebruikersnaam het mailadres is.
+# [melding.email]
+# server = "smtp.voorbeeld.nl"
+# poort = 587
+# gebruiker = "boot@voorbeeld.nl"
+# wachtwoord = "app-wachtwoord"
+# van = "boot@voorbeeld.nl"
+# aan = ["ik@voorbeeld.nl"]
+
+# =============================================================================
+# Alarmregels (ARCHITECTURE.md §5.5.2, §5.5.3)
+# =============================================================================
+# Eén blok per regel. Alleen wat hier staat, wordt bewaakt.
+#   id          vaste naam van de regel (letters, cijfers, - en _); staat in de database
+#   naam        tekst in de melding (zonder: het id)
+#   sensoren    voor welke sensoren de regel geldt (naam of id); elk apart beoordeeld
+#   soort       "grens"   de waarde ligt boven of onder een grens
+#               "aantal"  een aantal binnen een tijdvenster (bewegingen, pompbeurten)
+#               "stil"    de sensor levert geen waarden meer
+#   grootheid   welke grootheid (niet bij "stil")
+#   boven / onder   bij "grens": de grens. Een toestand "= 1" is boven = 0.5, "= 0" is
+#               onder = 0.5.
+#   duur        zo lang moet de voorwaarde onafgebroken gelden (zonder: direct)
+#   herstel     bij "grens": de herstelgrens; het verschil met de grens is de hysterese
+#   herstelduur zo lang moet de herstelvoorwaarde gelden (zonder: direct)
+#   aantal, venster   bij "aantal": zoveel of meer binnen dit tijdvenster
+#   melding     "uit" (alleen vastleggen), "eenmalig" of "herhaald"
+#   herhaling   bij "herhaald": de tussenpoos van de herinnering
+#   herstelmelding   false = geen melding bij herstel
+#   prioriteit  "urgent", "hoog" (met geluid in Telegram) of "normaal" (zonder geluid)
+# Tijden: een getal met eenheid: "90s", "15m", "6u", "7d".
+
+[[alarm]]
+id = "vorst"
+naam = "Vorst"
+sensoren = ["kajuit", "vooronder", "motorruim"]
+grootheid = "temperatuur"
+soort = "grens"
+onder = 2.0
+duur = "15m"
+herstel = 3.0
+herhaling = "12u"
+prioriteit = "hoog"
+
+[[alarm]]
+id = "vocht"
+naam = "Vocht"
+sensoren = ["kajuit", "motorruim"]
+grootheid = "vocht"
+soort = "grens"
+boven = 80.0
+duur = "6u"
+herstel = 75.0
+herhaling = "24u"
+
+[[alarm]]
+id = "sensor-stil"
+naam = "Sensor stil"
+sensoren = ["kajuit", "vooronder", "motorruim"]
+soort = "stil"
+duur = "30m"
+herhaling = "24u"
+
+[[alarm]]
+id = "sensorbatterij"
+naam = "Sensorbatterij laag"
+sensoren = ["kajuit", "vooronder", "motorruim"]
+grootheid = "batterijspanning"
+soort = "grens"
+onder = 2.5
+duur = "1u"
+herstel = 2.6
+herhaling = "7d"
+
+# De overige regels van §5.5.2 horen bij sensoren die hierboven uitgecommentarieerd staan
+# (Victron, Shelly, Ruuvi). Haal het # weg zodra die sensoren in de configuratie staan.
+# [[alarm]]
+# id = "bilge"
+# naam = "Bilge"
+# sensoren = ["bilge"]
+# grootheid = "bilge"
+# soort = "grens"
+# boven = 0.5
+# herstelduur = "5m"
+# herhaling = "1u"
+# prioriteit = "urgent"
+#
+# [[alarm]]
+# id = "bilgepomp-lang"
+# naam = "Bilgepomp lang"
+# sensoren = ["bilge"]
+# grootheid = "bilgepomp"
+# soort = "grens"
+# boven = 0.5
+# duur = "3m"
+# herhaling = "1u"
+# prioriteit = "urgent"
+#
+# [[alarm]]
+# id = "bilgepomp-vaak"
+# naam = "Bilgepomp vaak"
+# sensoren = ["bilge"]
+# grootheid = "bilgepomp"
+# soort = "aantal"
+# aantal = 4
+# venster = "6u"
+# herhaling = "12u"
+# prioriteit = "hoog"
+#
+# [[alarm]]
+# id = "walstroom"
+# naam = "Walstroom weg"
+# sensoren = ["multiplus"]
+# grootheid = "walstroom"
+# soort = "grens"
+# onder = 0.5
+# duur = "2m"
+# herstelduur = "2m"
+# herhaling = "12u"
+# prioriteit = "urgent"
+#
+# [[alarm]]
+# id = "accu-laag"
+# naam = "Accu laag"
+# sensoren = ["accu"]
+# grootheid = "soc"
+# soort = "grens"
+# onder = 50.0
+# duur = "10m"
+# herstel = 55.0
+# herhaling = "12u"
+# prioriteit = "hoog"
+#
+# Beweging (§5.5.1): alleen bij een Ruuvi. De 10 minuten rust voorkomt een reeks alarmen
+# bij storm.
+# [[alarm]]
+# id = "beweging"
+# naam = "Beweging"
+# sensoren = ["motorruim"]
+# grootheid = "beweging"
+# soort = "aantal"
+# aantal = 5
+# venster = "60s"
+# herstelduur = "10m"
+# herstelmelding = false
