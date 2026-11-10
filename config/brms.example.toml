@@ -19,12 +19,14 @@ host = "0.0.0.0"
 port = 8080
 
 # Eén blok per sensor. Alleen sensoren die hier staan worden verwerkt (ARCHITECTURE.md §5.4.2).
-#   id          vaste ID; bij BLE-sensoren het MAC-adres (AA:BB:CC:DD:EE:FF)
+#   id          vaste ID; bij BLE-sensoren het MAC-adres (AA:BB:CC:DD:EE:FF), bij een
+#               Shelly een vrij gekozen naam (bijv. shelly-bilge)
 #   type        bthome (Xiaomi Monitor 3 met pvvx-firmware, BTHome v2)
 #               ruuvi  (RuuviTag en RuuviTag Pro, dataformaat 5)
 #               victron-bmv        (accumonitor: BMV-700 met dongle, SmartShunt)
 #               victron-mppt       (zonnelader: BlueSolar met dongle, SmartSolar)
 #               victron-multiplus  (MultiPlus met VE.Bus Smart dongle: walstroom)
+#               shelly-uni         (Shelly Plus Uni via wifi: bilge; zie onderaan)
 #   sleutel     alleen bij Victron: de versleutelingssleutel van het apparaat (32 tekens).
 #               In VictronConnect: apparaat openen -> tandwiel -> Productinfo ->
 #               "Instant readout via Bluetooth" aanzetten -> "Versleutelingsgegevens tonen".
@@ -73,3 +75,26 @@ naam = "motorruim"
 # type = "victron-multiplus"
 # naam = "multiplus"
 # sleutel = "00000000000000000000000000000000"
+
+# Shelly Plus Uni voor de bilge (ARCHITECTURE.md §5.2.4). Wordt via wifi gepolld door de
+# Shelly-reader; de Shelly mag geen wachtwoord hebben. Haal het # weg en vul het adres in.
+#   id         vrij gekozen vaste naam (letters, cijfers, - en _); staat in de database
+#   adres      IP-adres of hostnaam van de Shelly; geef hem in de router een vast IP-adres
+#   interval   seconden tussen twee polls (standaard 30; bilge 2: een pompbeurt kan kort zijn)
+#   bron       welke component van de Shelly welke grootheid levert:
+#                "input:0" / "input:1"   digitale ingang (contact): gesloten = 1
+#                "voltmeter:100"         spanningsmeting; eerst in de Shelly toevoegen als
+#                                        randapparaat (Add-on -> Voltmeter). Het nummer
+#                                        staat in de Shelly, meestal 100.
+#   drempel    spanning in volt vanaf waar een voltmeter-bron 1 geeft (pomp krijgt spanning)
+#   omgekeerd  optioneel: grootheden waarvan 0 en 1 verwisseld worden, bijv. ["bilge"] voor
+#              een vlotter waarvan het contact opengaat als het water stijgt
+#   Levert: bilge, bilgepomp (elk alleen met een 'bron') en rssi (signaalsterkte van de wifi).
+# [[sensor]]
+# id = "shelly-bilge"
+# type = "shelly-uni"
+# naam = "bilge"
+# adres = "192.168.1.50"
+# interval = 2
+# bron = { bilge = "input:0", bilgepomp = "voltmeter:100" }
+# drempel = 6.0

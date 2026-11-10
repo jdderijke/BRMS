@@ -17,7 +17,9 @@ Opbouw van het bestand (zie config/brms.example.toml):
                                           geldt vanaf de projectmap (bijv. data/brms.db)
     [web]       host, port              – waar de webinterface luistert (§5.6)
     [[sensor]]  id, type, naam, grootheden, correctie – één blok per sensor (§5.4.2);
-                bij een Victron-apparaat ook 'sleutel' (§5.2.2)
+                bij een Victron-apparaat ook 'sleutel' (§5.2.2);
+                bij een Shelly ook 'adres', 'interval', 'bron', 'drempel', 'omgekeerd'
+                (§5.2.4)
 """
 
 import os
@@ -26,7 +28,7 @@ import tomllib
 from dataclasses import dataclass, field
 
 from brms import grootheden
-from brms.readers import bthome, ruuvi, victron
+from brms.readers import bthome, ruuvi, shelly_uni, victron
 
 # Projectmap: de map waarin de map 'brms' (dit pakket) staat. Op de Pi ~/BRMS.
 # Alle standaardpaden zijn hiervan afgeleid, zodat dezelfde code op de pc en op de Pi werkt.
@@ -39,7 +41,14 @@ STANDAARD_PAD = os.path.join(PROJECTMAP, "config", "brms.toml")
 BLE_TYPES = ("bthome", "ruuvi", *victron.LEVERT)   # victron-bmv, -mppt, -multiplus
 # Sensortypen waarvan de gegevens versleuteld zijn; die hebben een 'sleutel' nodig (§5.2.2).
 SLEUTEL_TYPES = tuple(victron.LEVERT)
-SENSOR_TYPES = BLE_TYPES
+# Sensortypen die de Shelly-reader via het netwerk pollt (§5.2.4). Hun id is een vrij
+# gekozen vaste naam, bijv. "shelly-bilge".
+SHELLY_TYPES = ("shelly-uni",)
+SENSOR_TYPES = BLE_TYPES + SHELLY_TYPES
+
+# Poll-interval van een Shelly in seconden (§5.3.2): de standaard en de grenzen.
+STANDAARD_INTERVAL = 30.0
+MIN_INTERVAL, MAX_INTERVAL = 1.0, 3600.0
 
 # Welke grootheden elk sensortype kan leveren (§5.4.2 punt 3). De decoder legt dat vast;
 # BLE-readers voegen zelf de signaalsterkte (rssi) toe. Gebruikt voor de controle van
@@ -48,6 +57,7 @@ LEVERT: dict[str, tuple[str, ...]] = {
     "bthome": bthome.LEVERT + ("rssi",),
     "ruuvi": ruuvi.LEVERT + ("rssi",),
     **{type_: levert + ("rssi",) for type_, levert in victron.LEVERT.items()},
+    "shelly-uni": shelly_uni.LEVERT + ("rssi",),   # rssi = signaalsterkte van de wifi
 }
 
 # Versleutelingssleutel van een Victron-apparaat: 32 hexadecimale tekens.
@@ -55,6 +65,13 @@ _SLEUTEL = re.compile(r"^[0-9a-fA-F]{32}$")
 
 # MAC-adres in de vorm AA:BB:CC:DD:EE:FF (na omzetten naar hoofdletters).
 _MAC = re.compile(r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
+
+# Vrij gekozen ID van een niet-Bluetooth-sensor (Shelly). Het ID komt in MQTT-topics en in
+# de database: alleen letters, cijfers, '-' en '_' (geen '/', '+', '#' of spaties).
+_VRIJ_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+# Netwerkadres van een Shelly: IP-adres of hostnaam, eventueel met poort.
+_ADRES = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:\d{1,5})?$")
 
 
 class ConfigFout(Exception):
@@ -121,6 +138,18 @@ class Sensor:
     # Versleutelingssleutel (32 hexadecimale tekens), alleen bij Victron-apparaten (§5.2.2
     # punt 2). Een geheim: komt niet in logregels of traceberichten.
     sleutel: str | None = None
+    # --- alleen bij een Shelly (§5.2.4) ---
+    # Netwerkadres (IP-adres of hostnaam) waarop de Shelly gepolld wordt.
+    adres: str | None = None
+    # Seconden tussen twee polls.
+    interval: float = STANDAARD_INTERVAL
+    # Welke component van de Shelly welke grootheid levert, bijv.
+    # {"bilge": "input:0", "bilgepomp": "voltmeter:100"}.
+    bron: dict[str, str] = field(default_factory=dict)
+    # Spanning in volt vanaf waar een voltmeter-bron 1 geeft (de pomp krijgt spanning).
+    drempel: float | None = None
+    # Grootheden waarvan 0 en 1 verwisseld worden (een contact dat opent in plaats van sluit).
+    omgekeerd: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -129,6 +158,16 @@ class Config:
     opslag: OpslagConfig
     sensoren: dict[str, Sensor]  # id -> Sensor
     web: WebConfig = WebConfig()
+
+
+def levert(sensor: Sensor) -> tuple[str, ...]:
+    """De grootheden die deze sensor kan publiceren: wat zijn type levert, bij een Shelly
+    beperkt tot wat een 'bron' heeft, en verder beperkt tot de lijst 'grootheden' als die
+    er is (§5.4.2). Gebruikt door de webpagina voor de keuzelijst."""
+    alles = LEVERT.get(sensor.type, ())
+    if sensor.type in SHELLY_TYPES:
+        alles = tuple(g for g in alles if g in sensor.bron or g == "rssi")
+    return tuple(g for g in alles if sensor.grootheden is None or g in sensor.grootheden)
 
 
 def lees(pad: str = STANDAARD_PAD) -> Config:
@@ -186,6 +225,73 @@ def _correctie(fouten, plek, w) -> "Correctie | None":
     return None
 
 
+def _shelly(fouten, plek, s: dict, lijst_g) -> dict:
+    """Controleert de velden van een Shelly (§5.2.4) en geeft ze terug als argumenten voor
+    Sensor. lijst_g is de lijst 'grootheden' van de sensor, of None."""
+    # --- adres: waar de Shelly te bereiken is ---
+    adres = s.get("adres")
+    if not isinstance(adres, str) or not _ADRES.match(adres):
+        fouten.append(f"{plek}: 'adres' ontbreekt of is geen IP-adres of hostnaam "
+                      f"(bijv. \"192.168.1.50\")")
+        adres = None
+
+    # --- interval: seconden tussen twee polls ---
+    interval = s.get("interval", STANDAARD_INTERVAL)
+    if not _getal(interval) or not MIN_INTERVAL <= interval <= MAX_INTERVAL:
+        fouten.append(f"{plek}: 'interval' moet een getal tussen {MIN_INTERVAL:g} en "
+                      f"{MAX_INTERVAL:g} (seconden) zijn")
+        interval = STANDAARD_INTERVAL
+
+    # --- bron: welke component welke grootheid levert ---
+    bron_in = s.get("bron")
+    bron: dict[str, str] = {}
+    if not isinstance(bron_in, dict) or not bron_in:
+        fouten.append(f"{plek}: 'bron' ontbreekt; geef per grootheid de component van de Shelly, "
+                      f"bijv. {{ bilge = \"input:0\", bilgepomp = \"voltmeter:100\" }}")
+        bron_in = {}
+    for g, component in bron_in.items():
+        if g not in shelly_uni.LEVERT:
+            fouten.append(f"{plek}: bron voor '{g}', maar een Shelly levert alleen: "
+                          f"{', '.join(shelly_uni.LEVERT)}")
+        elif not isinstance(component, str) or not shelly_uni.BRON.match(component):
+            fouten.append(f"{plek}: bron voor '{g}' moet \"input:<nummer>\" of "
+                          f"\"voltmeter:<nummer>\" zijn, niet {component!r}")
+        else:
+            bron[g] = component
+    if len(set(bron.values())) != len(bron):
+        fouten.append(f"{plek}: 'bron' gebruikt dezelfde component voor meer dan één grootheid")
+    # Een grootheid in de lijst 'grootheden' moet ook ergens vandaan komen.
+    for g in lijst_g or ():
+        if g in shelly_uni.LEVERT and g not in bron_in:
+            fouten.append(f"{plek}: '{g}' staat in 'grootheden' maar heeft geen 'bron'")
+
+    # --- drempel: nodig zodra een spanningsmeting een 0/1 moet opleveren ---
+    drempel = s.get("drempel")
+    voltmeter = any(c.startswith("voltmeter:") for c in bron.values())
+    if drempel is None:
+        if voltmeter:
+            fouten.append(f"{plek}: 'drempel' ontbreekt: de spanning (in volt) vanaf waar een "
+                          f"voltmeter-bron 1 geeft, bijv. 6.0")
+    elif not _getal(drempel) or drempel <= 0:
+        fouten.append(f"{plek}: 'drempel' moet een getal groter dan 0 zijn (volt)")
+        drempel = None
+    elif not voltmeter:
+        fouten.append(f"{plek}: 'drempel' heeft alleen betekenis bij een voltmeter-bron")
+
+    # --- omgekeerd: grootheden waarvan 0 en 1 verwisseld worden ---
+    omgekeerd = s.get("omgekeerd", [])
+    if not isinstance(omgekeerd, list) or not all(isinstance(g, str) for g in omgekeerd):
+        fouten.append(f"{plek}: 'omgekeerd' moet een lijst van grootheden zijn, bijv. [\"bilge\"]")
+        omgekeerd = []
+    for g in omgekeerd:
+        if g not in bron_in:
+            fouten.append(f"{plek}: '{g}' staat in 'omgekeerd' maar heeft geen 'bron'")
+
+    return {"adres": adres, "interval": float(interval), "bron": bron,
+            "drempel": float(drempel) if drempel is not None else None,
+            "omgekeerd": tuple(omgekeerd)}
+
+
 def controleer(data: dict) -> Config:
     """Controleert een ingelezen TOML-structuur en zet die om in een Config.
 
@@ -240,7 +346,8 @@ def controleer(data: dict) -> Config:
         if not isinstance(s, dict):
             fouten.append(f"{plek}: moet een tabel zijn")
             continue
-        _onbekend(fouten, plek, s, ("id", "type", "naam", "grootheden", "correctie", "sleutel"))
+        _onbekend(fouten, plek, s, ("id", "type", "naam", "grootheden", "correctie", "sleutel",
+                                    "adres", "interval", "bron", "drempel", "omgekeerd"))
         sid, stype, snaam = s.get("id"), s.get("type"), s.get("naam")
         if not isinstance(snaam, str) or not snaam:
             fouten.append(f"{plek}: 'naam' ontbreekt of is leeg")
@@ -256,6 +363,9 @@ def controleer(data: dict) -> Config:
             sid = sid.upper()
             if not _MAC.match(sid):
                 fouten.append(f"{plek}: 'id' moet een MAC-adres zijn (AA:BB:CC:DD:EE:FF), niet {s['id']!r}")
+        elif stype in SHELLY_TYPES and not _VRIJ_ID.match(sid):
+            fouten.append(f"{plek}: 'id' mag alleen letters, cijfers, '-' en '_' bevatten "
+                          f"(bijv. \"shelly-bilge\"), niet {s['id']!r}")
         if sid in sensoren:
             fouten.append(f"{plek}: id {sid} komt meer dan eens voor")
 
@@ -314,8 +424,17 @@ def controleer(data: dict) -> Config:
             fouten.append(f"{plek}: 'sleutel' hoort alleen bij een Victron-apparaat")
             sleutel = None
 
+        # --- Shelly: adres, interval, bron, drempel, omgekeerd (§5.2.4) ---
+        shelly = {}
+        if stype in SHELLY_TYPES:
+            shelly = _shelly(fouten, plek, s, lijst_g)
+        else:
+            for k in ("adres", "interval", "bron", "drempel", "omgekeerd"):
+                if k in s:
+                    fouten.append(f"{plek}: '{k}' hoort alleen bij een Shelly")
+
         sensoren[sid] = Sensor(sid, stype, snaam if isinstance(snaam, str) else "", correcties,
-                               tuple(lijst_g) if lijst_g is not None else None, sleutel)
+                               tuple(lijst_g) if lijst_g is not None else None, sleutel, **shelly)
 
     if fouten:
         raise ConfigFout(fouten)

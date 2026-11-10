@@ -176,8 +176,8 @@ sudo systemctl daemon-reload
 # Eerst de configuratie controleren; bij een fout stopt het script hier (set -e).
 brms check-config
 # 'enable' = starten bij het opstarten van de Pi; '--now' = ook nu direct (her)starten.
-sudo systemctl enable -q --now brms-opslag brms-ble-reader brms-web
-sudo systemctl restart brms-opslag brms-ble-reader brms-web
+sudo systemctl enable -q --now brms-opslag brms-ble-reader brms-shelly-reader brms-web
+sudo systemctl restart brms-opslag brms-ble-reader brms-shelly-reader brms-web
 
 echo
 echo "Klaar."

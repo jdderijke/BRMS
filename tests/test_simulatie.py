@@ -9,8 +9,8 @@ import unittest
 
 from brms import simulatie, trace
 from brms.config import Config, MqttConfig, OpslagConfig, Sensor
-from brms.readers import bthome, ruuvi
-from brms.readers.ble import Ontvanger
+from brms.readers import bthome, ruuvi, victron
+from brms.readers.ble import Ontvanger, verwerk
 
 MAC = "A4:C1:38:00:00:01"
 RMAC = "CB:B8:33:4C:88:4F"
@@ -105,6 +105,72 @@ class TestTestreeks(unittest.TestCase):
         self.assertEqual((list(sd), fd), ([bthome.FCD2_UUID], {}))
         sd, fd = simulatie.advertentie(SENSOREN[RMAC], 0.0, 0)
         self.assertEqual((sd, list(fd)), ({}, [ruuvi.FABRIKANT_ID]))
+
+
+class TestVictron(unittest.TestCase):
+    """De Victron-testreeks: versleuteld door de simulator, ontsleuteld door de decoder."""
+
+    SLEUTEL = "aff4d0995b7d1e176c0c33ecb9e70dcd"
+    VMAC = "D3:11:22:33:44:55"
+
+    def _door_de_decoder(self, type_, fractie, n=7):
+        w = simulatie.victron_waarden(type_, fractie)
+        return victron.decodeer(simulatie.victron_bytes(type_, w, n, self.SLEUTEL),
+                                self.SLEUTEL, type_)
+
+    def test_accu_loopt_leeg(self):
+        self.assertEqual(self._door_de_decoder("victron-bmv", 0.0), {
+            "spanning": 12.8, "stroom": -2.0, "soc": 100.0, "verbruikt": 0.0,
+            "resterende_tijd": 1200.0})
+        self.assertEqual(self._door_de_decoder("victron-bmv", 1.0), {
+            "spanning": 11.6, "stroom": -12.0, "soc": 20.0, "verbruikt": 160.0,
+            "resterende_tijd": 60.0})
+
+    def test_een_dag_zon(self):
+        self.assertEqual(self._door_de_decoder("victron-mppt", 0.0),
+                         {"zonnevermogen": 0.0, "laadstroom_zon": 0.0})
+        self.assertEqual(self._door_de_decoder("victron-mppt", 0.5),
+                         {"zonnevermogen": 45.0, "laadstroom_zon": 3.5})
+        self.assertEqual(self._door_de_decoder("victron-mppt", 1.0),
+                         {"zonnevermogen": 0.0, "laadstroom_zon": 0.0})
+
+    def test_walstroom_valt_halverwege_weg(self):
+        self.assertEqual(self._door_de_decoder("victron-multiplus", 0.49), {"walstroom": 1.0})
+        self.assertEqual(self._door_de_decoder("victron-multiplus", 0.5), {"walstroom": 0.0})
+
+    def test_elk_bericht_anders_versleuteld_en_alleen_met_de_goede_sleutel(self):
+        w = simulatie.victron_waarden("victron-bmv", 0.3)
+        een = simulatie.victron_bytes("victron-bmv", w, 1, self.SLEUTEL)
+        twee = simulatie.victron_bytes("victron-bmv", w, 2, self.SLEUTEL)
+        self.assertNotEqual(een[8:], twee[8:])
+        self.assertTrue(victron.is_instant_readout(een))
+        with self.assertRaises(victron.VictronFout):
+            victron.decodeer(een, "00" + self.SLEUTEL[2:], "victron-bmv")
+
+    def test_ruis_blijft_rond_de_testreeks(self):
+        toeval = random.Random(1)
+        for _ in range(200):
+            w = simulatie.victron_waarden("victron-bmv", 0.5, toeval)
+            self.assertAlmostEqual(w["spanning"], 12.2, delta=0.15)
+            self.assertEqual((w["soc"], w["verbruikt"]), (60.0, 80.0))   # zonder ruis
+            self.assertGreaterEqual(simulatie.victron_waarden("victron-mppt", 0.0, toeval)
+                                    ["zonnevermogen"], 0.0)
+
+    def test_door_de_reader(self):
+        # Zoals de BLE-reader het doet: advertentie maken en via verwerk() tot metingen.
+        for type_, verwacht in (("victron-bmv", {"soc": 60.0, "verbruikt": 80.0}),
+                                ("victron-mppt", {"zonnevermogen": 45.0}),
+                                ("victron-multiplus", {"walstroom": 0.0})):
+            sensor = Sensor(self.VMAC, type_, "v", sleutel=self.SLEUTEL)
+            sd, fd = simulatie.advertentie(sensor, 0.5, 3)
+            self.assertEqual((sd, list(fd)), ({}, [victron.FABRIKANT_ID]))
+            ms = {m.grootheid: m.waarde for m in verwerk(self.VMAC, sd, fd, -60, 1000,
+                                                         {self.VMAC: sensor}, gesimuleerd=True)}
+            for g, w in verwacht.items():
+                self.assertEqual(ms[g], w)
+            self.assertEqual(ms["rssi"], -60.0)
+        self.assertIn("victron-bmv", simulatie.TYPES)
+        self.assertEqual(simulatie.SERVICE["victron-mppt"], "brms-ble-reader")
 
 
 class TestSimulator(unittest.TestCase):
@@ -295,7 +361,7 @@ class TestOpdracht(unittest.TestCase):
         self._stuur, self._draait = simulatie._stuur, simulatie._reader_draait
         simulatie._stuur = lambda cfg, topic, sensoren, **inhoud: (
             self.verstuurd.append((topic, [s.id for s in sensoren], inhoud)) or True)
-        simulatie._reader_draait = lambda: None
+        simulatie._reader_draait = lambda service=None: None
 
     def tearDown(self):
         simulatie._stuur, simulatie._reader_draait = self._stuur, self._draait
@@ -336,10 +402,10 @@ class TestOpdracht(unittest.TestCase):
         self.assertIn("onbekende sensor", uit)
 
     def test_waarschuwing_als_de_reader_niet_draait(self):
-        simulatie._reader_draait = lambda: False
+        simulatie._reader_draait = lambda service=None: False
         code, uit = self._sim(["kajuit"], "", "")
         self.assertEqual(code, 1)
-        self.assertIn("BLE-reader draait niet", uit)
+        self.assertIn("brms-ble-reader draait niet", uit)
 
 
 if __name__ == "__main__":

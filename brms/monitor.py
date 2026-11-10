@@ -55,7 +55,8 @@ def zoek_sensoren(namen: list[str], config: Config) -> list[Sensor]:
     """
     gevonden = []
     for naam in namen:
-        sensor = config.sensoren.get(naam.upper())  # op ID (MAC-adres)
+        # Op ID: een MAC-adres (in hoofdletters) of een vrij gekozen ID (Shelly).
+        sensor = config.sensoren.get(naam) or config.sensoren.get(naam.upper())
         if sensor is None:
             sensor = next((s for s in config.sensoren.values()
                            if s.naam.lower() == naam.lower()), None)

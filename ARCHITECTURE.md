@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.28 – concept** · 10 november 2026
+**Versie 0.30 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -319,14 +319,15 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
    gecorrigeerd, gepubliceerd). Standaard staat trace uit.
 8. De BLE-reader heeft een **simulatie-ingang** (v0.20, §10.3): op verzoek maakt hij zelf
    advertenties aan en verwerkt die via dezelfde ingang als ontvangen advertenties; de
-   echte advertenties van die sensor negeert hij zolang.
+   echte advertenties van die sensor negeert hij zolang. De Shelly-reader heeft dezelfde
+   ingang (v0.29): hij maakt dan zelf het antwoord van de Shelly aan en pollt de echte niet.
 
 | Reader | Bron | Methode | Status |
 |---|---|---|---|
 | BTHome v2 | Xiaomi Monitor 3 (pvvx) | BLE-advertenties, eigen decoder (§5.2.3) | Eerste stap |
 | Ruuvi | RuuviTag (Pro) | BLE-advertenties, eigen decoder (§5.2.3) | Gebouwd (v0.19); nog niet getest met een echte RuuviTag |
 | Victron | BMV-700, 3× MPPT, MultiPlus | BLE Instant Readout, decoder in de BLE-reader (§5.2.2) | Gebouwd (v0.27); nog niet getest met de echte apparaten |
-| Shelly | Bilge: hoogwatervlotter en pompspanning (Shelly Plus Uni) | Lokale HTTP-API (§5.2.4) | Gepland |
+| Shelly | Bilge: hoogwatervlotter en pompspanning (Shelly Plus Uni) | Lokale HTTP-API (§5.2.4) | Gebouwd (v0.29); nog niet getest met een echte Shelly |
 | Camera | IP-camera dek | Foto per interval, video op poll-nu (§5.7) | Later |
 | GPIO | Waar nodig | — | Gepland |
 
@@ -405,7 +406,8 @@ en betekent stilte gewoon "sensor stil". Er is geen werk aan de 230V-kant nodig.
 9. `verbruikt` is een positief getal. Een veld dat het apparaat als "onbekend" uitzendt
    (de resterende tijd tijdens laden, een onbekende AC-ingang) wordt niet gepubliceerd
    (§5.2.3 punt 4).
-10. Victron-apparaten kunnen (nog) niet gesimuleerd worden (§10.3).
+10. Victron-apparaten kunnen gesimuleerd worden (v0.30, §10.3): de reader maakt zelf een
+    bericht aan en versleutelt het met de sleutel uit de configuratie.
 
 #### 5.2.4 Bilge (v0.14)
 
@@ -451,6 +453,48 @@ er al.
      precieze aansluiting wordt bepaald zodra de Uni er is.
 2. De bilge-Shelly wordt elke **2 s** gepolld.
 3. Een **pompbeurt** is een overgang van `bilgepomp` 0 → 1; de alarmlaag telt de beurten.
+4. **Sensortype `shelly-uni`** in de configuratie (v0.29). Het `id` is een vrij gekozen
+   vaste naam (letters, cijfers, `-` en `_`), bijvoorbeeld `shelly-bilge`; die staat in de
+   database. Extra velden:
+
+   | Veld | Betekenis |
+   |---|---|
+   | `adres` | IP-adres of hostnaam van de Shelly (verplicht). De Shelly krijgt in de router een vast adres. |
+   | `interval` | seconden tussen twee polls, 1–3600; standaard 30, de bilge 2 |
+   | `bron` | welke component van de Shelly welke grootheid levert (verplicht): `"input:<nr>"` (digitale ingang) of `"voltmeter:<nr>"` (spanningsmeting) |
+   | `drempel` | spanning in volt vanaf waar een voltmeter-bron 1 geeft; verplicht bij een voltmeter-bron |
+   | `omgekeerd` | optioneel: grootheden waarvan 0 en 1 verwisseld worden (een contact dat opent als het water stijgt) |
+
+   ```toml
+   [[sensor]]
+   id = "shelly-bilge"
+   type = "shelly-uni"
+   naam = "bilge"
+   adres = "192.168.1.50"
+   interval = 2
+   bron = { bilge = "input:0", bilgepomp = "voltmeter:100" }
+   drempel = 6.0
+   ```
+   Het type levert `bilge`, `bilgepomp` (elk alleen met een `bron`) en `rssi` (de
+   signaalsterkte van de wifi, zoals de Shelly die meldt). `check-config` controleert de
+   velden.
+5. **Uitlezen:** per poll één aanvraag `http://<adres>/rpc/Shelly.GetStatus`; het antwoord
+   bevat alle componenten en de wifi. Een digitale ingang geeft `state` true → 1; de
+   voltmeter geeft `voltage` ≥ drempel → 1. De voltmeter is op de Plus Uni een randapparaat
+   dat eerst in de Shelly moet worden toegevoegd; daarna heet hij `voltmeter:<nr>`.
+   De decoder is een zuivere functie (`brms/readers/shelly_uni.py`), de reader pollt
+   (`brms/readers/shelly.py`).
+6. **Geen aanmelding:** de Shelly heeft geen wachtwoord; hij is alleen bereikbaar op het
+   netwerk van de boot (§9). Aanmelden (digest) is niet gebouwd.
+7. **Niet bereikbaar** (geen antwoord binnen 5 s, of binnen het interval als dat korter
+   is): er wordt niets gepubliceerd; stilte betekent "geen meting". De reader probeert het
+   elk interval opnieuw en schrijft één waarschuwing in het log, en één regel bij herstel.
+   Een component die ontbreekt of geen waarde geeft, wordt ook niet gepubliceerd (§5.2.3
+   punt 4).
+8. **Poll-nu** (§5.2.1 punt 6): opdracht `brms/opdracht/shelly/poll-nu` met
+   `{"sensor_id": "shelly-bilge"}`, of zonder inhoud voor alle Shelly's.
+9. De Shelly-reader is een eigen service, **`brms-shelly-reader`** (`brms shelly-reader`).
+   Zonder Shelly in de configuratie draait hij zonder iets te doen.
 
 #### 5.2.3 Decoders: eigen code of bibliotheek (besluit OPEN-5)
 
@@ -1330,7 +1374,7 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 1. Opdracht **`brms sim <sensor ...>`** (ook `brms simuleer`; sensor = naam uit de
    configuratie of sensor-ID). Meerdere sensoren tegelijk kan (v0.25): los of met komma's
    gescheiden, of **`all`** voor alle sensoren die gesimuleerd kunnen worden.
-   Alleen voor BLE-sensoren (BTHome, Ruuvi); Shelly en GPIO volgen met hun readers.
+   Voor BTHome, Ruuvi, Victron (v0.30) en de Shelly (v0.29); GPIO volgt met zijn reader.
 2. De opdracht **waarschuwt** dat de echte sensoren worden genegeerd zolang de simulatie
    loopt, vraagt om akkoord (Enter = ja) en vraagt hoe lang de simulatie moet lopen:
    standaard **10 minuten**, hooguit 60 minuten. Daarna begint de simulatie meteen. Er
@@ -1338,7 +1382,8 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
    wachttijd.
 3. **Startsein:** opdracht `brms/opdracht/simulatie/aan` met
    `{"sensor_id": ..., "duur": 60}` (seconden); eerder stoppen met
-   `brms/opdracht/simulatie/uit` (`{"sensor_id": ...}`). De BLE-reader luistert mee.
+   `brms/opdracht/simulatie/uit` (`{"sensor_id": ...}`). Elke reader luistert mee en
+   voert alleen de opdrachten voor zijn eigen sensoren uit.
 4. Zolang de simulatie loopt:
    - maakt de reader elke **2 s** een advertentie aan in het formaat van de sensor en
      verwerkt die via dezelfde ingang als een advertentie van bleak, met het MAC-adres van
@@ -1347,6 +1392,10 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
      lopen gewoon door.
 
    Na `duur` stopt de simulatie vanzelf en telt de echte sensor weer mee.
+
+   Bij een **Shelly** (v0.29) maakt de Shelly-reader bij elke poll zelf het antwoord aan,
+   in de vorm van `Shelly.GetStatus`, en verwerkt dat als een echt antwoord. De echte
+   Shelly wordt zolang niet gepolld; hij hoeft er dus niet te zijn.
 5. **Testreeks:** elke grootheid loopt lineair van begin- naar eindwaarde over de duur.
 
    | Grootheid | Verloop | Sensortype |
@@ -1365,6 +1414,31 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 
    De lijst `grootheden` en de `correctie` van de sensor (§5.4.2) gelden ook voor
    gesimuleerde waarden.
+
+   **Testreeks van de Victron-apparaten** (v0.30). De reader maakt een Instant
+   Readout-bericht aan en versleutelt het met de sleutel van het apparaat uit de
+   configuratie; daarmee wordt ook het ontsleutelen getest.
+
+   | Sensortype | Grootheid | Verloop |
+   |---|---|---|
+   | `victron-bmv` | `spanning` | 12,8 → 11,6 V |
+   | | `stroom` | −2 → −12 A |
+   | | `soc` | 100 → 20 % |
+   | | `verbruikt` | 0 → 160 Ah |
+   | | `resterende_tijd` | 1200 → 60 min |
+   | `victron-mppt` | `zonnevermogen` | 0 → 45 → 0 W (een dag zon, piek halverwege) |
+   | | `laadstroom_zon` | vermogen / 13 V: 0 → 3,5 → 0 A |
+   | `victron-multiplus` | `walstroom` | 1, vanaf halverwege 0 (walstroom valt weg) |
+
+   Ruis: 0,02 V, 0,15 A, 5 min en 1,5 W. Laadtoestand en verbruik krijgen geen ruis (een
+   tellerstand springt niet heen en weer). `rssi` rond −60 dBm.
+
+   **Testreeks van de bilge** (Shelly, v0.29): een lek dat erger wordt. De duur is
+   verdeeld in 10 gelijke perioden; in elke periode loopt de bilgepomp één keer, van 10 %
+   van de periode aan het begin tot 50 % aan het einde (bij 10 minuten: elke minuut een
+   beurt, van 6 s oplopend tot 30 s). In het laatste vijfde deel staat ook de
+   hoogwatervlotter aan. De pompspanning is 12,6 V of 0 V, met wat ruis; `rssi` rond
+   −55 dBm.
 6. In de trace (§10.2) begint de stap `ruw` van een gesimuleerde advertentie met
    `SIMULATIE`.
 7. Gesimuleerde waarden zijn voor de rest van het systeem **gewone metingen**: ze komen
@@ -1373,8 +1447,8 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
    vrij, bijvoorbeeld voor een tweede `brms sim` voor een andere sensor terwijl de eerste
    nog loopt. Elke simulatie stopt vanzelf na haar eigen duur. Eerder stoppen:
    **`brms sim stop <sensor ...>`** of **`brms sim stop all`**.
-9. Draait de BLE-reader niet (volgens systemd), dan meldt de opdracht dat er niets
-   gesimuleerd wordt.
+9. Draait de reader van een sensor niet (volgens systemd), dan meldt de opdracht dat er
+   voor die sensor niets gesimuleerd wordt.
 
 ---
 
@@ -1434,7 +1508,9 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.28** | 2026-11-10 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4): bij een live-grafiek met "eerder" en "later" door de metingen in het geheugen bladeren; een eerder venster staat stil, "nu" loopt weer mee. |
+| **0.30** | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie van Victron-apparaten (§10.3 punt 5, §5.2.2 punt 10): testreeks voor accu, zonnepaneel en walstroom; het bericht wordt versleuteld met de sleutel uit de configuratie. |
+| 0.29 | 2026-11-10 | Claude Code, Fable 5.2 | Shelly-reader gebouwd (§5.2.4 punt 4–9): sensortype `shelly-uni` met `adres`, `interval`, `bron`, `drempel`, `omgekeerd`; uitlezen via `Shelly.GetStatus`; service `brms-shelly-reader`; poll-nu. Simulatie van de bilge (§10.3). |
+| 0.28 | 2026-11-10 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4): bij een live-grafiek met "eerder" en "later" door de metingen in het geheugen bladeren; een eerder venster staat stil, "nu" loopt weer mee. |
 | 0.27 | 2026-11-10 | Claude Code, Fable 5.2 | Victron-decoder gebouwd (§5.2.2 punt 7–10): sensortypen `victron-bmv`, `victron-mppt`, `victron-multiplus` met `sleutel` in de configuratie; `victron-ble` 0.9.3 als decoder; één waarschuwing per sensor bij een verkeerde sleutel. |
 | 0.26 | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie (§10.3 punt 5): ruis op de testreeks en op de signaalsterkte. |
 | 0.25 | 2026-11-10 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4): zelf grafieken toevoegen (live of database), per grafiek reeksen van meerdere sensoren en grootheden; een strook per eenheid; indeling onthouden in de browser. Simulatie (§10.3): `brms sim`, meerdere sensoren of `all`, geen wachttijd, standaard 10 minuten, opdracht keert direct terug, `brms sim stop`. |

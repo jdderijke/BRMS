@@ -8,6 +8,7 @@ Zonder --config wordt config/brms.toml in de projectmap gelezen.
 Opdrachten:
   check-config        configuratie controleren, bijv. vóór een herstart (§5.4.1)
   ble-reader          de BLE-reader-service starten (§5.2.1)
+  shelly-reader       de Shelly-reader-service starten (§5.2.1, §5.2.4)
   opslag              de opslag-service starten (§5.3)
   web                 de webservice starten (§5.6)
   monitor [sensor..]  monitor in tmux: busverkeer, of met sensor(en) de trace (§10.2)
@@ -108,6 +109,9 @@ async def _service(naam: str, cfg: config.Config) -> None:
         if naam == "ble-reader":
             from brms.readers import ble
             await ble.draai(cfg, bus, stop)
+        elif naam == "shelly-reader":
+            from brms.readers import shelly
+            await shelly.draai(cfg, bus, stop)
         else:
             from brms import storage
             await storage.draai(cfg, bus, stop)
@@ -219,6 +223,7 @@ OPDRACHTEN = """opdrachten voor de beheerder:
 
 services (worden door systemd gestart – niet met de hand; gebruik brms herstart):
   ble-reader             BLE-reader      (systemd-unit brms-ble-reader)
+  shelly-reader          Shelly-reader   (systemd-unit brms-shelly-reader)
   opslag                 opslag-service  (systemd-unit brms-opslag)
   web                    webinterface    (systemd-unit brms-web)
 """
@@ -252,7 +257,8 @@ def main(argv=None) -> int:
                    help="bij update: terug naar de versie van vóór de laatste update")
     p.add_argument("opdracht",
                    choices=("check-config", "grootheden", "start", "stop", "herstart", "update",
-                            "monitor", "sim", "simuleer", "ble-reader", "opslag", "web", "monitor-vak"))
+                            "monitor", "sim", "simuleer", "ble-reader", "shelly-reader", "opslag", "web",
+                            "monitor-vak"))
     p.add_argument("sensoren", nargs="*",
                    help="bij monitor: naam of ID van sensor(en) voor trace; "
                         "bij sim: naam of ID van sensor(en), 'all', of 'stop ...'; "

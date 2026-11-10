@@ -1,0 +1,31 @@
+# systemd-service voor de Shelly-reader (ARCHITECTURE.md §3.1, §5.2.1, §5.2.4).
+#
+# Dit is een sjabloon: deploy/install.sh en deploy/update.sh vullen @BRMS@ (de projectmap,
+# bijv. /home/jandirk/BRMS) en @GEBRUIKER@ (bijv. jandirk) in en zetten het resultaat in
+# /etc/systemd/system/.
+
+[Unit]
+Description=BRMS Shelly-reader (Shelly's via lokale HTTP-API -> MQTT)
+# Broker en netwerk eerst starten (§3.1 punt 6). 'Wants' i.p.v. 'Requires': valt de broker
+# weg, dan blijft de reader draaien (en gooit metingen weg tot de broker terug is).
+Wants=mosquitto.service network-online.target
+After=mosquitto.service network-online.target
+
+[Service]
+# Draait als de beheerder van de Pi (§10.1 punt 5).
+User=@GEBRUIKER@
+Environment=PYTHONPATH=@BRMS@
+WorkingDirectory=@BRMS@
+ExecStart=@BRMS@/.venv/bin/python -m brms shelly-reader
+# Altijd opnieuw starten na een crash of fout, na 5 s (§3.1 punt 1).
+Restart=always
+RestartSec=5
+
+# Beperkingen: de reader hoeft nergens te schrijven. Systeem en home zijn alleen-lezen.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

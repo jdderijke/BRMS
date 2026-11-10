@@ -233,11 +233,17 @@ def lees_historie(pad: str, sensor_id: str, grootheid: str, van: int, tot: int) 
 
 
 def _levert(sensor) -> list[str]:
-    """De grootheden die deze sensor kan publiceren: wat zijn type levert (§5.4.2 punt 3),
-    beperkt tot de lijst 'grootheden' uit de configuratie als die er is. Dit is de keuze
+    """De grootheden die deze sensor kan publiceren (zie config.levert). Dit is de keuze
     in de pagina."""
-    levert = config.LEVERT.get(sensor.type, ())
-    return [g for g in levert if sensor.grootheden is None or g in sensor.grootheden]
+    return list(config.levert(sensor))
+
+
+def _sensor(cfg: Config, sensor_id) -> "config.Sensor | None":
+    """Zoekt een sensor op ID. Een MAC-adres staat in hoofdletters in de configuratie
+    (de pagina mag het in kleine letters sturen); een vrij gekozen ID (Shelly) staat er
+    zoals het getypt is."""
+    sensor_id = str(sensor_id or "")
+    return cfg.sensoren.get(sensor_id) or cfg.sensoren.get(sensor_id.upper())
 
 
 def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
@@ -301,7 +307,7 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
         vragen = []
         for v in lijst:
             v = v if isinstance(v, dict) else {}
-            sensor = cfg.sensoren.get(str(v.get("sensor", "")).upper())
+            sensor = _sensor(cfg, v.get("sensor"))
             grootheid = v.get("grootheid")
             if sensor is None or grootheid not in grootheden.GROOTHEDEN:
                 vragen.append({"sensor_id": "", "grootheid": ""})   # geeft een lege lijst
@@ -321,7 +327,7 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
 
     @app.get("/api/historie")
     def api_historie():
-        sensor = cfg.sensoren.get(request.args.get("sensor", "").upper())
+        sensor = _sensor(cfg, request.args.get("sensor"))
         grootheid = request.args.get("grootheid", "")
         if sensor is None or grootheid not in grootheden.GROOTHEDEN:
             return jsonify(fout="onbekende sensor of grootheid"), 404

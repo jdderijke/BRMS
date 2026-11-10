@@ -99,6 +99,69 @@ class TestConfig(unittest.TestCase):
         self.assertIn("'spanning' wordt door type victron-multiplus niet geleverd", fouten)
         self.assertNotIn("geheim123", fouten)   # een sleutel komt nooit in een melding
 
+    def test_shelly(self):
+        cfg = _toml('[[sensor]]\nid = "shelly-bilge"\ntype = "shelly-uni"\nnaam = "bilge"\n'
+                    'adres = "192.168.1.50"\ninterval = 2\ndrempel = 6\nomgekeerd = ["bilge"]\n'
+                    'bron = { bilge = "input:0", bilgepomp = "voltmeter:100" }\n')
+        s = cfg.sensoren["shelly-bilge"]   # het ID blijft zoals het getypt is
+        self.assertEqual((s.adres, s.interval, s.drempel, s.omgekeerd),
+                         ("192.168.1.50", 2.0, 6.0, ("bilge",)))
+        self.assertEqual(s.bron, {"bilge": "input:0", "bilgepomp": "voltmeter:100"})
+        self.assertEqual(config.levert(s), ("bilge", "bilgepomp", "rssi"))
+
+        # Alleen de vlotter: standaardinterval, geen drempel nodig, en de pagina biedt
+        # alleen aan wat een bron heeft.
+        cfg = _toml('[[sensor]]\nid = "shelly-bilge"\ntype = "shelly-uni"\nnaam = "bilge"\n'
+                    'adres = "shelly-bilge.lan:80"\nbron = { bilge = "input:1" }\n')
+        s = cfg.sensoren["shelly-bilge"]
+        self.assertEqual((s.interval, s.drempel), (30.0, None))
+        self.assertEqual(config.levert(s), ("bilge", "rssi"))
+
+    def test_fouten_bij_een_shelly(self):
+        tekst = """
+            [[sensor]]
+            id = "shelly bilge"
+            type = "shelly-uni"
+            naam = "zonder adres en bron"
+            interval = 0
+            [[sensor]]
+            id = "shelly-2"
+            type = "shelly-uni"
+            naam = "verkeerde bron"
+            adres = "http://192.168.1.50/"
+            bron = { bilge = "switch:0", bilgepomp = "voltmeter:100", temperatuur = "input:0" }
+            omgekeerd = ["walstroom"]
+            [[sensor]]
+            id = "shelly-3"
+            type = "shelly-uni"
+            naam = "drempel zonder voltmeter"
+            adres = "192.168.1.51"
+            bron = { bilge = "input:0" }
+            drempel = 6.0
+            grootheden = ["bilge", "bilgepomp"]
+            [[sensor]]
+            id = "A4:C1:38:00:00:01"
+            type = "bthome"
+            naam = "kajuit"
+            adres = "192.168.1.52"
+        """
+        with self.assertRaises(config.ConfigFout) as ctx:
+            _toml(tekst)
+        fouten = "\n".join(ctx.exception.fouten)
+        for verwacht in ["'id' mag alleen letters, cijfers",
+                         "zonder adres en bron): 'adres' ontbreekt",
+                         "'interval' moet een getal tussen 1 en 3600",
+                         "zonder adres en bron): 'bron' ontbreekt",
+                         "verkeerde bron): 'adres' ontbreekt of is geen IP-adres",
+                         "bron voor 'bilge' moet \"input:<nummer>\"",
+                         "bron voor 'temperatuur', maar een Shelly levert alleen",
+                         "'drempel' ontbreekt",
+                         "'walstroom' staat in 'omgekeerd' maar heeft geen 'bron'",
+                         "'drempel' heeft alleen betekenis bij een voltmeter-bron",
+                         "'bilgepomp' staat in 'grootheden' maar heeft geen 'bron'",
+                         "kajuit): 'adres' hoort alleen bij een Shelly"]:
+            self.assertIn(verwacht, fouten)
+
     def test_alle_fouten_tegelijk(self):
         tekst = """
             onzin = 1
