@@ -10,7 +10,7 @@ Zie `CLAUDE.md` voor ontwerp, hardware en architectuur.
 brms/            Python-package
   readers/       één module per sensortype (BTHome, Ruuvi, Victron, Shelly)
   storage.py     SQLite (WAL)
-  alarms.py      drempels + ntfy-meldingen
+  alarms.py      alarmregels + meldingen (Telegram, e-mail)
   config.py      inlezen config/brms.toml
   web/           Flask + Chart.js
 config/          brms.example.toml; eigen brms.toml ernaast (niet in git)

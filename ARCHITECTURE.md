@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.30 – concept** · 10 november 2026
+**Versie 0.32 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -46,7 +46,7 @@ dan herstart/uitschakelen.
 ## 3. Systeemoverzicht
 
 ```
- BLE-sensoren ──> BLE-reader ─────┐                       ┌──> alarmen ──> ntfy ──> telefoon
+ BLE-sensoren ──> BLE-reader ─────┐                       ┌──> alarmen ──> Telegram, e-mail
                                   │                       │
  Shelly's ──────> Shelly-reader ──┼──> MQTT (Mosquitto) ──┼──> opslag ──> SQLite (WAL) ──> back-up
                                   │      lokaal           │                    │
@@ -161,7 +161,8 @@ staat; daarom QoS 1.
 |---|---|---|---|
 | Meting | `brms/meting/<sensor_id>/<grootheid>` | `{"ts", "sensor_id", "grootheid", "waarde", "soort"}` | 1 voor toestand, 0 voor doorlopend en toename |
 | Opname | `brms/opname/<camera_id>` | `{"ts", "camera_id", "type", "duur", "bestand", "bytes", "aanleiding"}` | 1 |
-| Opdracht | `brms/opdracht/<doel>/<actie>`, bijv. `brms/opdracht/camera/poll-nu`, `brms/opdracht/shelly/poll-nu`, `brms/opdracht/opslag/verwijder`, `brms/opdracht/trace/aan`, `brms/opdracht/simulatie/aan` (§10.3) | afhankelijk van de actie, bijv. `{"type": "video", "aanleiding": "alarm:beweging"}` | 1 |
+| Opdracht | `brms/opdracht/<doel>/<actie>`, bijv. `brms/opdracht/camera/poll-nu`, `brms/opdracht/shelly/poll-nu`, `brms/opdracht/opslag/verwijder`, `brms/opdracht/trace/aan`, `brms/opdracht/simulatie/aan` (§10.3), `brms/opdracht/relais/zet` (§5.2.6), `brms/opdracht/alarm/schakel` (§5.5.3) | afhankelijk van de actie, bijv. `{"type": "video", "aanleiding": "alarm:beweging"}` | 1 |
+| Alarm (v0.31) | `brms/alarm/<alarm_id>` | `{"ts", "alarm_id", "sensor_id", "grootheid", "gebeurtenis", "waarde"}`; `gebeurtenis` is `begin`, `herstel` of `uitgezet` (§5.5.3). De alarmlaag meldt zijn start op `brms/alarm/herstart`. | 1 |
 | Trace (v0.16) | `brms/trace/<sensor_id>` | `{"ts", "sensor_id", "dienst", "stap", "tekst"}`, optioneel `"deel"` – alleen zolang trace voor die sensor aanstaat (§10.2) | 0 |
 
 1. Elk bericht is **compleet**: ook wat in de topic staat, staat in de inhoud.
@@ -302,9 +303,9 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
    (`urllib`, uitgevoerd in een thread vanuit asyncio).
 3. Readers verwerken **alleen apparaten die in de configuratie staan**; al het andere wordt
    genegeerd.
-4. Readers laten grootheden weg die niet in de lijst van de sensor staan, passen de
-   **correcties uit de configuratie** toe (§5.4.2) en publiceren daarna elke
-   ontvangen waarde via MQTT (§3.1) als
+4. Readers passen de **correcties uit de configuratie** toe (§5.4.2), berekenen de
+   **afgeleide grootheden** (§5.2.5, v0.31), laten grootheden weg die niet in de lijst van
+   de sensor staan en publiceren daarna elke waarde via MQTT (§3.1) als
    `Meting(ts, sensor_id, grootheid, waarde, soort)`:
    - `ts`: ontvangsttijd op de Pi, Unix-tijd UTC (een advertentie heeft zelf geen tijd; zie §4.2);
    - `soort`: doorlopend, toestand of toename, vast per grootheid (§5.3.2);
@@ -328,6 +329,7 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
 | Ruuvi | RuuviTag (Pro) | BLE-advertenties, eigen decoder (§5.2.3) | Gebouwd (v0.19); nog niet getest met een echte RuuviTag |
 | Victron | BMV-700, 3× MPPT, MultiPlus | BLE Instant Readout, decoder in de BLE-reader (§5.2.2) | Gebouwd (v0.27); nog niet getest met de echte apparaten |
 | Shelly | Bilge: hoogwatervlotter en pompspanning (Shelly Plus Uni) | Lokale HTTP-API (§5.2.4) | Gebouwd (v0.29); nog niet getest met een echte Shelly |
+| Shelly-relais | Schakelaar voor o.a. verwarming | Lokale HTTP-API: pollen en schakelen (§5.2.6) | Ontworpen (v0.31) |
 | Camera | IP-camera dek | Foto per interval, video op poll-nu (§5.7) | Later |
 | GPIO | Waar nodig | — | Gepland |
 
@@ -528,6 +530,105 @@ recordtypes; daar is een bestaande bibliotheek de veiligere keuze.
    het geheugen: bij de eerste ontvangst na een (her)start is de toename onbekend en wordt
    er geen `beweging` gepubliceerd (v0.19).
 
+#### 5.2.5 Afgeleide grootheden (v0.31)
+
+*Ontworpen; nog niet gebouwd.*
+
+**Aanleiding.** Sommige gewenste waarden worden niet gemeten maar uit metingen berekend:
+de helling van de boot uit de drie versnellingen van een Ruuvi, later bijvoorbeeld een
+aantal Ah als tijdintegraal van een gemeten stroom. Daarvoor moest één vaste plek komen.
+
+**Redenering.** Decoderen (bytes naar getallen) en afleiden (uit getallen nieuwe getallen
+berekenen) zijn twee verschillende bezigheden en blijven gescheiden. Een afgeleide waarde
+moet uit de **gecorrigeerde** meting komen: de offset op de versnelling zet de montagestand
+van de sensor op nul, en pas daarna zegt de helling iets. De plek is dus ná de correctie
+en vóór het publiceren. Een afleiding hangt af van haar invoer, niet van een sensortype:
+elke sensor die de invoer levert, kan de afgeleide waarde leveren, zonder de berekening te
+kopiëren. Een afgeleide waarde is daarna een gewone meting: zelfde bus, opslag, alarmen en
+grafieken.
+
+**Verworpen alternatieven.**
+- *Afleiden in de decoder.* Mengt twee bezigheden, en de decoder krijgt de correctie niet
+  te zien.
+- *De correctie naar de decoder verplaatsen, zodat die ook kan afleiden.* Dezelfde
+  correctiecode in elke decoder, en decoders zijn niet meer te testen met alleen de
+  officiële testvectoren (§5.2.1).
+- *Een afleiding vastleggen per sensortype.* Dezelfde berekening komt dan terug bij elk
+  type dat dezelfde invoer levert.
+- *Afleiden in de opslag of de alarmlaag.* De waarde staat dan niet op de bus en is niet
+  voor alle afnemers gelijk.
+
+**Specificatie.**
+1. Eén module **`brms/afleiden.py`**, los van de decoders. Elke reader roept hem aan met de
+   gecorrigeerde waarden van één ontvangst en krijgt nul of meer afgeleide waarden terug.
+2. Een **afleiding** is een regel in een tabel in die module: de afgeleide grootheid, de
+   grootheden die ze als invoer nodig heeft, en de berekening.
+
+   | Afgeleide grootheid | Invoer | Berekening |
+   |---|---|---|
+   | `helling` (graden) | `versnelling_x`, `versnelling_y`, `versnelling_z` | hoek tussen de z-as van de sensor en de zwaartekracht: atan2(√(x² + y²), z) |
+
+   Met de correcties op de versnellingen (§5.4.2) wordt de montagestand van de sensor op
+   nul gezet.
+3. Een sensortype **levert** een afgeleide grootheid als het alle invoer daarvoor levert
+   (§5.4.2 punt 3). Dat volgt uit wat de decoder levert; `brms grootheden <type>`,
+   `check-config` en de keuzelijst in de grafieken nemen het vanzelf mee.
+4. **Volgorde in de reader:** decoderen → corrigeren → afleiden → lijst `grootheden`
+   toepassen → publiceren. De lijst `grootheden` komt dus ná het afleiden: `helling` kan
+   worden opgeslagen zonder de drie versnellingen.
+5. Ontbreekt een invoerwaarde (ongeldig, §5.2.3 punt 4), dan is er voor die ontvangst geen
+   afgeleide waarde.
+6. **Geheugen:** een afleiding over de tijd (een integraal) heeft de vorige ontvangst
+   nodig. De reader houdt daarvoor per sensor een klein geheugen bij en geeft dat mee,
+   zoals bij de bewegingsteller van de Ruuvi. Het staat alleen in het werkgeheugen en
+   begint na een herstart opnieuw.
+7. Een afgeleide grootheid staat in de tabel van grootheden (§5.3.3) met eenheid en
+   soort. Op een doorlopende afgeleide grootheid is een eigen **correctie** mogelijk.
+8. Een **nieuwe afleiding** is een codewijziging: een regel in `brms/grootheden.py`, een
+   regel in `brms/afleiden.py`, en de tabellen in dit document.
+9. Afgeleide waarden worden **niet apart gesimuleerd** (§10.3): ze volgen uit de
+   gesimuleerde meting. In de **trace** (§10.2) krijgen ze een eigen stap `afgeleid`.
+
+#### 5.2.6 Relais (v0.31)
+
+*Ontworpen; nog niet gebouwd. Het model van de Shelly-schakelaar is nog niet gekozen.*
+
+**Aanleiding.** Een alarm moet een apparaat kunnen schakelen (§5.5.3), als eerste een
+elektrische verwarming bij vorstgevaar; later mogelijk boordverlichting.
+
+**Redenering.** Een verwarming vraagt een schakelaar voor 230 V en een hoge stroom. Dat is
+een ander apparaat dan de Shelly Plus Uni van de bilge (§5.2.4), waarvan de uitgangen
+daarvoor niet bedoeld zijn. Een Shelly-schakelaar heeft dezelfde lokale HTTP-API en past
+in de bestaande Shelly-reader. Een verwarming die aan blijft staan als BRMS vastloopt, is
+een risico; de beveiliging hoort daarom in de Shelly zelf te zitten en niet in BRMS.
+
+**Verworpen alternatieven.**
+- *De uitgangen van de Shelly Plus Uni gebruiken.* Niet geschikt voor 230 V en de stroom
+  van een verwarming.
+- *Uitschakelen alleen door BRMS.* Valt BRMS weg, dan blijft het relais aan.
+
+**Specificatie.**
+1. Sensortype **`shelly-relais`**: een aparte Shelly-schakelaar (230 V, 16 A of
+   vergelijkbaar; een model met de Gen2-API en één uitgang `switch:0`). Configuratie als
+   bij `shelly-uni` (§5.2.4 punt 4): `id`, `naam`, `adres`, `interval` (standaard 30 s).
+2. De Shelly-reader **pollt** het relais; de stand komt als gewone meting binnen:
+   grootheid **`relais`** (0/1, toestand), en `rssi`.
+3. **Schakelen:** opdracht `brms/opdracht/relais/zet` met
+   `{"sensor_id": ..., "aan": true, "duur": 900}`. De Shelly-reader voert hem uit via de
+   API van de Shelly en pollt direct daarna, zodat de nieuwe stand meteen op de bus staat.
+4. **Beveiliging:**
+   - "aan" gaat altijd met een **uitschakeltijd** (`duur`, standaard 15 minuten) die de
+     Shelly zelf bewaakt: na die tijd schakelt hij vanzelf uit.
+   - Zolang het alarm actief is, **ververst** de alarmlaag de opdracht elke 5 minuten.
+     Valt BRMS weg, dan gaat het relais binnen de uitschakeltijd uit.
+   - De alarmlaag ververst alleen zolang de sensor van de alarmregel nog waarden levert
+     (laatste waarde jonger dan de uitschakeltijd). Bij een **stille sensor** gaat het
+     relais dus uit.
+   - Bij herstel van het alarm, en als de regel wordt uitgezet (§5.5.3), volgt direct "uit".
+5. Na een **herstart** van de alarmlaag is er geen actief alarm (§5.5.2 punt 6); het relais
+   gaat binnen de uitschakeltijd uit, en weer aan zodra het alarm opnieuw afgaat.
+6. Handmatig schakelen via het web is niet voorzien.
+
 ### 5.3 Opslag
 
 **Redenering.** Eén bestand, geen server, bestand tegen stroomuitval.
@@ -598,6 +699,24 @@ CREATE TABLE opname (
     bytes       INTEGER NOT NULL,
     aanleiding  TEXT    NOT NULL, -- 'interval', 'handmatig', 'alarm:beweging', ...
     PRIMARY KEY (camera_id, ts)
+) WITHOUT ROWID;
+
+-- Opgetreden alarmen (v0.31, §5.5.3): één rij per alarm, met begin en einde
+CREATE TABLE alarm (
+    alarm_id   TEXT    NOT NULL,  -- id van de alarmregel uit brms.toml, bijv. 'vorst'
+    sensor_id  TEXT    NOT NULL,
+    begin      INTEGER NOT NULL,  -- Unix-tijd UTC, seconden
+    grootheid  TEXT,              -- NULL bij een regel van soort 'stil'
+    waarde     REAL,              -- de waarde waarmee het alarm afging
+    einde      INTEGER,           -- NULL zolang het alarm actief is
+    reden      TEXT,              -- 'herstel', 'herstart' of 'uitgezet'
+    PRIMARY KEY (alarm_id, sensor_id, begin)
+) WITHOUT ROWID;
+
+-- Alarmregels die via het web zijn uitgezet (v0.31, §5.5.3 punt 7)
+CREATE TABLE alarm_uit (
+    alarm_id   TEXT    PRIMARY KEY,
+    sinds      INTEGER NOT NULL   -- Unix-tijd UTC, seconden
 ) WITHOUT ROWID;
 ```
 
@@ -732,7 +851,8 @@ staat op één plek in de code (module `grootheden`); dit document bevat een kop
 | `temperatuur` | °C | doorlopend | BTHome, Ruuvi | |
 | `vocht` | % | doorlopend | BTHome, Ruuvi | relatieve luchtvochtigheid |
 | `luchtdruk` | hPa | doorlopend | Ruuvi (4-in-1) | |
-| `versnelling_x`, `versnelling_y`, `versnelling_z` | mG | doorlopend | Ruuvi | gemiddelde ≈ helling van de boot |
+| `versnelling_x`, `versnelling_y`, `versnelling_z` | mG | doorlopend | Ruuvi | invoer voor `helling` |
+| `helling` | graden | doorlopend | afgeleid (§5.2.5) | hoek van de sensor met waterpas (v0.31) |
 | `beweging` | aantal | toename | Ruuvi | toename van de bewegingsteller |
 | `batterijspanning` | V | doorlopend | BTHome, Ruuvi | batterij van de sensor zelf |
 | `rssi` | dBm | doorlopend | alle BLE-apparaten | signaalsterkte, gemeten door de scanner |
@@ -746,6 +866,7 @@ staat op één plek in de code (module `grootheden`); dit document bevat een kop
 | `walstroom` | 0/1 | toestand | MultiPlus | 1 = AC-ingang aanwezig |
 | `bilge` | 0/1 | toestand | Shelly Plus Uni | 1 = hoogwatervlotter actief (§5.2.4) |
 | `bilgepomp` | 0/1 | toestand | Shelly Plus Uni | 1 = bilgepomp krijgt spanning (§5.2.4) |
+| `relais` | 0/1 | toestand | Shelly-relais | 1 = relais aan (§5.2.6, v0.31) |
 
 **[OPEN-11]** Bewaartermijn / downsampling van oude data.
 
@@ -756,11 +877,13 @@ zijn. Eén configuratiebestand naast de sensorconfig is de eenvoudigste plek (P1
 via het web vraagt schrijfrechten, invoercontrole en een extra tabel.
 
 **Verworpen alternatieven.** *Instellingen via de webinterface (opgeslagen in SQLite).*
-Complexer; kan later alsnog.
+Complexer; kan later alsnog. In v0.31 opnieuw overwogen voor de alarmregels en opnieuw
+verworpen: een aan/uit-schakelaar per regel volstaat (§5.5.3).
 
 **Specificatie.** Eén configuratiebestand, buiten git (bevat de Victron-sleutel), met:
 - sensorconfiguratie (MAC → naam/locatie, welke grootheden, correcties; §5.4.2);
-- alarmdrempels en -instellingen, per alarm en waar nodig per sensor (§5.5);
+- alarmregels: grens, duur, hysterese, notificatie en acties (§5.5.3). Alleen of een
+  regel aan of uit staat, is via het web te wijzigen en staat in de database;
 - camera-instellingen: foto-interval, videoduur, bewaartermijn foto's, maximale ruimte
   voor video's (§5.7);
 - back-up: of foto's en video's worden meegenomen (§7).
@@ -834,12 +957,15 @@ gecontroleerd worden en kan de gebruiker het opzoeken.
 **Specificatie.**
 1. Per sensor optioneel **`grootheden = [...]`**: alleen deze grootheden worden
    gepubliceerd (ook `rssi` moet er dan in staan als die gewenst is). Zonder lijst: alles.
+   De lijst wordt toegepast ná het afleiden (§5.2.5): een afgeleide grootheid kan in de
+   lijst staan zonder haar invoer.
 2. **`correctie`** per doorlopende grootheid, als getal (offset) of als tabel met `factor`
    en/of `offset`: gecorrigeerd = gemeten × factor + offset (standaard factor 1, offset 0).
    ```toml
    correctie = { temperatuur = -0.3, vocht = { factor = 1.02, offset = -1.5 } }
    ```
-3. Elke decoder legt vast **welke grootheden hij levert**; de reader voegt `rssi` toe.
+3. Elke decoder legt vast **welke grootheden hij levert**; de reader voegt `rssi` toe,
+   en de afgeleide grootheden waarvoor het type alle invoer levert (§5.2.5).
 4. `brms check-config` meldt: onbekende grootheden, grootheden die het sensortype niet
    levert, correcties op niet-doorlopende of weggelaten grootheden, een factor van 0.
 5. **`brms grootheden`** toont de tabel van grootheden (naam, eenheid, soort);
@@ -851,7 +977,7 @@ gecontroleerd worden en kan de gebruiker het opzoeken.
 ### 5.5 Alarmen en meldingen
 
 **Redenering.** Het doel van het systeem (§1) is op tijd ingrijpen.
-**Specificatie.** Meldingen via ntfy (push naar telefoon). Alarmen:
+**Specificatie.** Meldingen via Telegram, met e-mail als tweede kanaal (§5.5.4). Alarmen:
 
 | Alarm | Voorwaarde |
 |---|---|
@@ -865,8 +991,10 @@ gecontroleerd worden en kan de gebruiker het opzoeken.
 | Sensor stil | Sensor levert geen data meer |
 | Sensorbatterij laag | `batterijspanning` onder drempel |
 | Beweging | Toename van de Ruuvi-bewegingsteller ≥ N binnen T seconden (instelbaar) |
+| Helling (v0.31) | `helling` boven drempel (§5.2.5); bedoeld met een video als actie |
 
-Alle drempels en instellingen staan in het configuratiebestand (§5.4).
+Alle drempels en instellingen staan in het configuratiebestand (§5.4). Een alarm hoeft
+niet tot een melding te leiden en kan een actie uitvoeren; zie §5.5.3.
 
 #### 5.5.1 Bewegingsalarm (v0.5)
 
@@ -903,7 +1031,7 @@ Uitblijven van data zegt niets over herstel. Niet elke sensor hoort bij elk alar
 buitensensor mag geen vorstalarm geven.
 
 **Verworpen alternatieven.**
-- *Alarm bevestigen (via web of ntfy) om herinneringen te stoppen.* Extra toestand en extra
+- *Alarm bevestigen (via web of in de melding) om herinneringen te stoppen.* Extra toestand en extra
   interface; een herinnering met lange tussenpoos is eenvoudiger.
 - *Alarmtoestand bewaren over een herstart heen.* Extra opslag en randgevallen; een dubbele
   melding na een herstart is onschuldig.
@@ -925,7 +1053,7 @@ buitensensor mag geen vorstalarm geven.
    opnieuw (monotone klok, §4.2); een nog bestaande afwijking geeft opnieuw een melding.
 7. **Per sensor:** in de configuratie staat per sensor welke alarmen gelden; waarden zijn
    per alarm in te stellen en waar nodig per sensor te overschrijven (§5.4).
-8. **ntfy-prioriteit:** bilge, bilgepomp lang en walstroom *urgent*; vorst, accu laag en
+8. **Prioriteit** (uitwerking per kanaal in §5.5.4): bilge, bilgepomp lang en walstroom *urgent*; vorst, accu laag en
    bilgepomp vaak *hoog*; overige *normaal*.
 9. **Standaardwaarden** (in te stellen in `brms.toml`):
 
@@ -942,8 +1070,184 @@ buitensensor mag geen vorstalarm geven.
    | Sensorbatterij laag | `batterijspanning` < 2,5 V | 1 u | ≥ 2,6 V | elke week |
    | Beweging | ≥ N binnen T s (§5.5.1) | — | — | rustperiode 10 min |
 
-**[OPEN-14]** ntfy-server: publieke ntfy.sh of zelf gehost. (Ntfy.sh vereist internet;
-bij uitval van mobiel internet komt geen melding aan – zie ook §8.)
+#### 5.5.3 Regels, notificaties, acties en de schakelaar (v0.31)
+
+*Ontworpen; nog niet gebouwd.*
+
+**Aanleiding.** Vastgelegd moest worden hoe een alarm wordt ingesteld, wat het teweegbrengt
+(een notificatie, een actie, of geen van beide), hoe opgetreden alarmen bewaard en getoond
+worden, en hoe een verkeerd ingesteld alarm snel te stoppen is.
+
+**Redenering.** Een alarm, een notificatie en een actie zijn drie dingen. Een alarm stelt
+vast dat een voorwaarde geldt; of daar een melding of een actie op volgt, is per regel in
+te stellen. Zo is dezelfde werking bruikbaar voor een melding ("walstroom weg"), voor een
+regeling zonder melding (verwarming aan bij vorst) en voor het vastleggen van een
+gebeurtenis (video bij helling).
+
+De regels blijven in `brms.toml` (§5.4): de enige reden om ze via het web te willen
+wijzigen was het stoppen van een lawine aan notificaties door een verkeerde grens.
+Daarvoor volstaat een aan/uit-schakelaar per regel; de waarden wijzigt de beheerder via
+SSH. De stand van de schakelaar moet een herstart overleven (anders begint de lawine
+opnieuw) en het web kan `brms.toml` niet schrijven; die ene stand staat daarom in de
+database.
+
+Opgetreden alarmen zijn geen metingen: ze hebben een begin en een einde. Een eigen tabel
+maakt ze in grafieken en in een overzicht te tonen.
+
+De alarmlaag bedient zelf geen hardware: een actie is een opdracht over de bus, die de
+betreffende reader uitvoert. Zo blijft er per apparaat één component die ermee praat.
+
+**Verworpen alternatieven.**
+- *Regels bewerken via het web (opgeslagen in de database).* Formulieren, invoercontrole
+  en een tweede plek voor instellingen; de schakelaar dekt de aanleiding.
+- *De schakelaar dempt alleen de notificaties.* Een regel zonder notificatie is al in
+  `brms.toml` in te stellen; een verkeerde grens kan ook een verkeerde actie geven.
+- *Alarmen als meting opslaan (0/1 per regel).* Past niet bij "begin en einde", en de
+  opslag per 5 minuten (§5.3.2) verliest het precieze tijdstip.
+- *De alarmlaag schakelt zelf (HTTP naar de Shelly, opname van de camera).* Twee
+  componenten die met hetzelfde apparaat praten.
+
+**Specificatie.**
+1. Een **alarmregel** is een blok `[[alarm]]` in `brms.toml`:
+
+   | Veld | Betekenis |
+   |---|---|
+   | `id` | vaste naam van de regel (staat in de database), bijv. `vorst` |
+   | `naam` | tekst voor meldingen en weergave |
+   | `sensoren` | lijst van sensoren (naam of ID) waarvoor de regel geldt; elke sensor wordt apart beoordeeld |
+   | `grootheid` | de grootheid die beoordeeld wordt (ook een afgeleide, §5.2.5) |
+   | `soort` | `grens`, `aantal` of `stil` (punt 2) |
+   | `boven` of `onder` | bij `grens`: de grenswaarde |
+   | `duur` | hoe lang de voorwaarde onafgebroken moet gelden (§5.5.2 punt 1) |
+   | `herstel` | bij `grens`: de herstelgrens; het verschil met de grens is de hysterese |
+   | `herstelduur` | hoe lang de herstelvoorwaarde moet gelden (§5.5.2 punt 2) |
+   | `aantal`, `venster` | bij `aantal`: het aantal en het tijdvenster |
+   | `melding` | `uit`, `eenmalig` of `herhaald` (punt 4) |
+   | `herhaling` | bij `herhaald`: de tussenpoos |
+   | `herstelmelding` | of bij herstel een melding volgt (standaard ja, §5.5.2 punt 3) |
+   | `prioriteit` | `urgent`, `hoog` of `normaal` (§5.5.2 punt 8, §5.5.4) |
+   | `foto` | `geen`, `begin` of `elke` (punt 5) |
+   | `actie` | lijst van acties (punt 6) |
+
+   Tijden worden geschreven als getal met eenheid: `"90s"`, `"15m"`, `"6u"`, `"7d"`.
+   Een andere waarde voor een andere sensor is een tweede blok met een eigen `id`.
+
+   ```toml
+   [[alarm]]
+   id = "vorst"
+   naam = "Vorst"
+   sensoren = ["kajuit", "vooronder", "motorruim"]
+   grootheid = "temperatuur"
+   soort = "grens"
+   onder = 2.0
+   duur = "15m"
+   herstel = 3.0
+   melding = "herhaald"
+   herhaling = "12u"
+   prioriteit = "hoog"
+   actie = [{ type = "relais", relais = "verwarming" }]
+   ```
+   Er zijn geen ingebouwde regels: alleen wat in `brms.toml` staat, wordt bewaakt. Het
+   voorbeeldbestand bevat de regels van §5.5.2 punt 9. `check-config` controleert de
+   regels en meldt hoeveel er zijn.
+2. **Soorten regel:**
+   - `grens`: de waarde ligt boven of onder een grens. Voor een toestand (0/1) is dat
+     "= 1" (`boven = 0.5`) of "= 0" (`onder = 0.5`).
+   - `aantal`: binnen het tijdvenster is het aantal bereikt. Bij een toename (`beweging`)
+     telt de som; bij een toestand (`bilgepomp`) het aantal overgangen 0 → 1.
+   - `stil`: de sensor levert de ingestelde duur geen enkele waarde.
+3. De **werking** per regel en per sensor is die van §5.5.2: duur, herstel, geen data is
+   geen herstel, en geen toestand over een herstart.
+4. **Notificatie** (via de meldingskanalen van §5.5.4):
+   - `uit`: het alarm wordt vastgelegd en voert zijn acties uit, zonder melding;
+   - `eenmalig`: één melding als het alarm afgaat;
+   - `herhaald`: daarna een herinnering met de ingestelde tussenpoos zolang het alarm
+     actief is.
+
+   Bij herstel volgt een herstelmelding, tenzij die is uitgezet of `melding = "uit"`.
+5. **Foto bij een notificatie:** bij `foto = "begin"` vraagt de alarmlaag de camera-reader
+   om een foto (poll-nu, §5.7) op het moment dat het alarm afgaat, wacht kort op de opname
+   en stuurt die mee met de melding; bij `"elke"` ook bij elke herinnering. Komt de foto
+   niet op tijd, dan gaat de melding zonder foto. De foto wordt een gewone opname met het
+   alarm als aanleiding, tussen de intervalfoto's, met dezelfde bewaartermijn.
+6. **Acties** zijn opdrachten over de bus (§3.3):
+
+   | Actie | Wat er gebeurt |
+   |---|---|
+   | `{ type = "video" }` | poll-nu voor een video als het alarm afgaat (§5.5.1, §5.7) |
+   | `{ type = "foto" }` | poll-nu voor een foto als het alarm afgaat, los van de notificatie |
+   | `{ type = "relais", relais = "<sensor>" }` | relais aan als het alarm afgaat, uit bij herstel (§5.2.6) |
+
+   Een regel kan nul of meer acties hebben. Een opdracht aan de MultiPlus is niet
+   voorzien: Instant Readout is alleen lezen (§5.2.2).
+7. **Schakelaar:** in het web is elke regel **aan of uit** te zetten (§5.6).
+   - Uit geldt voor de **hele regel**: geen beoordeling, geen notificatie, geen actie. Een
+     alarm dat op dat moment actief is, wordt afgesloten en een relais dat door de regel
+     aan staat, gaat uit.
+   - De stand staat in de database (tabel `alarm_uit`, §5.3.1) en overleeft een herstart.
+     Het is de enige instelling buiten `brms.toml`.
+   - Het web geeft de opdracht `brms/opdracht/alarm/schakel` met
+     `{"alarm_id": ..., "aan": false}`. De opslag-service schrijft de stand weg (§3.1); de
+     alarmlaag voert de opdracht direct uit en leest bij zijn start de tabel
+     (alleen-lezen).
+8. **Opgetreden alarmen** staan in de tabel `alarm` (§5.3.1): één rij per alarm, met begin,
+   einde en de reden van het einde. De alarmlaag publiceert begin en einde op
+   `brms/alarm/<alarm_id>` (§3.3); de opslag-service schrijft. Bij zijn start meldt de
+   alarmlaag dat; de opslag sluit dan de rijen die nog open staan, met reden `herstart`
+   (§5.5.2 punt 6).
+9. **In de grafieken** (§5.6): bij een reeks waarvoor een `grens`-regel geldt, staat de
+   grens als horizontale lijn in de grafiek en de herstelgrens als dunnere lijn. De
+   perioden waarin het alarm actief was, zijn gearceerd.
+10. De alarmlaag is een eigen service, **`brms-alarm`** (§3.1). Hij abonneert zich op alle
+    metingen, verstuurt de notificaties en geeft de opdrachten.
+11. **Bouwvolgorde:** (a) regels, notificaties, tabel `alarm` en de grenzen in de
+    grafieken; (b) de schakelaar in het web; (c) het relais (§5.2.6). Foto en video volgen
+    met de camera (§5.7).
+
+#### 5.5.4 Meldingskanalen (besluit OPEN-14, v0.32)
+
+*Ontworpen; nog niet gebouwd.*
+
+**Aanleiding.** Open stond welke ntfy-server de meldingen verstuurt (OPEN-14). Daarbij kwam
+de vraag of een melding niet via Telegram, WhatsApp of e-mail kan.
+
+**Redenering.** Een melding moet opvallen op de telefoon, een foto kunnen meenemen (§5.5.3
+punt 5), privé zijn, en niets vragen dat gehost of onderhouden moet worden (P1, P3).
+Telegram voldoet daaraan: een eigen bot stuurt tekst, foto's en video's met een gewone
+HTTPS-aanvraag, gratis, en de berichten blijven als gesprek bewaard. E-mail is trager en
+valt minder op, maar loopt via een heel andere dienst: als tweede kanaal vangt het een
+storing of blokkade van het eerste op. Beide zijn met de standaardbibliotheek te
+versturen.
+
+**Verworpen alternatieven.**
+- *ntfy (publieke server ntfy.sh).* Het topic is het enige geheim, en bijlagen zijn op de
+  gratis dienst beperkt. Wel prioriteiten die door "niet storen" heen breken; dat heeft
+  Telegram niet.
+- *Een eigen ntfy-server.* Een extra onderdeel dat de telefoon altijd moet kunnen bereiken.
+- *WhatsApp.* Alleen via het zakelijke platform van Meta (bedrijfsaccount, goedgekeurde
+  sjablonen, kosten per bericht); onofficiële omwegen zijn in strijd met de voorwaarden.
+- *Alleen e-mail.* Te traag en te onopvallend voor een dringend alarm.
+
+**Specificatie.**
+1. Meldingen gaan via **Telegram** (eerste kanaal) en **e-mail** (tweede kanaal). Elke
+   notificatie gaat naar elk kanaal dat in `brms.toml` is ingesteld; mislukt het ene, dan
+   gaat het andere gewoon door.
+2. **Telegram:** een eigen bot (aangemaakt in de Telegram-app). In `brms.toml` staan de
+   sleutel van de bot en het gesprek waarheen de meldingen gaan. BRMS verstuurt tekst en
+   foto via de HTTPS-API van Telegram, met `urllib` (§5.2.1).
+3. **E-mail:** via een mailaccount met SMTP, met `smtplib` uit de standaardbibliotheek. In
+   `brms.toml` staan server, poort, gebruikersnaam, wachtwoord (een app-wachtwoord),
+   afzender en ontvanger(s). Een foto gaat mee als bijlage.
+4. De **geheimen** (sleutel van de bot, wachtwoord van de mail) staan alleen in
+   `brms.toml`, dat buiten git blijft (§5.4.1), en komen nooit in het log, een
+   foutmelding of de trace.
+5. **Prioriteit** (§5.5.2 punt 8): *urgent* en *hoog* komen in Telegram binnen met geluid,
+   *normaal* zonder geluid. In de e-mail staat de prioriteit in het onderwerp.
+6. **Mislukt verzenden** (geen internet, dienst onbereikbaar): de alarmlaag probeert het
+   elke minuut opnieuw zolang het alarm actief is, en schrijft één waarschuwing in het
+   log. Zonder internet vanaf de boot komt er geen melding aan (§8).
+7. Is er geen enkel kanaal ingesteld, dan worden alarmen wel vastgelegd en acties
+   uitgevoerd, maar gaat er geen melding uit; `check-config` waarschuwt daarvoor.
 
 ### 5.6 Webinterface
 
@@ -1023,7 +1327,15 @@ schrijvers op dezelfde database en map.
 - *Een aparte webserver (gunicorn, waitress).* Extra afhankelijkheid (P3); voor één of
   enkele kijkers achter Tailscale volstaat de ingebouwde server.
 
-**[OPEN-15]** Is authenticatie nodig naast Tailscale?
+**Alarmen in het web (v0.31, ontworpen; §5.5.3).**
+- Een overzicht van de alarmregels met per regel een **aan/uit-schakelaar**, de alarmen
+  die nu actief zijn, en de opgetreden alarmen uit de tabel `alarm`.
+- In de grafieken de grens en herstelgrens als lijn en de alarmperioden gearceerd.
+- Het web leest de regels uit `brms.toml` en de alarmen uit de database; de schakelaar
+  gaat als opdracht over MQTT (punt 3).
+
+**[OPEN-15]** Is authenticatie nodig naast Tailscale? Met de schakelaar (v0.31) kan iemand
+met toegang tot het web een alarmregel uitzetten.
 
 ### 5.7 Camera (later)
 
@@ -1053,7 +1365,9 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
    | Duur | — | vast, **120 s** |
    | Bewaren | **2 weken**, daarna automatisch verwijderd; eerder handmatig mogelijk | tot de gebruiker hem verwijdert |
 
-   Alle waarden instelbaar in de configuratie (§5.4).
+   Alle waarden instelbaar in de configuratie (§5.4). Een foto bij een alarm (§5.5.3
+   punt 5) is een gewone foto via poll-nu, met het alarm als aanleiding en dezelfde
+   bewaartermijn.
 3. Een poll-nu voor video **tijdens een lopende video wordt genegeerd**.
 4. De camera-reader schrijft het bestand naar de opnamemap en publiceert de metadata via
    MQTT; de opslag-service legt die vast in de tabel `opname` (§5.3.1). Het beeld zelf gaat
@@ -1067,8 +1381,8 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
 
 ## 6. Gegevensstroom
 
-Reader ontvangt/leest → decodeert → past correcties uit config toe → publiceert elke
-waarde via MQTT (§3.1, §5.2.1) → de alarmlaag beoordeelt elke waarde; de opslag middelt of
+Reader ontvangt/leest → decodeert → past correcties uit config toe → berekent afgeleide
+grootheden (§5.2.5) → publiceert elke waarde via MQTT (§3.1, §5.2.1) → de alarmlaag beoordeelt elke waarde; de opslag middelt of
 registreert per 5 minuten (§5.3.2) → web leest uit SQLite.
 
 ---
@@ -1320,6 +1634,7 @@ escape-codes is breekbaar (venstergrootte, programma's als `nano` en `less`).
    | `ruw` | reader | de ontvangen gegevens: bytes (BLE), JSON-antwoord (Shelly), pinstand (GPIO); bij Victron ook ontsleuteld |
    | `gedecodeerd` | reader | per grootheid: ruw getal, schaalfactor, resultaat |
    | `gecorrigeerd` | reader | per grootheid: waarde, offset uit de configuratie, resultaat |
+   | `afgeleid` | reader | per afgeleide grootheid: de invoer en de berekening (§5.2.5, v0.31) |
    | `gepubliceerd` | reader | topic en inhoud van het MQTT-bericht, of "weggegooid" |
    | `opgenomen` | opslag | in welk interval, en het tussenresultaat (aantal, gemiddelde/som, toestandsverandering) |
    | `opgeslagen` | opslag | de regel(s) in de database bij het opslagmoment, met het aantal samengevoegde waarden; of "weggegooid" (klok niet gesynchroniseerd) |
@@ -1413,7 +1728,8 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
    0,15 hPa, 8 mG en 2 dBm. Het verloop van de testreeks blijft goed zichtbaar.
 
    De lijst `grootheden` en de `correctie` van de sensor (§5.4.2) gelden ook voor
-   gesimuleerde waarden.
+   gesimuleerde waarden. Afgeleide grootheden (§5.2.5) worden niet apart gesimuleerd: ze
+   volgen uit de gesimuleerde meting.
 
    **Testreeks van de Victron-apparaten** (v0.30). De reader maakt een Instant
    Readout-bericht aan en versleutelt het met de sleutel van het apparaat uit de
@@ -1469,8 +1785,8 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 | 11 | Bewaartermijn / downsampling | §5.3 |
 | 12 | ~~Formaat configuratiebestand~~ – **besloten in v0.7**: TOML, één bestand `config/brms.toml` (sinds v0.15 in `~/BRMS`), herstart bij wijziging, controle bij start | §5.4.1 |
 | 13 | ~~Alarmdetails: drempels, duur, hysterese, herhaling, herstel~~ – **besloten in v0.13**: één werking voor alle alarmen met duur, herstel-drempel, herinnering en herstelmelding; alarm "sensorbatterij laag" toegevoegd | §5.5.2 |
-| 14 | ntfy.sh of zelf gehost | §5.5 |
-| 15 | Authenticatie op webinterface | §5.6 |
+| 14 | ~~ntfy.sh of zelf gehost~~ – **besloten in v0.32**: geen ntfy; meldingen via Telegram, met e-mail als tweede kanaal | §5.5.4 |
+| 15 | Authenticatie op webinterface (weegt zwaarder sinds de alarmschakelaar, v0.31) | §5.6 |
 | 16 | ~~Back-up~~ – **besloten in v0.6**: wekelijks naar OneDrive met `rclone copy` | §7.1 |
 | 17 | Reikwijdte van de watchdog | §7 |
 | 18 | Detectie thuis als BRMS zelf uitvalt | §8 |
@@ -1508,7 +1824,9 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.30** | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie van Victron-apparaten (§10.3 punt 5, §5.2.2 punt 10): testreeks voor accu, zonnepaneel en walstroom; het bericht wordt versleuteld met de sleutel uit de configuratie. |
+| **0.32** | 2026-11-10 | Claude Code, Fable 5.2 | OPEN-14 besloten (§5.5.4): meldingen via een Telegram-bot, met e-mail (SMTP) als tweede kanaal; ntfy vervalt. Ontwerp, nog niet gebouwd. |
+| 0.31 | 2026-11-10 | Claude Code, Fable 5.2 | Ontwerp, nog niet gebouwd. Alarmlaag (§5.5.3): alarmregels in `brms.toml` met notificatie (uit, eenmalig, herhaald), foto en acties; aan/uit-schakelaar per regel via het web; tabellen `alarm` en `alarm_uit` (§5.3.1); grenzen en alarmperioden in de grafieken. Afgeleide grootheden (§5.2.5): aparte module na de correctie, eerste afleiding `helling`. Relais (§5.2.6): sensortype `shelly-relais`, grootheid `relais`, beveiligd met een uitschakeltijd in de Shelly. |
+| 0.30 | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie van Victron-apparaten (§10.3 punt 5, §5.2.2 punt 10): testreeks voor accu, zonnepaneel en walstroom; het bericht wordt versleuteld met de sleutel uit de configuratie. |
 | 0.29 | 2026-11-10 | Claude Code, Fable 5.2 | Shelly-reader gebouwd (§5.2.4 punt 4–9): sensortype `shelly-uni` met `adres`, `interval`, `bron`, `drempel`, `omgekeerd`; uitlezen via `Shelly.GetStatus`; service `brms-shelly-reader`; poll-nu. Simulatie van de bilge (§10.3). |
 | 0.28 | 2026-11-10 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4): bij een live-grafiek met "eerder" en "later" door de metingen in het geheugen bladeren; een eerder venster staat stil, "nu" loopt weer mee. |
 | 0.27 | 2026-11-10 | Claude Code, Fable 5.2 | Victron-decoder gebouwd (§5.2.2 punt 7–10): sensortypen `victron-bmv`, `victron-mppt`, `victron-multiplus` met `sleutel` in de configuratie; `victron-ble` 0.9.3 als decoder; één waarschuwing per sensor bij een verkeerde sleutel. |

@@ -55,7 +55,7 @@ Er wordt niets gebouwd dat daar niet in staat.
 Eerste bouwstap (pas na expliciete opdracht): de 3 Xiaomi Monitor 3's (pvvx, BTHome v2) door de keten
 volgens ARCHITECTURE.md – BLE-reader met BTHome-decoder → MQTT (Mosquitto) → opslag-service →
 SQLite (tabel `meting`): temperatuur, vocht, batterijspanning, RSSI.
-Daarna: Ruuvi- en Victron-decoder, Shelly-reader (bilge), alarmlaag met ntfy, web, camera.
+Daarna: Ruuvi- en Victron-decoder, Shelly-reader (bilge), alarmlaag met Telegram en e-mail, web, camera.
 
 ## Open punten
 - Accutype (bij LiFePO4: niet laden onder 0 °C – BMS/lader regelt dit; geen eigen accutemperatuurmeting gepland).
