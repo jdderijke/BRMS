@@ -29,6 +29,7 @@ import argparse
 import asyncio
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -51,6 +52,10 @@ def _check_config(cfg_pad: str) -> int:
     if not cfg.melding.ingesteld and any(r.melding != "uit" for r in cfg.alarmen):
         print("Let op: er is geen meldingskanaal ingesteld ([melding.telegram] of "
               "[melding.email]);\nalarmen worden vastgelegd, maar er gaat geen melding uit.")
+    # Een video wordt opgenomen met ffmpeg (§5.7 punt 9).
+    if any(c.video_url for c in cfg.cameras.values()) and shutil.which("ffmpeg") is None:
+        print("Let op: er is een camera met 'video_url', maar ffmpeg is niet geïnstalleerd;\n"
+              "video's mislukken tot ffmpeg er is (sudo apt install ffmpeg, of: brms update).")
     return 0
 
 

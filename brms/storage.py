@@ -26,6 +26,8 @@ zijn er weinig.
 En de opnames van de camera's (§5.7 punt 14): de camera-reader schrijft het bestand en
 meldt de gegevens ervan op de bus (brms/opname/<camera_id>); de opslag legt die vast in de
 tabel `opname` en verwijdert eens per uur de foto's die ouder zijn dan de bewaartermijn.
+Video's blijven staan tot de gebruiker ze verwijdert; alleen als ze samen meer ruimte
+innemen dan `video_ruimte`, verwijdert de opslag de oudste (§5.7 punt 5).
 """
 
 import asyncio
@@ -189,6 +191,12 @@ class Database:
         return self._con.execute(
             "SELECT camera_id, ts, bestand FROM opname WHERE type = 'foto' AND ts < ?",
             (voor,)).fetchall()
+
+    def videos(self) -> list[tuple[str, int, str, int]]:
+        """Alle video's, de oudste eerst: (camera_id, ts, bestand, bytes)."""
+        return self._con.execute(
+            "SELECT camera_id, ts, bestand, bytes FROM opname WHERE type = 'video' "
+            "ORDER BY ts, camera_id").fetchall()
 
     def verwijder_opnames(self, sleutels: list[tuple[str, int]]) -> None:
         """Verwijdert de rijen van de opnames met deze (camera_id, ts)."""
@@ -460,8 +468,37 @@ def ruim_fotos(db: Database, map_: str, bewaren: float, nu: float) -> int:
     return aantal
 
 
+def ruim_videos(db: Database, map_: str, ruimte: float) -> int:
+    """Houdt de video's binnen de maximale ruimte (§5.7 punt 5): nemen ze samen meer dan
+    `ruimte` bytes in, dan gaan de oudste weg (bestand en rij) tot het weer past. Geeft het
+    aantal verwijderde video's. De grootte komt uit de tabel."""
+    videos = db.videos()
+    totaal = sum(v[3] for v in videos)
+    weg = []
+    for camera_id, ts, bestand, bytes_ in videos:
+        if totaal <= ruimte:
+            break
+        if not _BESTAND.match(bestand):
+            log.warning("opname %s van %s heeft een onverwacht pad (%r); niet opgeruimd",
+                        ts, camera_id, bestand)
+            continue
+        try:
+            os.remove(os.path.join(map_, *bestand.split("/")))
+        except FileNotFoundError:
+            pass                # al weg: de rij mag ook weg
+        except OSError as e:
+            log.warning("video %s niet te verwijderen: %s", bestand, e)
+            continue
+        weg.append((camera_id, ts))
+        totaal -= bytes_
+        log.info("video %s verwijderd: de ruimte voor video's is vol", bestand)
+    if weg:
+        db.verwijder_opnames(weg)
+    return len(weg)
+
+
 async def _opnames(db: Database, q: asyncio.Queue, stop: asyncio.Event, klok_ok, map_: str,
-                   bewaren: float) -> None:
+                   bewaren: float, video_ruimte: float) -> None:
     """Legt de berichten van de camera-reader vast en ruimt eens per uur oude foto's op.
     Loopt naast de hoofdlus in dezelfde asyncio-loop (en dus in dezelfde thread als de
     database)."""
@@ -476,6 +513,7 @@ async def _opnames(db: Database, q: asyncio.Queue, stop: asyncio.Event, klok_ok,
                     aantal = ruim_fotos(db, map_, bewaren, time.time())
                     if aantal:
                         log.info("%d oude foto's opgeruimd", aantal)
+                    ruim_videos(db, map_, video_ruimte)
                 except (sqlite3.Error, OSError):
                     log.exception("opruimen van oude foto's mislukt")
         try:
@@ -483,7 +521,11 @@ async def _opnames(db: Database, q: asyncio.Queue, stop: asyncio.Event, klok_ok,
         except TimeoutError:
             continue
         try:
-            log.debug(verwerk_opname(db, payload))
+            tekst = verwerk_opname(db, payload)
+            log.debug(tekst)
+            # Een nieuwe video kan de ruimte vol maken: meteen kijken (§5.7 punt 5).
+            if tekst.startswith("video"):
+                ruim_videos(db, map_, video_ruimte)
         except ValueError as e:
             log.warning("ongeldig bericht op %s genegeerd: %s", topic, e)
         except sqlite3.Error:
@@ -533,7 +575,8 @@ async def draai(config: Config, bus, stop: asyncio.Event, klok_ok=klok_gesynchro
     # De opnames van de camera's (§5.7 punt 14), ook in een eigen taak.
     opnametaak = asyncio.create_task(
         _opnames(db, bus.wachtrij(f"{TOPIC_OPNAME}/#", qos=1), stop, klok_ok,
-                 config.opnames.map, config.opnames.foto_bewaren))
+                 config.opnames.map, config.opnames.foto_bewaren,
+                 config.opnames.video_ruimte * 1e9))
     moment = volgend_moment(time.time())
     log.info("opslag gestart; database %s", config.opslag.database)
     try:

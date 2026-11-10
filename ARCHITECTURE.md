@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.38 – concept** · 10 november 2026
+**Versie 0.39 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1360,11 +1360,11 @@ met toegang tot het web een alarmregel uitzetten.
 
 ### 5.7 Camera
 
-*Stap (a) van punt 17 is gebouwd (v0.38): de camera-reader met een foto per interval en op
-verzoek (poll-nu), de tabel `opname` en het opruimen van oude foto's. Nog niet gebouwd:
-video (punt 11) en de maximale ruimte, foto en video bij een alarm (punt 15), en bekijken
-en verwijderen in het web. Een opdracht voor een video geeft tot die tijd een waarschuwing
-in het log. Nog niet getest met een echte camera.*
+*Stap (a) en (b) van punt 17 zijn gebouwd: de camera-reader met een foto per interval en
+op verzoek (poll-nu), de tabel `opname` en het opruimen van oude foto's (v0.38), en video
+op verzoek met de maximale ruimte (v0.39). Nog niet gebouwd: foto en video bij een alarm
+(punt 15), en bekijken en verwijderen in het web. Foto's zijn getest met de testcamera
+(Foscam); video nog niet.*
 
 **Redenering.** De camera bekijkt het dek. Een regelmatige foto toont de toestand van de
 boot; een video legt een gebeurtenis vast (iemand stapt aan boord, storm). Een IP-camera
@@ -1456,6 +1456,9 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
     wordt niet opgenomen. Dezelfde plaats en naamgeving als de foto, met `.mp4`. Is
     `ffmpeg` 30 s na de duur nog niet klaar, dan wordt het gestopt. Een mislukte opname
     laat geen bestand achter. Tijdens een video gaan de intervalfoto's gewoon door.
+    De tijd van een video (bestandsnaam en tabel) is het begin van de opname. Stopt de
+    service tijdens een video, dan wordt de opname afgebroken en verdwijnt het halve
+    bestand (v0.39).
 12. **Poll-nu** (§5.2.1 punt 6): opdracht `brms/opdracht/camera/poll-nu` met
     `{"camera_id": ..., "type": "foto"|"video", "aanleiding": ...}`. Zonder `camera_id`:
     alle camera's.
@@ -1468,7 +1471,8 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
     is, maakt de reader geen opnames (§4.2).
 14. De **opslag-service** legt de metadata vast in de tabel `opname` en ruimt op: foto's
     ouder dan de bewaartermijn eenmaal per uur, en de oudste video's zodra de maximale
-    ruimte vol raakt (punt 5). Een bestand zonder rij in de tabel (het bericht ging
+    ruimte vol raakt (punt 5): dat wordt bekeken na elke nieuwe video en eenmaal per uur,
+    met de groottes uit de tabel (v0.39). Een bestand zonder rij in de tabel (het bericht ging
     verloren, §3.3) wordt na de bewaartermijn ook verwijderd, en mappen die leeg raken
     ook. De opslag neemt alleen een pad van de vaste vorm van punt 10 aan (v0.38), zodat
     het opruimen nooit een bestand buiten de opnamemap raakt.
@@ -1480,7 +1484,7 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
     "<id>"`); zonder dat veld de eerste camera uit de configuratie.
 16. De camera wordt **niet gesimuleerd** (§10.3): de reader is te testen met een echte
     camera. De testcamera thuis is een Foscam HD-camera (192.168.178.202, webpoort 89),
-    met naar verwachting deze adressen (nog niet beproefd):
+    met deze adressen (het foto-adres is beproefd, v0.38; het video-adres nog niet):
 
     ```toml
     [[camera]]
@@ -1947,7 +1951,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.38** | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (a) gebouwd (§5.7): service `brms-camera`, blokken `[[camera]]` en `[opnames]`, foto per interval en op poll-nu, tabel `opname`, opruimen van oude foto's. |
+| **0.39** | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (b) gebouwd (§5.7 punt 11 en 5): video op verzoek met `ffmpeg` (pakket in `deploy/pakketten.txt`), oudste video's weg als de maximale ruimte vol is. |
+| 0.38 | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (a) gebouwd (§5.7): service `brms-camera`, blokken `[[camera]]` en `[opnames]`, foto per interval en op poll-nu, tabel `opname`, opruimen van oude foto's. |
 | 0.37 | 2026-11-10 | Claude Code, Fable 5.2 | OPEN-24 besloten en de camera uitgewerkt (§5.7 punt 6–17): foto via het snapshot-adres, video via RTSP met `ffmpeg`; blokken `[[camera]]` en `[opnames]`; service `brms-camera`; foto bij een alarm; bouwvolgorde. Testcamera thuis: Foscam. Nog niet gebouwd. |
 | 0.36 | 2026-11-10 | Claude Code, Fable 5.2 | Web: de pagina laadt zichzelf opnieuw na een herstart van de webservice, zodat nieuwe sensoren en alarmregels meteen gelden (§5.6). |
 | 0.35 | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie: de testreeks loopt binnen de duur twee keer heen en weer, zodat ook het herstellen van een alarm te testen is (§10.3 punt 5). |

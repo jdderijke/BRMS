@@ -5,6 +5,7 @@ import asyncio
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 import urllib.error
@@ -20,6 +21,30 @@ ADRES = "http://192.168.1.20:89/cgi-bin/CGIProxy.fcgi?cmd=snapPicture2&usr={gebr
 DEK = Camera("dek", "Dek", ADRES, None, "brms", WACHTWOORD, 180.0)
 # 10 november 2026 20:30:00 UTC.
 TS = 1794342600
+
+# Een nagebootste ffmpeg: een Python-script dat doet wat het pad van het camera-adres zegt.
+# Het uitvoerbestand is het laatste argument, het adres staat na -i (zoals bij ffmpeg).
+NEP_FFMPEG = """
+import sys, time
+adres, uit = sys.argv[sys.argv.index("-i") + 1], sys.argv[-1]
+if adres.endswith("/goed"):
+    open(uit, "wb").write(b"mp4" * 1000)
+elif adres.endswith("/leeg"):
+    open(uit, "wb").close()
+elif adres.endswith("/fout"):
+    open(uit, "wb").write(b"half")
+    sys.stderr.write("eerste regel\\n" + adres + ": Connection refused\\n")
+    sys.exit(1)
+elif adres.endswith("/hangt"):
+    open(uit, "wb").write(b"half")
+    time.sleep(30)
+"""
+
+
+def _camera(pad="goed", duur=5.0):
+    """Een camera met een videostroom; het pad stuurt de nagebootste ffmpeg."""
+    return Camera("dek", "Dek", ADRES, "rtsp://{gebruiker}:{wachtwoord}@192.168.1.20:89/" + pad,
+                  "brms", WACHTWOORD, 180.0, duur)
 
 
 class NepBus:
@@ -201,10 +226,11 @@ class TestOpnemer(unittest.TestCase):
             self.t += 5
             self.opnemer.opdrachten.put_nowait((camera.FOTO, "handmatig"))
             await asyncio.sleep(0.2)
+            # Deze camera heeft geen videostroom: een video kan niet.
             with self.assertLogs("brms.readers.camera", "WARNING") as log:
                 self.opnemer.opdrachten.put_nowait((camera.VIDEO, "alarm:beweging"))
-                await asyncio.sleep(0.1)
-            self.assertIn("nog niet gebouwd", log.output[0])
+                await asyncio.sleep(0.3)
+            self.assertIn("geen 'video_url'", log.output[0])
             stop.set()
             self.opnemer.opdrachten.put_nowait((None, ""))
             await asyncio.wait_for(taak, 2)
@@ -212,6 +238,115 @@ class TestOpnemer(unittest.TestCase):
         asyncio.run(proef())
         self.assertEqual([(b[1]["ts"], b[1]["aanleiding"]) for b in self.bus.berichten],
                          [(TS, "interval"), (TS + 5, "handmatig")])
+
+
+class TestVideo(unittest.TestCase):
+    """Video's, met een nagebootste ffmpeg (§5.7 punt 11)."""
+
+    def setUp(self):
+        self._map = tempfile.TemporaryDirectory()
+        self.map = os.path.join(self._map.name, "opnames")
+        self.script = os.path.join(self._map.name, "nep_ffmpeg.py")
+        with open(self.script, "w") as f:
+            f.write(NEP_FFMPEG)
+        self.bus = NepBus()
+        self.t = float(TS)
+
+    def tearDown(self):
+        self._map.cleanup()
+
+    def _opnemer(self, cam, ffmpeg=None):
+        return Opnemer(cam, self.map, self.bus, haal=lambda adres, timeout: JPEG,
+                       klok_ok=lambda: True, tijd=lambda: self.t,
+                       ffmpeg=ffmpeg or (sys.executable, self.script))
+
+    def _bestanden(self):
+        return sorted(b for _, _, bestanden in os.walk(self.map) for b in bestanden)
+
+    def test_argumenten(self):
+        a = camera.ffmpeg_argumenten("rtsp://camera/videoMain", 120, "/data/x.mp4.tmp")
+        self.assertEqual(a[a.index("-i") + 1], "rtsp://camera/videoMain")
+        self.assertEqual(a[a.index("-t") + 1], "120")
+        self.assertEqual(a[a.index("-c:v") + 1], "copy")       # niet omrekenen
+        self.assertIn("-an", a)                                 # geen geluid
+        self.assertEqual(a[a.index("-rtsp_transport") + 1], "tcp")
+        self.assertEqual(a[-1], "/data/x.mp4.tmp")
+
+    def test_video_op_schijf_en_op_de_bus(self):
+        with self.assertLogs("brms.readers.camera", "INFO"):
+            bestand = asyncio.run(self._opnemer(_camera("goed")).video("alarm:beweging"))
+        self.assertEqual(bestand, "dek/2026/11/10/203000.mp4")
+        self.assertEqual(self._bestanden(), ["203000.mp4"])     # geen tijdelijk bestand
+        self.assertEqual(self.bus.berichten, [("brms/opname/dek", {
+            "ts": TS, "camera_id": "dek", "type": "video", "duur": 5,
+            "bestand": "dek/2026/11/10/203000.mp4", "bytes": 3000,
+            "aanleiding": "alarm:beweging"}, 1)])
+
+    def test_bericht_past_bij_de_opslag(self):
+        from brms import storage
+        with self.assertLogs("brms.readers.camera", "INFO"):
+            asyncio.run(self._opnemer(_camera("goed")).video())
+        db = storage.Database(os.path.join(self._map.name, "brms.db"))
+        try:
+            storage.verwerk_opname(db, json.dumps(self.bus.berichten[0][1]).encode())
+            self.assertEqual(db.videos(), [("dek", TS, "dek/2026/11/10/203000.mp4", 3000)])
+        finally:
+            db.sluit()
+
+    def test_fout_van_ffmpeg_zonder_bestand_of_wachtwoord(self):
+        with self.assertLogs("brms.readers.camera", "WARNING") as log:
+            self.assertIsNone(asyncio.run(self._opnemer(_camera("fout")).video()))
+        regel = log.output[-1]
+        self.assertIn("ffmpeg gaf fout 1", regel)
+        self.assertIn("Connection refused", regel)
+        self.assertIn("rtsp://192.168.1.20:89", regel)
+        self.assertNotIn("GEH", regel)
+        self.assertEqual((self._bestanden(), self.bus.berichten), ([], []))
+
+    def test_leeg_bestand_is_mislukt(self):
+        with self.assertLogs("brms.readers.camera", "WARNING") as log:
+            self.assertIsNone(asyncio.run(self._opnemer(_camera("leeg")).video()))
+        self.assertIn("geen beeld", log.output[-1])
+        self.assertEqual(self._bestanden(), [])
+
+    def test_ffmpeg_die_blijft_hangen_wordt_gestopt(self):
+        with mock.patch.object(camera, "VIDEO_MARGE", 0.5), \
+                self.assertLogs("brms.readers.camera", "WARNING") as log:
+            self.assertIsNone(asyncio.run(self._opnemer(_camera("hangt", duur=1.0)).video()))
+        self.assertIn("nog niet klaar", log.output[-1])
+        self.assertEqual((self._bestanden(), self.bus.berichten), ([], []))
+
+    def test_ffmpeg_ontbreekt(self):
+        opnemer = self._opnemer(_camera("goed"), ffmpeg=("bestaat-niet-brms-ffmpeg",))
+        with self.assertLogs("brms.readers.camera", "WARNING") as log:
+            self.assertIsNone(asyncio.run(opnemer.video()))
+        self.assertIn("niet geïnstalleerd", log.output[-1])
+
+    def test_tweede_video_genegeerd_fotos_gaan_door_en_stoppen_breekt_af(self):
+        opnemer = self._opnemer(_camera("hangt", duur=20.0))
+
+        async def proef():
+            stop = asyncio.Event()
+            taak = asyncio.create_task(opnemer.draai(stop))
+            await asyncio.sleep(0.2)                      # de eerste intervalfoto
+            opnemer.opdrachten.put_nowait((camera.VIDEO, "alarm:beweging"))
+            await asyncio.sleep(1.0)                      # de video loopt (ffmpeg hangt)
+            opnemer.opdrachten.put_nowait((camera.VIDEO, "handmatig"))
+            self.t += 7
+            opnemer.opdrachten.put_nowait((camera.FOTO, "handmatig"))
+            await asyncio.sleep(0.5)
+            stop.set()
+            opnemer.opdrachten.put_nowait((None, ""))
+            await asyncio.wait_for(taak, 5)
+
+        with self.assertLogs("brms.readers.camera", "INFO") as log:
+            asyncio.run(proef())
+        tekst = "\n".join(log.output)
+        self.assertIn("er loopt al een video; genegeerd", tekst)
+        self.assertIn("lopende video van Dek (dek) afgebroken", tekst)
+        # Twee foto's, geen video; het halve bestand van de afgebroken video is weg.
+        self.assertEqual([b[1]["type"] for b in self.bus.berichten], ["foto", "foto"])
+        self.assertEqual(self._bestanden(), ["203000.jpg", "203007.jpg"])
 
 
 class TestOpdracht(unittest.TestCase):

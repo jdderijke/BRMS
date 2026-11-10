@@ -12,3 +12,4 @@ sqlite3             # de database bekijken (altijd met -readonly; §3.1: één s
 tmux                # vensterverdeling voor 'brms monitor' (§10.2)
 git                 # code ophalen en bijwerken (§10.1)
 python3-venv        # eigen Python-omgeving, los van de systeem-Python (§5.1)
+ffmpeg              # video's van de camera opnemen (§5.7 punt 9)

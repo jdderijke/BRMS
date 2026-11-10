@@ -1,4 +1,4 @@
-"""Camera-reader: haalt foto's op van de IP-camera's (ARCHITECTURE.md §5.7).
+"""Camera-reader: maakt foto's en video's van de IP-camera's (ARCHITECTURE.md §5.7).
 
 Werking per camera uit de configuratie (blok [[camera]]):
 
@@ -17,16 +17,26 @@ Poll-nu (§5.7 punt 12): de opdracht
     brms/opdracht/camera/poll-nu   {"camera_id": "dek", "type": "foto", "aanleiding": "handmatig"}
 
 laat de reader direct een foto maken, los van het interval. Zonder camera_id: alle
-camera's. Video (type "video") volgt in een latere bouwstap.
+camera's.
 
-Een mislukte foto (camera onbereikbaar, antwoord is geen JPEG) geeft een waarschuwing in
-het log en geen bericht op de bus; de volgende intervalfoto komt vanzelf. Zolang de klok
+Video (§5.7 punt 11): alleen op verzoek, met poll-nu en type "video". De reader start dan
+het programma ffmpeg, dat de RTSP-stroom van de camera `video_duur` seconden lang
+wegschrijft naar een MP4-bestand, zonder het beeld om te rekenen (dat belast de Pi
+nauwelijks) en zonder geluid. Het bestand komt naast de foto's, met dezelfde naamgeving en
+`.mp4`. Tijdens een video gaan de intervalfoto's gewoon door; een tweede opdracht voor een
+video tijdens een lopende video wordt genegeerd (§5.7 punt 3).
+
+Een mislukte opname (camera onbereikbaar, antwoord is geen JPEG, ffmpeg geeft een fout)
+geeft een waarschuwing in het log en geen bericht op de bus; er blijft geen bestand
+achter. De volgende intervalfoto komt vanzelf. Zolang de klok
 niet gesynchroniseerd is, worden er geen opnames gemaakt (§4.2): de tijd staat in de
 bestandsnaam en in de database.
 
 Het wachtwoord van de camera is een geheim (§5.7 punt 8): het staat in het adres waarmee
 de foto wordt opgehaald, en komt daarom nooit in het log of in een foutmelding. Een adres
-wordt alleen getoond als schema, host en poort.
+wordt alleen getoond als schema, host en poort. Bij een video staat het adres met
+wachtwoord in de opdrachtregel van ffmpeg; dat is zolang de opname loopt zichtbaar voor
+wie op de Pi is ingelogd.
 
 Het ophalen gebeurt met urllib uit de standaardbibliotheek (geen extra afhankelijkheid,
 P3), in een thread: urllib blokkeert, en de asyncio-loop moet door kunnen lopen.
@@ -58,6 +68,13 @@ TIMEOUT = 10.0
 # Een foto is enkele honderden kB; meer dan dit lezen we niet (vangnet tegen een adres
 # waarop iets heel anders antwoordt, bijvoorbeeld een videostroom).
 MAX_FOTO = 20 * 1024 * 1024
+
+# Het programma dat de video opneemt (§5.7 punt 9); via apt geïnstalleerd.
+FFMPEG = ("ffmpeg",)
+
+# Zoveel seconden na de duur van de video mag ffmpeg nog bezig zijn (verbinden met de
+# camera, het bestand afsluiten); daarna wordt het gestopt (§5.7 punt 11).
+VIDEO_MARGE = 30.0
 
 # Elk JPEG-bestand begint met deze drie bytes.
 _JPEG = b"\xff\xd8\xff"
@@ -149,6 +166,22 @@ def bewaar(map_: str, bestand: str, data: bytes) -> None:
         raise
 
 
+def ffmpeg_argumenten(adres: str, duur: int, uit: str) -> list[str]:
+    """De argumenten waarmee ffmpeg één video opneemt (§5.7 punt 11).
+
+    -nostdin, -loglevel error  geen vragen, alleen fouten melden
+    -rtsp_transport tcp        de stroom over TCP: geen verloren pakketten (blokken in beeld)
+    -t <duur>                  na zoveel seconden beeld vanzelf stoppen
+    -an                        geen geluid: het geluid van een camera past meestal niet in
+                               een MP4 zonder omrekenen
+    -c:v copy                  het beeld kopiëren zoals de camera het levert (H.264)
+    -f mp4                     MP4, ook al eindigt de tijdelijke naam niet op .mp4
+    -y                         een bestaand bestand overschrijven (een rest van eerder)
+    """
+    return ["-nostdin", "-hide_banner", "-loglevel", "error", "-rtsp_transport", "tcp",
+            "-i", adres, "-t", str(duur), "-an", "-c:v", "copy", "-f", "mp4", "-y", uit]
+
+
 def opnamebericht(ts: int, camera_id: str, type_: str, duur: int | None, bestand: str,
                   bytes_: int, aanleiding: str) -> str:
     """Het bericht voor brms/opname/<camera_id> (§3.3), als JSON."""
@@ -170,8 +203,12 @@ class Opnemer:
     """
 
     def __init__(self, camera: Camera, map_: str, bus, haal=haal_foto, klok_ok=_klok_ok,
-                 tijd=time.time):
-        """haal, klok_ok en tijd zijn te vervangen in tests."""
+                 tijd=time.time, ffmpeg=FFMPEG):
+        """haal, klok_ok, tijd en ffmpeg (het programma, als lijst) zijn te vervangen in
+        tests."""
+        self._ffmpeg = tuple(ffmpeg)
+        # De taak van de lopende video, of None.
+        self._videotaak: asyncio.Task | None = None
         self.camera = camera
         self._map = map_
         self._bus = bus
@@ -190,14 +227,8 @@ class Opnemer:
         gelukt is (dan staat de reden in het log)."""
         camera = self.camera
 
-        # Zonder gesynchroniseerde klok geen opname (§4.2): de tijd staat in de naam.
-        if not await asyncio.to_thread(self._klok_ok):
-            if not self._klok_gemeld:
-                log.warning("klok niet gesynchroniseerd; %s (%s) maakt nog geen opnames",
-                            camera.naam, camera.id)
-                self._klok_gemeld = True
+        if not await self._klok_goed():
             return None
-        self._klok_gemeld = False
 
         try:
             # urllib blokkeert; in een thread, zodat de andere camera's doorlopen.
@@ -226,9 +257,118 @@ class Opnemer:
         log.debug("foto %s (%d bytes, %s)", bestand, len(data), aanleiding)
         return bestand
 
+    async def _klok_goed(self) -> bool:
+        """Zonder gesynchroniseerde klok geen opname (§4.2): de tijd staat in de naam.
+        Meldt het één keer in het log."""
+        if await asyncio.to_thread(self._klok_ok):
+            self._klok_gemeld = False
+            return True
+        if not self._klok_gemeld:
+            log.warning("klok niet gesynchroniseerd; %s (%s) maakt nog geen opnames",
+                        self.camera.naam, self.camera.id)
+            self._klok_gemeld = True
+        return False
+
+    async def video(self, aanleiding: str = HANDMATIG) -> str | None:
+        """Neemt één video op van `video_duur` seconden (§5.7 punt 11). Geeft het pad
+        binnen de opnamemap terug, of None als het niet gelukt is (dan staat de reden in
+        het log). Duurt zo lang als de video."""
+        camera = self.camera
+        if camera.video_url is None:
+            log.warning("video van %s (%s) gevraagd (%s), maar de camera heeft geen 'video_url'",
+                        camera.naam, camera.id, aanleiding)
+            return None
+        if not await self._klok_goed():
+            return None
+
+        # De tijd van een video is het begin van de opname (§5.3.1).
+        ts = int(self._tijd())
+        duur = int(round(camera.video_duur))
+        bestand = bestandsnaam(camera.id, ts, "mp4")
+        pad = os.path.join(self._map, *bestand.split("/"))
+        # ffmpeg schrijft onder een tijdelijke naam; pas een geslaagde video krijgt de
+        # echte naam.
+        tijdelijk = pad + ".tmp"
+        adres = vul_in(camera.video_url, camera)
+        log.info("video van %s (%s) gestart: %d s (%s)", camera.naam, camera.id, duur, aanleiding)
+        proces = None
+        try:
+            os.makedirs(os.path.dirname(pad), exist_ok=True)
+            try:
+                proces = await asyncio.create_subprocess_exec(
+                    *self._ffmpeg, *ffmpeg_argumenten(adres, duur, tijdelijk),
+                    stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE)
+            except FileNotFoundError:
+                raise CameraFout("ffmpeg is niet geïnstalleerd (sudo apt install ffmpeg)") from None
+            try:
+                _, fout = await asyncio.wait_for(proces.communicate(), duur + VIDEO_MARGE)
+            except asyncio.TimeoutError:
+                raise CameraFout(f"ffmpeg was {VIDEO_MARGE:g} s na de duur nog niet klaar "
+                                 f"en is gestopt") from None
+            if proces.returncode != 0:
+                # De laatste regel van ffmpeg zegt meestal wat er mis is. Het adres (met
+                # het wachtwoord) kan erin staan; dat gaat eruit.
+                regels = fout.decode("utf-8", "replace").strip().splitlines()
+                tekst = (regels[-1] if regels else "geen melding").replace(adres, toon(adres))
+                raise CameraFout(f"ffmpeg gaf fout {proces.returncode}: {schoon(tekst, camera)}")
+            grootte = os.path.getsize(tijdelijk) if os.path.exists(tijdelijk) else 0
+            if grootte == 0:
+                raise CameraFout("ffmpeg heeft geen beeld weggeschreven")
+            os.replace(tijdelijk, pad)
+        except (CameraFout, OSError) as e:
+            log.warning("video van %s (%s) op %s mislukt (%s): %s", camera.naam, camera.id,
+                        toon(camera.video_url), aanleiding, schoon(str(e), camera))
+            return None
+        finally:
+            # Ook als de service stopt terwijl de video loopt (de taak wordt dan
+            # afgebroken): ffmpeg stoppen en geen half bestand achterlaten (§5.7 punt 11).
+            if proces is not None and proces.returncode is None:
+                proces.kill()
+                await proces.wait()
+            try:
+                os.remove(tijdelijk)
+            except OSError:
+                pass
+
+        bericht = opnamebericht(ts, camera.id, VIDEO, duur, bestand, grootte, aanleiding)
+        if not self._bus.publiceer(f"{TOPIC_OPNAME}/{camera.id}", bericht, qos=1):
+            log.warning("broker niet bereikbaar: video %s niet gemeld aan de opslag", bestand)
+        log.info("video %s klaar (%.1f MB)", bestand, grootte / 1e6)
+        return bestand
+
+    def _start_video(self, aanleiding: str) -> None:
+        """Start een video als eigen taak, zodat de intervalfoto's doorgaan. Loopt er al
+        een, dan wordt de opdracht genegeerd (§5.7 punt 3)."""
+        if self._videotaak is not None and not self._videotaak.done():
+            log.info("video van %s (%s) gevraagd (%s), maar er loopt al een video; genegeerd",
+                     self.camera.naam, self.camera.id, aanleiding)
+            return
+
+        async def veilig():
+            try:
+                await self.video(aanleiding)
+            except Exception:
+                log.exception("fout bij video van %s (%s)", self.camera.naam, self.camera.id)
+
+        self._videotaak = asyncio.create_task(veilig())
+
     async def draai(self, stop: asyncio.Event) -> None:
-        """Maakt foto's tot `stop` gezet wordt: elke `foto_interval` seconden, en direct
-        bij een opdracht van poll-nu."""
+        """Maakt opnames tot `stop` gezet wordt: een foto elke `foto_interval` seconden, en
+        direct een foto of video bij een opdracht van poll-nu."""
+        try:
+            await self._lus(stop)
+        finally:
+            # Een lopende video afbreken; video() ruimt dan zelf op.
+            if self._videotaak is not None and not self._videotaak.done():
+                self._videotaak.cancel()
+                try:
+                    await self._videotaak
+                except asyncio.CancelledError:
+                    pass
+                log.info("lopende video van %s (%s) afgebroken", self.camera.naam, self.camera.id)
+
+    async def _lus(self, stop: asyncio.Event) -> None:
         interval = self.camera.foto_interval
         # Vaste tijdstippen op de monotone klok (§4.2), zodat het interval niet oploopt met
         # de duur van een opname.
@@ -250,8 +390,7 @@ class Opnemer:
             if type_ is None:
                 continue        # gewekt om te stoppen
             if type_ == VIDEO:
-                log.warning("video van %s (%s) gevraagd (%s), maar video is nog niet gebouwd",
-                            self.camera.naam, self.camera.id, aanleiding)
+                self._start_video(aanleiding)
                 continue
             await self._veilig(aanleiding)
 
@@ -313,6 +452,7 @@ async def draai(config: Config, bus, stop: asyncio.Event) -> None:
 
     log.info("camera-reader gestart; %d camera's: %s; opnamemap %s", len(cameras),
              ", ".join(f"{c.naam} ({c.id}) op {toon(c.foto_url)} elke {c.foto_interval:g} s"
+                       + (f", video {c.video_duur:g} s" if c.video_url else ", geen video")
                        for c in cameras.values()) or "geen", config.opnames.map)
     taken = [asyncio.create_task(o.draai(stop)) for o in opnemers.values()]
     await stop.wait()

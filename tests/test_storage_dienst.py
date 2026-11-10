@@ -262,6 +262,30 @@ class TestOpnames(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.dirname(pad_oud)))
         self.assertTrue(os.path.exists(os.path.dirname(video)))
 
+    def test_oudste_videos_weg_als_de_ruimte_vol_is(self):
+        dag = 86400
+        namen = [f"dek/1970/01/0{n}/000000.mp4" for n in (2, 3, 4)]
+        paden = []
+        for n, naam in enumerate(namen, 1):
+            storage.verwerk_opname(self.db, _opname(n * dag, bestand=naam, type_="video",
+                                                    bytes=400, duur=120))
+            paden.append(self._bestand(naam))
+        foto = "dek/1970/01/02/000001.jpg"
+        storage.verwerk_opname(self.db, _opname(dag + 1, bestand=foto, bytes=5000))
+        self._bestand(foto)
+
+        # 1200 bytes aan video's (de foto telt niet mee): past in 1200, niet in 1000.
+        self.assertEqual(storage.ruim_videos(self.db, self.map, 1200), 0)
+        with self.assertLogs("brms.storage", "INFO"):
+            self.assertEqual(storage.ruim_videos(self.db, self.map, 1000), 1)
+        self.assertEqual([os.path.exists(p) for p in paden], [False, True, True])
+        self.assertEqual([r[1] for r in self._rijen()], [foto, namen[1], namen[2]])
+        # Een video die al van schijf is: de rij gaat ook weg.
+        os.remove(paden[1])
+        with self.assertLogs("brms.storage", "INFO"):
+            self.assertEqual(storage.ruim_videos(self.db, self.map, 400), 1)
+        self.assertEqual([r[1] for r in self._rijen()], [foto, namen[2]])
+
     def test_rij_zonder_bestand_verdwijnt_ook(self):
         storage.verwerk_opname(self.db, _opname(86400))
         os.makedirs(self.map)
