@@ -22,6 +22,13 @@ port = 8080
 #   id          vaste ID; bij BLE-sensoren het MAC-adres (AA:BB:CC:DD:EE:FF)
 #   type        bthome (Xiaomi Monitor 3 met pvvx-firmware, BTHome v2)
 #               ruuvi  (RuuviTag en RuuviTag Pro, dataformaat 5)
+#               victron-bmv        (accumonitor: BMV-700 met dongle, SmartShunt)
+#               victron-mppt       (zonnelader: BlueSolar met dongle, SmartSolar)
+#               victron-multiplus  (MultiPlus met VE.Bus Smart dongle: walstroom)
+#   sleutel     alleen bij Victron: de versleutelingssleutel van het apparaat (32 tekens).
+#               In VictronConnect: apparaat openen -> tandwiel -> Productinfo ->
+#               "Instant readout via Bluetooth" aanzetten -> "Versleutelingsgegevens tonen".
+#               Daar staat ook het MAC-adres (voor 'id').
 #   naam        naam/locatie voor weergave; hernoemen laat de historie intact
 #   grootheden  optioneel: alleen deze grootheden meenemen; zonder lijst gaat alles mee.
 #               Welke namen een type levert:  brms grootheden bthome
@@ -47,3 +54,22 @@ grootheden = ["temperatuur", "vocht", "batterijspanning", "rssi"]
 id = "A4:C1:38:00:00:03"
 type = "bthome"
 naam = "motorruim"
+
+# Victron-apparaten (ARCHITECTURE.md §5.2.2). Haal het # weg en vul MAC-adres en sleutel in.
+# [[sensor]]
+# id = "D3:00:00:00:00:01"
+# type = "victron-bmv"
+# naam = "accu"
+# sleutel = "00000000000000000000000000000000"
+#
+# [[sensor]]
+# id = "D3:00:00:00:00:02"
+# type = "victron-mppt"
+# naam = "zonnepaneel"
+# sleutel = "00000000000000000000000000000000"
+#
+# [[sensor]]
+# id = "D3:00:00:00:00:03"
+# type = "victron-multiplus"
+# naam = "multiplus"
+# sleutel = "00000000000000000000000000000000"

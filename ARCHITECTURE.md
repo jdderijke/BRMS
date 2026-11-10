@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.26 – concept** · 10 november 2026
+**Versie 0.27 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -325,7 +325,7 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
 |---|---|---|---|
 | BTHome v2 | Xiaomi Monitor 3 (pvvx) | BLE-advertenties, eigen decoder (§5.2.3) | Eerste stap |
 | Ruuvi | RuuviTag (Pro) | BLE-advertenties, eigen decoder (§5.2.3) | Gebouwd (v0.19); nog niet getest met een echte RuuviTag |
-| Victron | BMV-700, 3× MPPT, MultiPlus | BLE Instant Readout, decoder in de BLE-reader (§5.2.2) | Gepland |
+| Victron | BMV-700, 3× MPPT, MultiPlus | BLE Instant Readout, decoder in de BLE-reader (§5.2.2) | Gebouwd (v0.27); nog niet getest met de echte apparaten |
 | Shelly | Bilge: hoogwatervlotter en pompspanning (Shelly Plus Uni) | Lokale HTTP-API (§5.2.4) | Gepland |
 | Camera | IP-camera dek | Foto per interval, video op poll-nu (§5.7) | Later |
 | GPIO | Waar nodig | — | Gepland |
@@ -386,6 +386,26 @@ en betekent stilte gewoon "sensor stil". Er is geen werk aan de 230V-kant nodig.
    met de echte MultiPlus bevestigd.
 5. De Shelly-reader (§5.2.1) wordt alleen nog gebruikt voor de **bilge** (Shelly Plus Uni).
 6. OPEN-8 vervalt.
+7. **Sensortypen in de configuratie** (v0.27), elk met een verplichte **`sleutel`** (32
+   hexadecimale tekens) en het MAC-adres van het apparaat als `id`:
+
+   | Type | Apparaat | Grootheden |
+   |---|---|---|
+   | `victron-bmv` | accumonitor (BMV-700 met dongle) | `spanning`, `stroom`, `soc`, `verbruikt`, `resterende_tijd` |
+   | `victron-mppt` | zonnelader (BlueSolar met dongle, SmartSolar) | `zonnevermogen`, `laadstroom_zon` |
+   | `victron-multiplus` | MultiPlus met VE.Bus Smart dongle | `walstroom` |
+
+   Een type per soort apparaat (en niet één type `victron`) maakt dat `check-config` en de
+   grafiekenpagina per apparaat weten welke grootheden er zijn. Het soort apparaat staat
+   ook in de advertentie; wijkt dat af van het type in de configuratie, dan wordt het
+   bericht geweigerd.
+8. Een **verkeerde sleutel** of een verkeerd type is een fout in de configuratie die elke
+   seconde terugkomt: de reader meldt hem één keer per sensor als waarschuwing in het log.
+   De sleutel zelf komt nooit in het log, in een foutmelding of in de trace.
+9. `verbruikt` is een positief getal. Een veld dat het apparaat als "onbekend" uitzendt
+   (de resterende tijd tijdens laden, een onbekende AC-ingang) wordt niet gepubliceerd
+   (§5.2.3 punt 4).
+10. Victron-apparaten kunnen (nog) niet gesimuleerd worden (§10.3).
 
 #### 5.2.4 Bilge (v0.14)
 
@@ -1405,7 +1425,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.26** | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie (§10.3 punt 5): ruis op de testreeks en op de signaalsterkte. |
+| **0.27** | 2026-11-10 | Claude Code, Fable 5.2 | Victron-decoder gebouwd (§5.2.2 punt 7–10): sensortypen `victron-bmv`, `victron-mppt`, `victron-multiplus` met `sleutel` in de configuratie; `victron-ble` 0.9.3 als decoder; één waarschuwing per sensor bij een verkeerde sleutel. |
+| 0.26 | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie (§10.3 punt 5): ruis op de testreeks en op de signaalsterkte. |
 | 0.25 | 2026-11-10 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4): zelf grafieken toevoegen (live of database), per grafiek reeksen van meerdere sensoren en grootheden; een strook per eenheid; indeling onthouden in de browser. Simulatie (§10.3): `brms sim`, meerdere sensoren of `all`, geen wachttijd, standaard 10 minuten, opdracht keert direct terug, `brms sim stop`. |
 | 0.24 | 2026-11-10 | Claude Code, Fable 5.2 | Testpagina (§5.6 punt 4): live-venster te kiezen (laatste 50/100 metingen, 10 min t/m 24 uur); de webservice bewaart 24 uur aan metingen in het geheugen; vanaf 1 uur samengevat per tijdvak. |
 | 0.23 | 2026-11-10 | Claude Code, Fable 5.2 | `update.sh` (§10.1 punt 3): services volgen uit `deploy/systemd/`; een nieuwe service wordt vanzelf aangezet en gestart; bij "al bijgewerkt" worden niet-actieve services hersteld. |

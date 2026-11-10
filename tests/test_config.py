@@ -66,6 +66,39 @@ class TestConfig(unittest.TestCase):
                          "brms grootheden bthome"]:
             self.assertIn(verwacht, fouten)
 
+    def test_victron_met_sleutel(self):
+        cfg = _toml('[[sensor]]\nid = "d3:11:22:33:44:55"\ntype = "victron-bmv"\nnaam = "accu"\n'
+                    'sleutel = "aff4d0995b7d1e176c0c33ecb9e70dcd"\n'
+                    'grootheden = ["spanning", "stroom", "soc", "rssi"]\n')
+        s = cfg.sensoren["D3:11:22:33:44:55"]
+        self.assertEqual((s.type, s.sleutel), ("victron-bmv", "aff4d0995b7d1e176c0c33ecb9e70dcd"))
+
+    def test_fouten_bij_de_sleutel(self):
+        tekst = """
+            [[sensor]]
+            id = "D3:11:22:33:44:01"
+            type = "victron-mppt"
+            naam = "zon zonder sleutel"
+            [[sensor]]
+            id = "D3:11:22:33:44:02"
+            type = "victron-multiplus"
+            naam = "te korte sleutel"
+            sleutel = "geheim123"
+            grootheden = ["walstroom", "spanning"]
+            [[sensor]]
+            id = "A4:C1:38:00:00:01"
+            type = "bthome"
+            naam = "kajuit"
+            sleutel = "aff4d0995b7d1e176c0c33ecb9e70dcd"
+        """
+        with self.assertRaises(config.ConfigFout) as ctx:
+            _toml(tekst)
+        fouten = "\n".join(ctx.exception.fouten)
+        self.assertEqual(fouten.count("'sleutel' ontbreekt of is geen 32 hexadecimale tekens"), 2)
+        self.assertIn("kajuit): 'sleutel' hoort alleen bij een Victron-apparaat", fouten)
+        self.assertIn("'spanning' wordt door type victron-multiplus niet geleverd", fouten)
+        self.assertNotIn("geheim123", fouten)   # een sleutel komt nooit in een melding
+
     def test_alle_fouten_tegelijk(self):
         tekst = """
             onzin = 1

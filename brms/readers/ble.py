@@ -6,7 +6,8 @@ Werking:
 2. Alleen apparaten die in de configuratie staan worden verwerkt. De scanner ziet ook
    sensoren van andere boten in de haven; die worden genegeerd.
 3. Het sensortype uit de configuratie bepaalt welke decoder de bytes omzet in waarden:
-   BTHome (Xiaomi met pvvx) of Ruuvi (formaat 5); Victron volgt later (§5.2.3).
+   BTHome (Xiaomi met pvvx), Ruuvi (formaat 5) of Victron (Instant Readout, versleuteld;
+   §5.2.2, §5.2.3).
    Bij een Ruuvi wordt de bewegingsteller hier omgezet in een toename (§5.2.3 punt 5).
 4. De correcties uit de configuratie (offsets) worden toegepast.
 5. De signaalsterkte (RSSI) gaat mee als eigen grootheid: handig om het bereik van de
@@ -28,12 +29,16 @@ import time
 from brms import meting
 from brms.config import Config, Sensor
 from brms.meting import Meting
-from brms.readers import bthome, ruuvi
+from brms.readers import bthome, ruuvi, victron
 
 log = logging.getLogger(__name__)
 
+# Victron-sensoren waarvoor al een waarschuwing in het log staat (verkeerde sleutel of
+# verkeerd type). Zo'n fout komt elke seconde terug; één logregel per sensor is genoeg.
+_gewaarschuwd: set[str] = set()
+
 # Sensortypen die deze reader verwerkt (zie config.BLE_TYPES).
-_TYPES = ("bthome", "ruuvi")
+_TYPES = ("bthome", "ruuvi", *victron.LEVERT)
 
 
 def verwerk(adres: str, service_data: dict[str, bytes], fabrikant_data: dict[int, bytes],
@@ -128,6 +133,33 @@ def verwerk(adres: str, service_data: dict[str, bytes], fabrikant_data: dict[int
                               f" = toename {waarden['beweging']}")
         if stap:
             stap("gedecodeerd", "\n".join(regels))
+    elif sensor.type in victron.LEVERT:
+        data = fabrikant_data.get(victron.FABRIKANT_ID)
+        if data is None or not victron.is_instant_readout(data):
+            return []  # een andere advertentie van het apparaat (bijv. voor VictronConnect)
+        data = bytes(data)
+        if stap:
+            stap("ruw", f"{bron}Victron {data.hex(' ')}   rssi {rssi} dBm")
+        try:
+            ontsleuteld, velden = victron.decodeer_velden(data, sensor.sleutel, sensor.type)
+        except victron.VictronFout as e:
+            # Een verkeerde sleutel of een verkeerd type is een fout in de configuratie en
+            # komt elke seconde terug: één keer als waarschuwing, daarna alleen in debug.
+            niveau = logging.DEBUG if sensor.id in _gewaarschuwd else logging.WARNING
+            _gewaarschuwd.add(sensor.id)
+            log.log(niveau, "%s (%s): %s", sensor.naam, sensor.id, e)
+            if stap:
+                stap("gedecodeerd", f"FOUT: {e} – advertentie overgeslagen")
+            return []
+        # Wat het apparaat als "onbekend" uitzendt (waarde None) wordt niet gepubliceerd
+        # (§5.2.3 punt 4), bijv. de resterende tijd van de BMV tijdens laden.
+        waarden = {v.grootheid: v.waarde for v in velden if v.waarde is not None}
+        if stap:
+            stap("gedecodeerd", "\n".join(
+                [f"ontsleuteld: {ontsleuteld.hex(' ')}"]
+                + [f"{v.grootheid:<17} {v.bron} = {v.ruw}  ({v.uitleg}) = "
+                   + ("onbekend (niet gepubliceerd)" if v.waarde is None else f"{v.waarde:g}")
+                   for v in velden]))
     else:
         return []
 

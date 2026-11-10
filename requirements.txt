@@ -19,3 +19,8 @@ MarkupSafe==3.0.4
 itsdangerous==2.2.0
 click==8.5.1
 blinker==1.9.0
+
+# Victron Instant Readout: ontsleutelen en uitpakken (§5.2.2, §5.2.3). Alleen als decoder
+# gebruikt. pycryptodome levert de AES-ontsleuteling.
+victron-ble==0.9.3
+pycryptodome==4.4.0

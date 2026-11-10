@@ -16,7 +16,8 @@ Opbouw van het bestand (zie config/brms.example.toml):
     [opslag]    database                – pad van de SQLite-database; een relatief pad
                                           geldt vanaf de projectmap (bijv. data/brms.db)
     [web]       host, port              – waar de webinterface luistert (§5.6)
-    [[sensor]]  id, type, naam, grootheden, correctie – één blok per sensor (§5.4.2)
+    [[sensor]]  id, type, naam, grootheden, correctie – één blok per sensor (§5.4.2);
+                bij een Victron-apparaat ook 'sleutel' (§5.2.2)
 """
 
 import os
@@ -25,7 +26,7 @@ import tomllib
 from dataclasses import dataclass, field
 
 from brms import grootheden
-from brms.readers import bthome, ruuvi
+from brms.readers import bthome, ruuvi, victron
 
 # Projectmap: de map waarin de map 'brms' (dit pakket) staat. Op de Pi ~/BRMS.
 # Alle standaardpaden zijn hiervan afgeleid, zodat dezelfde code op de pc en op de Pi werkt.
@@ -35,7 +36,9 @@ STANDAARD_PAD = os.path.join(PROJECTMAP, "config", "brms.toml")
 
 # Sensortypen die via Bluetooth binnenkomen (hun id is een MAC-adres). Victron komt erbij
 # zodra die decoder er is.
-BLE_TYPES = ("bthome", "ruuvi")
+BLE_TYPES = ("bthome", "ruuvi", *victron.LEVERT)   # victron-bmv, -mppt, -multiplus
+# Sensortypen waarvan de gegevens versleuteld zijn; die hebben een 'sleutel' nodig (§5.2.2).
+SLEUTEL_TYPES = tuple(victron.LEVERT)
 SENSOR_TYPES = BLE_TYPES
 
 # Welke grootheden elk sensortype kan leveren (§5.4.2 punt 3). De decoder legt dat vast;
@@ -44,7 +47,11 @@ SENSOR_TYPES = BLE_TYPES
 LEVERT: dict[str, tuple[str, ...]] = {
     "bthome": bthome.LEVERT + ("rssi",),
     "ruuvi": ruuvi.LEVERT + ("rssi",),
+    **{type_: levert + ("rssi",) for type_, levert in victron.LEVERT.items()},
 }
+
+# Versleutelingssleutel van een Victron-apparaat: 32 hexadecimale tekens.
+_SLEUTEL = re.compile(r"^[0-9a-fA-F]{32}$")
 
 # MAC-adres in de vorm AA:BB:CC:DD:EE:FF (na omzetten naar hoofdletters).
 _MAC = re.compile(r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
@@ -111,6 +118,9 @@ class Sensor:
     # Alleen deze grootheden worden gepubliceerd; None = alles wat de decoder levert
     # (§5.4.2 punt 1).
     grootheden: tuple[str, ...] | None = None
+    # Versleutelingssleutel (32 hexadecimale tekens), alleen bij Victron-apparaten (§5.2.2
+    # punt 2). Een geheim: komt niet in logregels of traceberichten.
+    sleutel: str | None = None
 
 
 @dataclass(frozen=True)
@@ -230,7 +240,7 @@ def controleer(data: dict) -> Config:
         if not isinstance(s, dict):
             fouten.append(f"{plek}: moet een tabel zijn")
             continue
-        _onbekend(fouten, plek, s, ("id", "type", "naam", "grootheden", "correctie"))
+        _onbekend(fouten, plek, s, ("id", "type", "naam", "grootheden", "correctie", "sleutel"))
         sid, stype, snaam = s.get("id"), s.get("type"), s.get("naam")
         if not isinstance(snaam, str) or not snaam:
             fouten.append(f"{plek}: 'naam' ontbreekt of is leeg")
@@ -292,8 +302,20 @@ def controleer(data: dict) -> Config:
             if c is not None:
                 correcties[g] = c
 
+        # --- sleutel: verplicht bij een Victron-apparaat, anders niet toegestaan. De
+        # foutmelding noemt de sleutel zelf niet (het is een geheim). ---
+        sleutel = s.get("sleutel")
+        if stype in SLEUTEL_TYPES:
+            if not isinstance(sleutel, str) or not _SLEUTEL.match(sleutel):
+                fouten.append(f"{plek}: 'sleutel' ontbreekt of is geen 32 hexadecimale tekens "
+                              f"(te vinden in VictronConnect bij Productinfo)")
+                sleutel = None
+        elif sleutel is not None:
+            fouten.append(f"{plek}: 'sleutel' hoort alleen bij een Victron-apparaat")
+            sleutel = None
+
         sensoren[sid] = Sensor(sid, stype, snaam if isinstance(snaam, str) else "", correcties,
-                               tuple(lijst_g) if lijst_g is not None else None)
+                               tuple(lijst_g) if lijst_g is not None else None, sleutel)
 
     if fouten:
         raise ConfigFout(fouten)
