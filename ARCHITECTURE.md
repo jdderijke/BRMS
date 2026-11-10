@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.43 – concept** · 10 november 2026
+**Versie 0.44 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1293,8 +1293,15 @@ schrijvers op dezelfde database en map.
      bevestiging. De opdracht is `brms/opdracht/opslag/verwijder` met
      `{"opnames": [[camera_id, ts], ...]}` (hooguit 500 per keer); de pagina haalt de
      lijst kort daarna opnieuw op.
-   - **"Foto nu"** en **"Video nu"** geven de camera-reader een poll-nu met aanleiding
-     `handmatig` (§5.7 punt 12).
+   - **"Live camera"** (v0.44; *ontworpen, nog niet gebouwd*) toont het live-beeld van
+     de camera in het fotovak (§5.7 punt 18). Zolang het live-beeld loopt, zijn er twee
+     knoppen: **"Foto"** maakt direct een foto en slaat hem op, **"Video"** neemt een
+     video op (standaard 120 s) en slaat hem op. Beide geven de camera-reader een poll-nu
+     met aanleiding `handmatig` (§5.7 punt 12); het live-beeld loopt intussen door en de
+     pagina meldt wanneer de opname is opgeslagen. Deze knoppen vervangen "Foto nu" en
+     "Video nu": een opname op verzoek maak je terwijl je kijkt.
+   - Tot dat gebouwd is: **"Foto nu"** en **"Video nu"** geven de camera-reader een
+     poll-nu; de pagina wacht op de gevraagde opname en zet die in beeld (v0.44).
    - Onderaan staan de totalen: aantal en omvang van de foto's en video's, de
      bewaartermijn en de maximale ruimte.
    - De bestanden zelf levert de webservice uit op `/opname/<pad>`, alleen voor een pad
@@ -1458,6 +1465,17 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
   afhankelijkheid voor twee adressen die de gebruiker één keer in de configuratie zet.
 - *Video omrekenen naar een kleiner formaat* (v0.37). Belast de Pi zwaar; de camera levert
   al H.264 en de maximale ruimte (punt 5) begrenst het gebruik.
+- *Live-beeld met HLS: `ffmpeg` schrijft de RTSP-stroom weg in korte stukjes die de browser
+  afspeelt* (v0.44). Werkt met elke camera en geeft het volle beeld, maar loopt 6 tot 10
+  seconden achter en vraagt een extra JavaScript-bibliotheek (hls.js) en een `ffmpeg` die
+  meeloopt. Eerst zo ontworpen, daarna vervangen door de MJPEG-stroom van de camera.
+- *De browser rechtstreeks met de camera verbinden* (v0.44). Het video-adres is RTSP; dat
+  speelt geen enkele browser af. De MJPEG-stroom kan een browser wel tonen, maar dan staat
+  het wachtwoord van de camera in de pagina en is het aantal beelden niet te beperken.
+- *Live-beeld alleen tijdens een opname* (v0.44). Kijken en opnemen zijn twee dingen: de
+  gebruiker wil kunnen kijken zonder op te nemen, en opnemen terwijl hij kijkt.
+- *Een aparte streamingdienst (bijv. go2rtc, MediaMTX)* (v0.44). Een extra programma om te
+  installeren en bij te houden (P3).
 
 **Specificatie.**
 1. IP-camera (wifi 2,4 GHz, RTSP/ONVIF, 12V), **altijd aan**.
@@ -1579,7 +1597,40 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
 17. **Bouwvolgorde:** (a) camera-reader met foto per interval en poll-nu, tabel `opname`
     en het opruimen van foto's; (b) video en de maximale ruimte; (c) foto en video bij
     een alarm (alarmlaag en meldingskanalen); (d) bekijken en verwijderen in het web
-    (§5.6).
+    (§5.6); (e) het live-beeld (punt 18).
+18. **Live-beeld** (v0.44; *ontworpen, nog niet gebouwd*). Kijken en opnemen zijn los van
+    elkaar: "Live camera" toont wat de camera nu ziet; "Foto" en "Video" leggen iets vast
+    terwijl het live-beeld doorloopt (§5.6 punt 2).
+    - **De MJPEG-stroom van de camera.** Veel camera's leveren naast RTSP een tweede
+      stroom over gewoon HTTP: een reeks losse JPEG-beelden (MJPEG). Die kan een browser
+      rechtstreeks tonen, zonder `ffmpeg`, zonder extra bibliotheek en met minder dan een
+      seconde vertraging.
+    - **Configuratie:** een nieuw veld `live_url` in `[[camera]]`, met `{gebruiker}` en
+      `{wachtwoord}` zoals de andere adressen (punt 7). Zonder dit veld heeft de camera
+      geen live-beeld.
+    - **Via de webservice.** De browser vraagt het beeld op `/live/<camera_id>`; de
+      webservice haalt de stroom bij de camera en geeft de beelden ongewijzigd door. Het
+      wachtwoord blijft zo op de Pi (punt 8). Hiermee praat, naast de camera-reader, ook
+      de webservice met de camera; dat is een bewuste uitzondering.
+    - **Aantal beelden.** De camera levert meer dan nodig is (de testcamera 30 beelden per
+      seconde, ongeveer 1 MB per seconde). De webservice geeft er daarom hooguit
+      `live_beelden` per seconde door (veld in `[[camera]]`, standaard **5**) en slaat de
+      rest over.
+    - **Dataverbruik:** bij de testcamera ongeveer 35 kB per beeld; met 5 beelden per
+      seconde ongeveer 175 kB per seconde, ruim 10 MB per minuut.
+    - **Vanzelf stoppen.** Het live-beeld stopt als de gebruiker het stopt of de pagina
+      verlaat, en anders na **10 minuten**: een vergeten tabblad mag de databundel niet
+      leegtrekken. De pagina meldt dat; opnieuw starten kan direct. Er kunnen hooguit 3
+      kijkers tegelijk zijn.
+    - **Foto en video tijdens het kijken** zijn gewone opnames van de camera-reader
+      (punt 10 en 11): de foto van het snapshot-adres, de video van de RTSP-stroom, in de
+      volle kwaliteit van de camera. Het live-beeld zelf wordt niet opgeslagen.
+    - **Geen geluid.**
+    - **Testcamera** (Foscam, beproefd op 2026-11-10): het adres
+      `http://192.168.178.202:89/cgi-bin/CGIStream.cgi?cmd=GetMJStream&usr={gebruiker}&pwd={wachtwoord}`
+      levert zonder verdere instelling een MJPEG-stroom van 640×480, 30 beelden per
+      seconde. Nog te beproeven: of de camera het live-beeld, een foto en een video
+      tegelijk levert.
 
 ---
 
@@ -2032,7 +2083,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.43** | 2026-11-10 | Claude Code, Fable 5.2 | Dagoverzicht gebouwd (§5.6 punt 2): tweede weergave van de opnamepagina, met afspelen, pauze, "verder" bij een video en een tijdbalk van de dag. |
+| **0.44** | 2026-11-10 | Claude Code, Fable 5.2 | "Foto nu" toont de nieuwe foto direct (gebouwd, §5.6 punt 2). Ontwerp: live-beeld via de MJPEG-stroom van de camera, doorgegeven door de webservice (`live_url`, hooguit 5 beelden per seconde, stopt na 10 minuten); knop "Live camera" met daarbinnen "Foto" en "Video" (§5.6 punt 2, §5.7 punt 18). HLS overwogen en verworpen. Nog niet gebouwd. |
+| 0.43 | 2026-11-10 | Claude Code, Fable 5.2 | Dagoverzicht gebouwd (§5.6 punt 2): tweede weergave van de opnamepagina, met afspelen, pauze, "verder" bij een video en een tijdbalk van de dag. |
 | 0.42 | 2026-11-10 | Claude Code, Fable 5.2 | Ontwerp: dagoverzicht op de opnamepagina (§5.6 punt 2): de opnames van een dag afspelen van oud naar nieuw, intervalfoto 0,5 s, foto bij een gebeurtenis 5 s, video volledig met een knop "verder". Nog niet gebouwd. |
 | 0.41 | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (d) gebouwd (§5.6 punt 2): opnamepagina in het web (bekijken per dag, verwijderen via de opslag-service, "Foto nu" en "Video nu"). Het log vermeldt of een melding met foto is verstuurd. |
 | 0.40 | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (c) gebouwd (§5.5.3 punt 5 en 6, §5.7 punt 15): foto bij een notificatie (Telegram als afbeelding, e-mail als bijlage), acties `video` en `foto`, veld `camera` in een alarmregel. |
