@@ -93,6 +93,19 @@ class TestAlarmen(unittest.TestCase):
         self.assertIn("1 openstaande alarmen afgesloten", tekst)
         self.assertEqual([(r[0], r[5], r[6]) for r in self._rijen()],
                          [("vorst", 1500, "herstart"), ("vocht", 1200, "herstel")])
+        # Niets meer open: niets te melden (het bericht komt elke minuut).
+        self.assertIsNone(storage.verwerk_alarm(self.db, "brms/alarm/herstart", b'{"ts": 1600}'))
+
+    def test_stand_laat_actieve_alarmen_open(self):
+        # De alarmlaag meldt elke minuut wat actief is; alleen de rest wordt afgesloten.
+        storage.verwerk_alarm(self.db, *_alarm(1000, "begin"))
+        storage.verwerk_alarm(self.db, *_alarm(1100, "begin", alarm_id="vocht"))
+        stand = json.dumps({"ts": 1500, "actief": [["vocht", S]]}).encode()
+        tekst = storage.verwerk_alarm(self.db, "brms/alarm/herstart", stand)
+        self.assertIn("1 openstaande alarmen afgesloten", tekst)
+        self.assertEqual([(r[0], r[5], r[6]) for r in self._rijen()],
+                         [("vorst", 1500, "herstart"), ("vocht", None, None)])
+        self.assertIsNone(storage.verwerk_alarm(self.db, "brms/alarm/herstart", stand))
 
     def test_nieuw_begin_sluit_een_vergeten_alarm(self):
         # Het einde is nooit gemeld (bijv. de broker was weg): hooguit één alarm open.
@@ -110,6 +123,7 @@ class TestAlarmen(unittest.TestCase):
     def test_ongeldige_berichten(self):
         for topic, inhoud in [("brms/alarm/x", b"kapot"), ("brms/alarm/x", b"[1]"),
                               ("brms/alarm/herstart", b'{"ts": "nu"}'),
+                              ("brms/alarm/herstart", b'{"ts": 1, "actief": [["vorst"]]}'),
                               _alarm(1000, "ontploft"), _alarm(1000, "begin", sensor_id=""),
                               _alarm(1000, "begin", waarde="koud"),
                               ("brms/alarm/x", b'{"ts": 1, "alarm_id": "x", "sensor_id": "s", '

@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.33 – concept** · 10 november 2026
+**Versie 0.34 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -162,7 +162,7 @@ staat; daarom QoS 1.
 | Meting | `brms/meting/<sensor_id>/<grootheid>` | `{"ts", "sensor_id", "grootheid", "waarde", "soort"}` | 1 voor toestand, 0 voor doorlopend en toename |
 | Opname | `brms/opname/<camera_id>` | `{"ts", "camera_id", "type", "duur", "bestand", "bytes", "aanleiding"}` | 1 |
 | Opdracht | `brms/opdracht/<doel>/<actie>`, bijv. `brms/opdracht/camera/poll-nu`, `brms/opdracht/shelly/poll-nu`, `brms/opdracht/opslag/verwijder`, `brms/opdracht/trace/aan`, `brms/opdracht/simulatie/aan` (§10.3), `brms/opdracht/relais/zet` (§5.2.6), `brms/opdracht/alarm/schakel` (§5.5.3) | afhankelijk van de actie, bijv. `{"type": "video", "aanleiding": "alarm:beweging"}` | 1 |
-| Alarm (v0.31) | `brms/alarm/<alarm_id>` | `{"ts", "alarm_id", "sensor_id", "grootheid", "gebeurtenis", "waarde"}`; `gebeurtenis` is `begin`, `herstel` of `uitgezet` (§5.5.3). De alarmlaag meldt zijn start op `brms/alarm/herstart`. | 1 |
+| Alarm (v0.31) | `brms/alarm/<alarm_id>` | `{"ts", "alarm_id", "sensor_id", "grootheid", "gebeurtenis", "waarde"}`; `gebeurtenis` is `begin`, `herstel` of `uitgezet` (§5.5.3). De alarmlaag meldt bij zijn start en daarna elke minuut op `brms/alarm/herstart` welke alarmen actief zijn: `{"ts", "actief": [[alarm_id, sensor_id], ...]}` (v0.34, §5.5.3 punt 8). | 1 |
 | Trace (v0.16) | `brms/trace/<sensor_id>` | `{"ts", "sensor_id", "dienst", "stap", "tekst"}`, optioneel `"deel"` – alleen zolang trace voor die sensor aanstaat (§10.2) | 0 |
 
 1. Elk bericht is **compleet**: ook wat in de topic staat, staat in de inhoud.
@@ -1198,9 +1198,11 @@ betreffende reader uitvoert. Zo blijft er per apparaat één component die ermee
      (alleen-lezen).
 8. **Opgetreden alarmen** staan in de tabel `alarm` (§5.3.1): één rij per alarm, met begin,
    einde en de reden van het einde. De alarmlaag publiceert begin en einde op
-   `brms/alarm/<alarm_id>` (§3.3); de opslag-service schrijft. Bij zijn start meldt de
-   alarmlaag dat; de opslag sluit dan de rijen die nog open staan, met reden `herstart`
-   (§5.5.2 punt 6).
+   `brms/alarm/<alarm_id>` (§3.3); de opslag-service schrijft. Bij zijn start en daarna
+   elke minuut meldt de alarmlaag welke alarmen actief zijn (v0.34); de opslag sluit de
+   rijen die open staan en daar niet bij zijn, met reden `herstart` (§5.5.2 punt 6).
+   Eén melding bij de start bleek niet genoeg: na een herstart van de Pi starten beide
+   services tegelijk en mist de opslag het bericht, en het alarm bleef dan open staan.
 9. **In de grafieken** (§5.6): bij een reeks waarvoor een `grens`-regel geldt, staat de
    grens als horizontale lijn in de grafiek en de herstelgrens als dunnere lijn. De
    perioden waarin het alarm actief was, zijn gearceerd.
@@ -1836,7 +1838,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.33** | 2026-11-10 | Claude Code, Fable 5.2 | Alarmlaag stap (a) gebouwd (§5.5.3, §5.5.4): service `brms-alarm`, alarmregels `[[alarm]]` en kanalen `[melding.telegram]`/`[melding.email]` in `brms.toml`, tabel `alarm`, grenzen en alarmperioden in de grafieken. Meldingen worden hooguit een dag opnieuw geprobeerd. |
+| **0.34** | 2026-11-10 | Claude Code, Fable 5.2 | Fout hersteld: na een herstart van de Pi bleef een alarm in de database (en de grafiek) open staan. De alarmlaag meldt nu elke minuut welke alarmen actief zijn; de opslag sluit de rest af (§3.3, §5.5.3 punt 8). |
+| 0.33 | 2026-11-10 | Claude Code, Fable 5.2 | Alarmlaag stap (a) gebouwd (§5.5.3, §5.5.4): service `brms-alarm`, alarmregels `[[alarm]]` en kanalen `[melding.telegram]`/`[melding.email]` in `brms.toml`, tabel `alarm`, grenzen en alarmperioden in de grafieken. Meldingen worden hooguit een dag opnieuw geprobeerd. |
 | 0.32 | 2026-11-10 | Claude Code, Fable 5.2 | OPEN-14 besloten (§5.5.4): meldingen via een Telegram-bot, met e-mail (SMTP) als tweede kanaal; ntfy vervalt. Ontwerp, nog niet gebouwd. |
 | 0.31 | 2026-11-10 | Claude Code, Fable 5.2 | Ontwerp, nog niet gebouwd. Alarmlaag (§5.5.3): alarmregels in `brms.toml` met notificatie (uit, eenmalig, herhaald), foto en acties; aan/uit-schakelaar per regel via het web; tabellen `alarm` en `alarm_uit` (§5.3.1); grenzen en alarmperioden in de grafieken. Afgeleide grootheden (§5.2.5): aparte module na de correctie, eerste afleiding `helling`. Relais (§5.2.6): sensortype `shelly-relais`, grootheid `relais`, beveiligd met een uitschakeltijd in de Shelly. |
 | 0.30 | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie van Victron-apparaten (§10.3 punt 5, §5.2.2 punt 10): testreeks voor accu, zonnepaneel en walstroom; het bericht wordt versleuteld met de sleutel uit de configuratie. |

@@ -55,6 +55,8 @@ log = logging.getLogger(__name__)
 
 TOPIC_ALARM = "brms/alarm"                 # brms/alarm/<alarm_id>
 TOPIC_HERSTART = f"{TOPIC_ALARM}/herstart"
+# Om de hoeveel seconden de alarmlaag opnieuw meldt welke alarmen actief zijn (§5.5.3 punt 8).
+STAND_INTERVAL = 60.0
 
 # Wat een bewaker kan melden.
 BEGIN, HERSTEL, HERINNERING = "begin", "herstel", "herinnering"
@@ -261,6 +263,11 @@ class Alarmlaag:
     def bewakers(self) -> list[Bewaker]:
         return [b for lijst in self._per_sensor.values() for b in lijst]
 
+    def actief(self) -> list[list[str]]:
+        """De alarmen die nu actief zijn, als paren [alarm_id, sensor_id]. Dit gaat
+        geregeld naar de opslag, die daarmee vergeten alarmen afsluit (§5.5.3 punt 8)."""
+        return [[b.regel.id, b.sensor.id] for b in self.bewakers if b.actief]
+
     def bij_meting(self, m: Meting) -> list:
         """Beoordeelt één meting; geeft de gebeurtenissen en meldingen die eruit volgen."""
         nu = self._klok()
@@ -368,19 +375,23 @@ async def draai(cfg: Config, bus, stop: asyncio.Event) -> None:
             else:
                 verzender.voeg_toe(item)
 
-    # Na een herstart is er geen actief alarm (§5.5.2 punt 6). Dat wordt één keer op de bus
-    # gemeld, zodra de broker bereikbaar is; de opslag sluit dan de alarmen die nog open
-    # staan in de database (§5.5.3 punt 8).
-    herstart_gemeld = False
+    # Na een herstart is er geen actief alarm (§5.5.2 punt 6), maar in de database kan er
+    # nog een open staan. Daarom meldt de alarmlaag bij zijn start en daarna elke minuut
+    # welke alarmen actief zijn; de opslag sluit de alarmen af die open staan en daar niet
+    # bij zijn (§5.5.3 punt 8). Eén melding bij de start is niet genoeg: na een herstart
+    # van de Pi starten beide services tegelijk en luistert de opslag nog niet, of de klok
+    # is nog niet gelijkgezet en de opslag schrijft nog niet (§4.2).
+    stand_gemeld = None        # monotone tijd van de laatste geslaagde melding
     laatste_tik = 0.0
     try:
         while not stop.is_set():
-            if not herstart_gemeld and bus.verbonden:
-                herstart_gemeld = bus.publiceer(
-                    TOPIC_HERSTART, json.dumps({"ts": int(time.time())}), qos=1)
+            nu = time.monotonic()
+            if bus.verbonden and (stand_gemeld is None or nu - stand_gemeld >= STAND_INTERVAL):
+                if bus.publiceer(TOPIC_HERSTART, json.dumps(
+                        {"ts": int(time.time()), "actief": laag.actief()}), qos=1):
+                    stand_gemeld = nu
 
             # Ongeveer elke seconde: wat door de tijd verandert (stil, vensters, herinneringen).
-            nu = time.monotonic()
             if nu - laatste_tik >= 1.0:
                 laatste_tik = nu
                 voer_uit(laag.tik())

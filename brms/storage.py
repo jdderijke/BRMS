@@ -143,12 +143,22 @@ class Database:
                 "WHERE alarm_id = ? AND sensor_id = ? AND einde IS NULL",
                 (ts, reden, alarm_id, sensor_id))
 
-    def alarm_herstart(self, ts: int) -> int:
-        """De alarmlaag is opnieuw gestart: geen enkel alarm is nog actief (§5.5.2 punt 6).
-        Sluit alle openstaande alarmen af; geeft het aantal terug."""
+    def alarm_herstart(self, ts: int, actief=()) -> int:
+        """Sluit de alarmen af die in de database open staan terwijl de alarmlaag ze niet
+        (meer) actief heeft: na een herstart van de alarmlaag is geen enkel alarm nog
+        actief (§5.5.2 punt 6). `actief` zijn de paren (alarm_id, sensor_id) die volgens
+        de alarmlaag nu actief zijn; die blijven open. Geeft het aantal afgesloten alarmen."""
+        blijft = {tuple(paar) for paar in actief}
         with self._con:
-            return self._con.execute(
-                "UPDATE alarm SET einde = ?, reden = 'herstart' WHERE einde IS NULL", (ts,)).rowcount
+            open_ = self._con.execute(
+                "SELECT alarm_id, sensor_id FROM alarm WHERE einde IS NULL").fetchall()
+            weg = [paar for paar in open_ if tuple(paar) not in blijft]
+            # Alleen schrijven als er iets af te sluiten is (weinig schrijven, §3.2).
+            self._con.executemany(
+                "UPDATE alarm SET einde = ?, reden = 'herstart' "
+                "WHERE alarm_id = ? AND sensor_id = ? AND einde IS NULL",
+                [(ts, *paar) for paar in weg])
+        return len(weg)
 
     def sluit(self) -> None:
         self._con.close()
@@ -287,9 +297,10 @@ def _trace_opslag(tracer, rijen: list[Rij], aantallen: dict, moment: int, result
         tracer.stuur(sid, "opgeslagen", tekst)
 
 
-def verwerk_alarm(db: Database, topic: str, payload: bytes) -> str:
+def verwerk_alarm(db: Database, topic: str, payload: bytes) -> str | None:
     """Legt één bericht van de alarmlaag vast in de tabel `alarm`. Geeft een korte
-    omschrijving terug (voor het log); ValueError bij een ongeldig bericht."""
+    omschrijving terug (voor het log), of None als er niets te doen was; ValueError bij
+    een ongeldig bericht."""
     try:
         d = json.loads(payload)
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
@@ -300,7 +311,17 @@ def verwerk_alarm(db: Database, topic: str, payload: bytes) -> str:
     if isinstance(ts, bool) or not isinstance(ts, int):
         raise ValueError(f"ts is geen geheel getal: {ts!r}")
     if topic == TOPIC_HERSTART:
-        return f"alarmlaag herstart: {db.alarm_herstart(ts)} openstaande alarmen afgesloten"
+        # De stand van de alarmlaag: komt bij zijn start en daarna elke minuut. Zonder
+        # veld `actief` is er geen alarm actief.
+        actief = d.get("actief", [])
+        if not isinstance(actief, list) or not all(
+                isinstance(p, list) and len(p) == 2 and all(isinstance(x, str) for x in p)
+                for p in actief):
+            raise ValueError("actief is geen lijst van paren [alarm_id, sensor_id]")
+        aantal = db.alarm_herstart(ts, actief)
+        if not aantal:
+            return None
+        return f"alarmlaag herstart: {aantal} openstaande alarmen afgesloten"
     alarm_id, sensor_id, wat = d.get("alarm_id"), d.get("sensor_id"), d.get("gebeurtenis")
     if not isinstance(alarm_id, str) or not alarm_id or not isinstance(sensor_id, str) or not sensor_id:
         raise ValueError("alarm_id of sensor_id ontbreekt")
@@ -331,7 +352,9 @@ async def _alarmen(db: Database, q: asyncio.Queue, stop: asyncio.Event, klok_ok)
             log.warning("klok niet gesynchroniseerd; alarmbericht op %s niet vastgelegd", topic)
             continue
         try:
-            log.info(verwerk_alarm(db, topic, payload))
+            tekst = verwerk_alarm(db, topic, payload)
+            if tekst:
+                log.info(tekst)
         except ValueError as e:
             log.warning("ongeldig bericht op %s genegeerd: %s", topic, e)
         except sqlite3.Error:
