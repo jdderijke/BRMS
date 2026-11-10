@@ -16,7 +16,7 @@ Werking:
 Er is maar één Bluetooth-adapter; meerdere scanners naast elkaar zitten elkaar in de weg.
 Daarom is er één scanner die per advertentie de juiste decoder kiest.
 
-Simulatie (§10.3): met `brms simuleer <sensor>` maakt de reader zelf advertenties aan en
+Simulatie (§10.3): met `brms sim <sensor>` maakt de reader zelf advertenties aan en
 verwerkt die via dezelfde ingang (Ontvanger) als de advertenties van bleak. De echte
 advertenties van die sensor worden zolang genegeerd.
 """

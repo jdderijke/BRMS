@@ -1,12 +1,19 @@
 <!doctype html>
 <html lang="nl">
 <!--
-  Testpagina van BRMS (ARCHITECTURE.md §5.6 punt 4).
+  Grafiekenpagina van BRMS (ARCHITECTURE.md §5.6 punt 4).
 
-  Eén sensor kiezen, daarna per grootheid een grafiek. Twee bronnen:
+  De gebruiker voegt zelf grafieken toe. Een grafiek heeft één bron:
     live      /api/live      de metingen zoals ze nu over de MQTT-bus gaan
     database  /api/historie  wat de opslag heeft weggeschreven (per 5 minuten)
+  Per grafiek kiest hij een sensor en een grootheid en voegt die als reeks toe; een grafiek
+  kan reeksen van meerdere sensoren en grootheden bevatten.
 
+  Grootheden met een verschillende eenheid (°C en %) krijgen binnen de grafiek elk een
+  eigen strook met een eigen verticale as, onder elkaar op dezelfde tijdas. Twee schalen
+  door elkaar in één vlak zijn niet af te lezen.
+
+  De indeling (welke grafieken, welke reeksen) wordt in de browser onthouden.
   Chart.js komt uit static/ (geen CDN): de pagina werkt ook zonder internet.
 -->
 <head>
@@ -14,93 +21,132 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BRMS</title>
 <style>
-  :root { --bg: #f6f7f9; --vlak: #ffffff; --tekst: #1c2330; --zacht: #5b6676;
-          --rand: #d5dae2; --lijn: #1f6fb2; --fout: #b3261e; }
+  /* Kleuren. De acht reekskleuren zijn een vaste, op kleurenblindheid gecontroleerde reeks;
+     een reeks houdt zijn kleur zolang hij in de grafiek staat. */
+  :root { --pagina: #f9f9f7; --vlak: #fcfcfb; --tekst: #0b0b0b; --zacht: #52514e;
+          --as: #898781; --raster: #e1e0d9; --rand: #c3c2b7; --fout: #b3261e;
+          --reeks-1: #2a78d6; --reeks-2: #eb6834; --reeks-3: #1baf7a; --reeks-4: #eda100;
+          --reeks-5: #e87ba4; --reeks-6: #008300; --reeks-7: #6250d6; --reeks-8: #e34948; }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #14181f; --vlak: #1c222c; --tekst: #e6e9ee; --zacht: #9aa5b5;
-            --rand: #323b49; --lijn: #6cb4f0; --fout: #f2867f; }
+    :root { --pagina: #0d0d0d; --vlak: #1a1a19; --tekst: #f0efec; --zacht: #c3c2b7;
+            --as: #898781; --raster: #2c2c2a; --rand: #383835; --fout: #f2867f;
+            --reeks-1: #3987e5; --reeks-2: #d95926; --reeks-3: #199e70; --reeks-4: #c98500;
+            --reeks-5: #d55181; --reeks-6: #008300; --reeks-7: #9085e9; --reeks-8: #e66767; }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; padding: 16px; background: var(--bg); color: var(--tekst);
+  body { margin: 0; padding: 16px; background: var(--pagina); color: var(--tekst);
          font: 15px/1.4 system-ui, sans-serif; }
-  main { max-width: 900px; margin: 0 auto; }
-  h1 { font-size: 20px; margin: 0 0 12px; }
+  main { max-width: 1000px; margin: 0 auto; }
+  header { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-bottom: 8px; }
+  h1 { font-size: 20px; margin: 0; flex: 1 1 auto; }
   h1 small { font-weight: normal; color: var(--zacht); font-size: 13px; }
-  .keuze { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: end;
-           background: var(--vlak); border: 1px solid var(--rand); border-radius: 8px;
-           padding: 12px; }
-  label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--zacht); }
-  select, button { font: inherit; color: var(--tekst); background: var(--bg);
-                   border: 1px solid var(--rand); border-radius: 6px; padding: 6px 10px; }
+  select, button { font: inherit; color: var(--tekst); background: var(--pagina);
+                   border: 1px solid var(--rand); border-radius: 6px; padding: 5px 9px; }
   button { cursor: pointer; }
   button:disabled { opacity: .4; cursor: default; }
-  .blader { display: flex; gap: 6px; }
-  #status { margin: 12px 2px; color: var(--zacht); min-height: 1.4em; }
-  #status.fout { color: var(--fout); }
+  button.kaal { border: none; background: none; padding: 0 4px; color: var(--zacht); font-size: 16px; line-height: 1; }
+  button.kaal:hover { color: var(--tekst); }
+  #status { margin: 0 2px 10px; min-height: 1.4em; color: var(--fout); }
+  #leeg { color: var(--zacht); padding: 24px 2px; }
   .grafiek { background: var(--vlak); border: 1px solid var(--rand); border-radius: 8px;
-             padding: 10px 12px; margin-bottom: 12px; }
-  .grafiek h2 { font-size: 15px; margin: 0 0 6px; display: flex; justify-content: space-between; }
-  .grafiek h2 span { font-weight: normal; color: var(--zacht); }
-  .grafiek div { position: relative; height: 200px; }
+             padding: 10px 12px; margin-bottom: 14px; }
+  .rij { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .rij .ruimte { flex: 1 1 auto; }
+  .bron { font-weight: 600; margin-right: 4px; }
+  .toevoegen label { color: var(--zacht); font-size: 13px; }
+  .legenda { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 4px; min-height: 1.4em; }
+  .legenda .reeks { display: inline-flex; align-items: center; gap: 6px; }
+  .legenda i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+  .legenda .waarde { color: var(--zacht); }
+  .melding { color: var(--zacht); font-size: 13px; min-height: 1.3em; }
+  .doek { position: relative; height: 240px; }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <main>
-  <h1>BRMS <small>testpagina · versie {{ versie }}</small></h1>
-
-  <div class="keuze">
-    <label>Sensor
-      <select id="sensor">
-        {% for s in sensoren %}
-        <option value="{{ s.id }}">{{ s.naam }} ({{ s.type }})</option>
-        {% endfor %}
-      </select>
-    </label>
-    <label>Bron
-      <select id="bron">
-        <option value="live">Live (MQTT-bus)</option>
-        <option value="database">Database (historie)</option>
-      </select>
-    </label>
-    <label id="periode-keuze" hidden>Periode
-      <select id="periode">
-        <option value="3600">1 uur</option>
-        <option value="21600">6 uur</option>
-        <option value="86400" selected>24 uur</option>
-        <option value="604800">7 dagen</option>
-        <option value="2592000">30 dagen</option>
-      </select>
-    </label>
-    <div class="blader" id="blader" hidden>
-      <button id="eerder" title="Eén periode eerder">◀ eerder</button>
-      <button id="later" title="Eén periode later">later ▶</button>
-      <button id="nu" title="Terug naar nu">nu</button>
-    </div>
-  </div>
-
+  <header>
+    <h1>BRMS <small>grafieken · versie {{ versie }}</small></h1>
+    <button id="plus-live">+ Live-grafiek</button>
+    <button id="plus-database">+ Database-grafiek</button>
+  </header>
   <p id="status"></p>
+  <p id="leeg" hidden>Nog geen grafieken. Voeg er een toe met de knoppen hierboven: “live” toont de
+    metingen van de MQTT-bus, “database” de opgeslagen historie.</p>
   <div id="grafieken"></div>
 </main>
 
+<!-- Sjabloon van één grafiek; wordt voor elke grafiek gekopieerd. -->
+<template id="sjabloon">
+  <section class="grafiek">
+    <div class="rij">
+      <span class="bron"></span>
+      <select class="venster" title="Welk deel van de live-metingen de grafiek toont">
+        <option value="n50">laatste 50 metingen</option>
+        <option value="n100">laatste 100 metingen</option>
+        <option value="t600">laatste 10 minuten</option>
+        <option value="t1800">laatste 30 minuten</option>
+        <option value="t3600">laatste uur</option>
+        <option value="t10800">laatste 3 uur</option>
+        <option value="t43200">laatste 12 uur</option>
+        <option value="t86400">laatste 24 uur</option>
+      </select>
+      <select class="periode" title="Lengte van de periode uit de database">
+        <option value="3600">1 uur</option>
+        <option value="21600">6 uur</option>
+        <option value="86400">24 uur</option>
+        <option value="604800">7 dagen</option>
+        <option value="2592000">30 dagen</option>
+      </select>
+      <button class="eerder" title="Eén periode eerder">◀ eerder</button>
+      <button class="later" title="Eén periode later">later ▶</button>
+      <button class="nu" title="Terug naar nu">nu</button>
+      <span class="ruimte"></span>
+      <button class="kaal weg" title="Deze grafiek verwijderen">✕</button>
+    </div>
+    <div class="rij toevoegen">
+      <label>Sensor <select class="sensor"></select></label>
+      <label>Grootheid <select class="grootheid"></select></label>
+      <button class="voegtoe">Toevoegen</button>
+    </div>
+    <div class="legenda"></div>
+    <div class="doek"><canvas></canvas></div>
+    <div class="melding"></div>
+  </section>
+</template>
+
 <script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
 <script>
-// Naam -> {eenheid, soort}; de volgorde is die van de tabel van grootheden (§5.3.3).
+// Uit de configuratie van de Pi: de sensoren met de grootheden die ze leveren, en per
+// grootheid de eenheid en de soort (§5.3.3).
+const SENSOREN = {{ sensoren | tojson }};
 const GROOTHEDEN = {{ grootheden | tojson }};
+
 const LIVE_INTERVAL = 2000;   // ms tussen twee vragen aan /api/live
-const LIVE_PUNTEN = 600;      // zoveel punten blijven in een live-grafiek staan
 const GAT = 900;              // s; een groter gat in de historie wordt niet doorverbonden
+const MAX_REEKSEN = 8;        // per grafiek; er zijn acht goed te onderscheiden kleuren
+const STROOK = 220;           // px hoogte per eenheid in een grafiek
+const BEWAARSLEUTEL = "brms-grafieken";
+
+// Live-vensters van een uur en langer worden samengevat per tijdvak (venster in s ->
+// breedte van een vak in s), zodat een reeks hooguit ongeveer 720 punten heeft. Alle
+// losse metingen van 24 uur zijn te veel voor de browser en voor de mobiele verbinding.
+const STAP = {3600: 5, 10800: 15, 43200: 60, 86400: 120};
 
 const el = id => document.getElementById(id);
 const kleur = naam => getComputedStyle(document.documentElement).getPropertyValue(naam).trim();
+const sensor = id => SENSOREN.find(s => s.id === id);
+const eenheid = g => (GROOTHEDEN[g] || {eenheid: ""}).eenheid;
 
-let grafieken = {};    // grootheid -> Chart
-let timer = null;      // de herhaling van de live-vraag
-let laatsteNr = 0;     // hoogste volgnummer dat al in de live-grafieken staat
-let verschuiving = 0;  // database: hoeveel perioden terug vanaf nu
-let reeks = 0;         // telt op bij elke nieuwe keuze; antwoorden van een oude keuze vervallen
+// Alle grafieken op de pagina. Eén grafiek:
+//   {bron: "live"|"database", venster, periode, verschuiving, vak (het DOM-element),
+//    chart (Chart.js), reeksen: [reeks, ...]}
+// Eén reeks:
+//   {sensor (ID), grootheid, kleur (1..8), data: [{x: ms, y}], en voor live:
+//    geladen, na, vanaf – wat er al opgehaald is (zie vraagLive)}
+let grafieken = [];
 
-// --- tijd ---------------------------------------------------------------------
+// --- tijd en getallen -------------------------------------------------------------
 // Tijdstempels zijn Unix-seconden UTC; de browser toont ze in de lokale tijd.
 const twee = n => String(n).padStart(2, "0");
 function klok(ms, metSeconden) {
@@ -113,176 +159,386 @@ function datum(ms) {
 }
 const getal = w => Number(w).toLocaleString("nl-NL", {maximumFractionDigits: 3});
 
-// --- grafieken ----------------------------------------------------------------
-function wisGrafieken() {
-  Object.values(grafieken).forEach(g => g.destroy());
-  grafieken = {};
-  el("grafieken").replaceChildren();
+// De afstand tussen twee streepjes op de tijdas (in ms) bij een as van `breedte` ms: de
+// kleinste ronde stap waarmee er hooguit acht streepjes zijn.
+const TIJDSTAPPEN = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800,
+                     21600, 43200, 86400, 172800, 604800].map(s => s * 1000);
+const tijdstap = breedte => TIJDSTAPPEN.find(s => breedte / s <= 8) || TIJDSTAPPEN[TIJDSTAPPEN.length - 1];
+
+function status(tekst) { el("status").textContent = tekst || ""; }
+
+// --- onthouden van de indeling ------------------------------------------------------
+// Alleen de indeling (geen meetwaarden) staat in de browser. Lukt dat niet (privévenster),
+// dan werkt de pagina gewoon, maar begint ze de volgende keer opnieuw.
+function bewaar() {
+  try {
+    localStorage.setItem(BEWAARSLEUTEL, JSON.stringify(grafieken.map(g => ({
+      bron: g.bron, venster: g.venster, periode: g.periode,
+      reeksen: g.reeksen.map(r => ({sensor: r.sensor, grootheid: r.grootheid, kleur: r.kleur})),
+    }))));
+  } catch (e) { /* niet erg */ }
+}
+function bewaard() {
+  try { return JSON.parse(localStorage.getItem(BEWAARSLEUTEL)); } catch (e) { return null; }
 }
 
-// Maakt (één keer) de grafiek voor een grootheid. De grafieken staan in de volgorde van
-// de tabel van grootheden, ongeacht welke het eerst binnenkomt.
-function grafiek(naam) {
-  if (grafieken[naam]) return grafieken[naam];
-  const info = GROOTHEDEN[naam] || {eenheid: "", soort: "doorlopend"};
-  const vak = document.createElement("section");
-  vak.className = "grafiek";
-  vak.dataset.naam = naam;
-  vak.innerHTML = "<h2></h2><div><canvas></canvas></div>";
-  vak.querySelector("h2").textContent = naam;
-  vak.querySelector("h2").appendChild(document.createElement("span"));
-  const volgorde = Object.keys(GROOTHEDEN);
-  const na = [...el("grafieken").children].find(
-    v => volgorde.indexOf(v.dataset.naam) > volgorde.indexOf(naam));
-  el("grafieken").insertBefore(vak, na || null);
+// --- een grafiek opbouwen -------------------------------------------------------------
+function nieuweGrafiek(bron, opgeslagen) {
+  const vak = el("sjabloon").content.firstElementChild.cloneNode(true);
+  const q = klasse => vak.querySelector("." + klasse);
+  const g = {bron, venster: "t600", periode: "86400", verschuiving: 0, vak, chart: null, reeksen: []};
+  if (opgeslagen) { g.venster = opgeslagen.venster || g.venster; g.periode = opgeslagen.periode || g.periode; }
+  grafieken.push(g);
 
-  const lijn = kleur("--lijn"), zacht = kleur("--zacht"), rand = kleur("--rand");
-  grafieken[naam] = new Chart(vak.querySelector("canvas"), {
+  const live = bron === "live";
+  q("bron").textContent = live ? "Live (MQTT-bus)" : "Database";
+  q("venster").hidden = !live;
+  for (const k of ["periode", "eerder", "later", "nu"]) q(k).hidden = live;
+  q("venster").value = g.venster;
+  q("periode").value = g.periode;
+
+  // Keuzelijsten: eerst de sensor, daarna de grootheden van díe sensor.
+  for (const s of SENSOREN) q("sensor").add(new Option(s.naam + " (" + s.type + ")", s.id));
+  const vulGrootheden = () => {
+    q("grootheid").replaceChildren();
+    for (const naam of (sensor(q("sensor").value) || {grootheden: []}).grootheden)
+      q("grootheid").add(new Option(naam + " (" + eenheid(naam) + ")", naam));
+  };
+  q("sensor").addEventListener("change", vulGrootheden);
+  vulGrootheden();
+
+  q("voegtoe").addEventListener("click", () => {
+    const melding = voegReeksToe(g, q("sensor").value, q("grootheid").value);
+    if (melding) meld(g, melding); else { bewaar(); ververs(g); }
+  });
+  q("venster").addEventListener("change", () => { g.venster = q("venster").value; bewaar(); ververs(g); });
+  q("periode").addEventListener("change", () => { g.periode = q("periode").value; g.verschuiving = 0; bewaar(); ververs(g); });
+  q("eerder").addEventListener("click", () => { g.verschuiving += 1; ververs(g); });
+  q("later").addEventListener("click", () => { g.verschuiving = Math.max(0, g.verschuiving - 1); ververs(g); });
+  q("nu").addEventListener("click", () => { g.verschuiving = 0; ververs(g); });
+  q("weg").addEventListener("click", () => {
+    if (g.chart) g.chart.destroy();
+    grafieken = grafieken.filter(x => x !== g);
+    vak.remove();
+    el("leeg").hidden = grafieken.length > 0;
+    bewaar();
+  });
+
+  el("grafieken").appendChild(vak);
+  el("leeg").hidden = true;
+  for (const r of (opgeslagen ? opgeslagen.reeksen || [] : []))
+    voegReeksToe(g, r.sensor, r.grootheid, r.kleur);
+  ververs(g);
+  return g;
+}
+
+// Voegt een reeks toe aan een grafiek. Geeft een melding terug als dat niet kan.
+function voegReeksToe(g, sensorId, grootheid, gewensteKleur) {
+  const s = sensor(sensorId);
+  if (!s || !GROOTHEDEN[grootheid]) return "Kies een sensor en een grootheid.";
+  if (g.reeksen.some(r => r.sensor === sensorId && r.grootheid === grootheid))
+    return s.naam + " · " + grootheid + " staat al in deze grafiek.";
+  if (g.reeksen.length >= MAX_REEKSEN)
+    return "Een grafiek heeft hooguit " + MAX_REEKSEN + " reeksen; maak een tweede grafiek.";
+  // De eerste vrije kleur. Een reeks houdt zijn kleur, ook als een andere wordt verwijderd.
+  const bezet = g.reeksen.map(r => r.kleur);
+  let k = gewensteKleur && !bezet.includes(gewensteKleur) ? gewensteKleur : 1;
+  while (bezet.includes(k)) k++;
+  g.reeksen.push({sensor: sensorId, grootheid, kleur: k, data: [], geladen: false, na: 0, vanaf: null});
+  return "";
+}
+
+function meld(g, tekst) { g.vak.querySelector(".melding").textContent = tekst || ""; }
+
+// Het gekozen live-venster: {aantal} voor "laatste N metingen", of {duur, stap} voor een
+// tijdvenster (stap 0 = elke meting, anders samengevat per `stap` seconden).
+function venster(g) {
+  const n = Number(g.venster.slice(1));
+  return g.venster[0] === "n" ? {aantal: n} : {duur: n, stap: STAP[n] || 0};
+}
+
+// Tekent de grafiek opnieuw op (na een andere keuze of een andere set reeksen) en haalt de
+// gegevens opnieuw op.
+function ververs(g) {
+  for (const r of g.reeksen) { r.data = []; r.geladen = false; r.na = 0; r.vanaf = null; }
+  g.vak.querySelector(".later").disabled = g.vak.querySelector(".nu").disabled = g.verschuiving === 0;
+  bouwChart(g);
+  if (!g.reeksen.length) { meld(g, "Kies een sensor en een grootheid en klik op Toevoegen."); return; }
+  if (g.bron === "live") { meld(g, "Live: laden …"); vraagLive(); }
+  else laadHistorie(g);
+}
+
+// Maakt het Chart.js-object voor de huidige reeksen van de grafiek.
+function bouwChart(g) {
+  if (g.chart) g.chart.destroy();
+  const as = kleur("--as"), raster = kleur("--raster");
+
+  // Eén verticale as per eenheid. De assen staan onder elkaar ('stack'), elk in een eigen
+  // strook: reeksen met dezelfde eenheid delen een as, andere eenheden mengen niet.
+  const eenheden = [...new Set(g.reeksen.map(r => eenheid(r.grootheid)))];
+  const schalen = {
+    x: {type: "linear", grid: {color: raster},
+        // Streepjes op ronde tijden (hele minuten, kwartieren, uren, dagen) in de lokale
+        // tijd, in plaats van de willekeurige waarden die een getallenas zelf kiest.
+        afterBuildTicks: function (schaal) {
+          const stap = tijdstap(schaal.max - schaal.min);
+          const zone = new Date(schaal.min).getTimezoneOffset() * 60000;
+          schaal.ticks = [];
+          for (let t = Math.ceil((schaal.min - zone) / stap) * stap + zone; t <= schaal.max; t += stap)
+            schaal.ticks.push({value: t});
+        },
+        ticks: {color: as, maxRotation: 0, autoSkip: false,
+                // Stappen van een dag of meer: datum. Korter dan een minuut: tijd met
+                // seconden. Anders uren en minuten.
+                callback: function (v) {
+                  const stap = tijdstap(this.max - this.min);
+                  return stap >= 86400e3 ? datum(v) : klok(v, stap < 60e3);
+                }}},
+  };
+  // Chart.js stapelt de assen van onder naar boven; daarom in omgekeerde volgorde, zodat de
+  // eenheid van de eerste reeks bovenaan staat.
+  for (let i = eenheden.length - 1; i >= 0; i--) {
+    schalen["y" + i] = {stack: "eenheden", stackWeight: 1, offset: eenheden.length > 1,
+                        grace: "8%",   // wat lucht, zodat een lijn niet tegen de rand van zijn strook ligt
+                        grid: {color: raster}, ticks: {color: as, callback: v => getal(v)},
+                        title: {display: true, text: eenheden[i], color: as}};
+  }
+  if (!eenheden.length) schalen.y0 = {display: false};
+  g.vak.querySelector(".doek").style.height = Math.max(1, eenheden.length) * STROOK + "px";
+
+  g.chart = new Chart(g.vak.querySelector("canvas"), {
     type: "line",
-    data: {datasets: [{
-      data: [], borderColor: lijn, backgroundColor: lijn, borderWidth: 1.5,
-      pointRadius: 0, pointHitRadius: 8,
+    data: {datasets: g.reeksen.map(r => ({
+      label: sensor(r.sensor).naam + " · " + r.grootheid,
+      data: r.data,
+      yAxisID: "y" + eenheden.indexOf(eenheid(r.grootheid)),
+      borderColor: kleur("--reeks-" + r.kleur), backgroundColor: kleur("--reeks-" + r.kleur),
+      borderWidth: 2, pointRadius: 0, pointHitRadius: 10,
       // Een toestand (0/1) springt; die als schuine lijn tekenen zou misleiden.
-      stepped: info.soort === "toestand" ? "before" : false,
-    }]},
+      stepped: (GROOTHEDEN[r.grootheid] || {}).soort === "toestand" ? "before" : false,
+    }))},
+    // Een lijn tussen de stroken, zodat duidelijk is waar de ene schaal ophoudt en de
+    // andere begint.
+    plugins: [{id: "stroken", afterDraw: chart => {
+      const ctx = chart.ctx, vlak = chart.chartArea;
+      ctx.save();
+      ctx.strokeStyle = kleur("--rand");
+      ctx.lineWidth = 1;
+      for (let i = 1; i < eenheden.length; i++) {
+        const y = Math.round(chart.scales["y" + i].top) - 0.5;
+        ctx.beginPath(); ctx.moveTo(vlak.left, y); ctx.lineTo(vlak.right, y); ctx.stroke();
+      }
+      ctx.restore();
+    }}],
     options: {
       animation: false, parsing: false, maintainAspectRatio: false,
       interaction: {mode: "nearest", axis: "x", intersect: false},
-      scales: {
-        x: {type: "linear", grid: {color: rand},
-            ticks: {color: zacht, maxTicksLimit: 8, maxRotation: 0,
-                    // Meer dan twee dagen op de as: datum. Minder dan tien minuten
-                    // (live): tijd met seconden. Anders uren en minuten.
-                    callback: function (v) {
-                      const breedte = this.max - this.min;
-                      return breedte > 2 * 86400e3 ? datum(v) : klok(v, breedte < 600e3);
-                    }}},
-        y: {grid: {color: rand}, ticks: {color: zacht, callback: v => getal(v)},
-            title: {display: true, text: info.eenheid, color: zacht}},
-      },
+      scales: schalen,
       plugins: {
-        legend: {display: false},
+        legend: {display: false},   // de legenda staat boven de grafiek, met de laatste waarde
         tooltip: {callbacks: {
           title: items => datum(items[0].parsed.x) + "  " + klok(items[0].parsed.x, true),
-          label: item => getal(item.parsed.y) + " " + info.eenheid,
+          label: item => item.dataset.label + ": " + getal(item.parsed.y) + " "
+                         + eenheid(g.reeksen[item.datasetIndex].grootheid),
         }},
       },
     },
   });
-  grafieken[naam].vak = vak;
-  return grafieken[naam];
+  tekenLegenda(g);
 }
 
-// Zet de laatste waarde rechts in de titel van de grafiek.
-function toonLaatste(g, naam) {
-  const punten = g.data.datasets[0].data.filter(p => p.y !== null);
-  const laatste = punten[punten.length - 1];
-  const info = GROOTHEDEN[naam] || {eenheid: ""};
-  g.vak.querySelector("span").textContent =
-    laatste ? getal(laatste.y) + " " + info.eenheid + "  ·  " + klok(laatste.x, true) : "";
+// De legenda: per reeks de kleur, de naam, de laatste waarde en een knop om hem te
+// verwijderen. De tekst staat in de gewone tekstkleur; alleen het streepje draagt de kleur.
+function tekenLegenda(g) {
+  const legenda = g.vak.querySelector(".legenda");
+  legenda.replaceChildren();
+  for (const r of g.reeksen) {
+    const item = document.createElement("span");
+    item.className = "reeks";
+    const streep = document.createElement("i");
+    streep.style.background = kleur("--reeks-" + r.kleur);
+    const naam = document.createElement("span");
+    naam.textContent = sensor(r.sensor).naam + " · " + r.grootheid;
+    const waarde = document.createElement("span");
+    waarde.className = "waarde";
+    r.waardeVak = waarde;   // toonWaarden vult dit bij elke verversing
+    const weg = document.createElement("button");
+    weg.className = "kaal";
+    weg.title = "Deze reeks uit de grafiek halen";
+    weg.textContent = "✕";
+    weg.addEventListener("click", () => {
+      g.reeksen = g.reeksen.filter(x => x !== r);
+      bewaar();
+      ververs(g);
+    });
+    item.append(streep, naam, waarde, weg);
+    legenda.appendChild(item);
+  }
+  toonWaarden(g);
 }
 
-function status(tekst, fout) {
-  el("status").textContent = tekst;
-  el("status").classList.toggle("fout", !!fout);
-}
-
-async function haal(adres) {
-  const antwoord = await fetch(adres);
-  if (!antwoord.ok) throw new Error("fout " + antwoord.status);
-  return antwoord.json();
-}
-
-// --- live: de metingen van de bus ----------------------------------------------
-async function live(mijnReeks) {
-  try {
-    const d = await haal("/api/live?sensor=" + encodeURIComponent(el("sensor").value) + "&na=" + laatsteNr);
-    if (mijnReeks !== reeks) return;   // er is intussen iets anders gekozen
-    laatsteNr = d.nr;
-    for (const [naam, punten] of Object.entries(d.reeksen)) {
-      const g = grafiek(naam), data = g.data.datasets[0].data;
-      for (const [ts, w] of punten) data.push({x: ts * 1000, y: w});
-      if (data.length > LIVE_PUNTEN) data.splice(0, data.length - LIVE_PUNTEN);
-      g.update();
-      toonLaatste(g, naam);
-    }
-    if (d.broker === false) status("De MQTT-broker is niet bereikbaar; er komen geen metingen binnen.", true);
-    else if (!Object.keys(grafieken).length) status("Live: wachten op metingen van deze sensor …");
-    else status("Live: elke ontvangen meting, ververst om de " + LIVE_INTERVAL / 1000 + " s.");
-  } catch (e) {
-    if (mijnReeks === reeks) status("Geen verbinding met de BRMS-webservice (" + e.message + ").", true);
+// Zet bij elke reeks in de legenda de laatste waarde met het tijdstip. De legenda zelf
+// blijft staan (anders zou een knop onder de muis telkens vervangen worden).
+function toonWaarden(g) {
+  for (const r of g.reeksen) {
+    let laatste = null;
+    for (let i = r.data.length - 1; i >= 0 && !laatste; i--) if (r.data[i].y !== null) laatste = r.data[i];
+    if (r.waardeVak) r.waardeVak.textContent = laatste
+      ? getal(laatste.y) + " " + eenheid(r.grootheid) + " (" + klok(laatste.x, true) + ")" : "–";
   }
 }
 
-// --- database: de opgeslagen historie ------------------------------------------
-async function historie(mijnReeks) {
-  const periode = Number(el("periode").value);
-  const tot = Math.floor(Date.now() / 1000) - verschuiving * periode;
-  const van = tot - periode;
-  status("Database: laden …");
+// --- live: de metingen van de bus --------------------------------------------------
+// Eén aanvraag voor alle reeksen van alle live-grafieken. Per reeks wordt bijgehouden wat
+// er al is: de eerste keer het hele venster, daarna alleen wat nieuw is.
+let bezig = false;
+async function vraagLive() {
+  if (bezig) return;
+  const doelen = [];   // per vraag: de grafiek, de reeks en het venster van dat moment
+  for (const g of grafieken) {
+    if (g.bron !== "live") continue;
+    const v = venster(g);
+    for (const r of g.reeksen) {
+      const vraag = {sensor: r.sensor, grootheid: r.grootheid};
+      if (v.stap) {
+        // Samengevat: eerst het hele venster, daarna alleen de laatste tijdvakken opnieuw.
+        vraag.stap = v.stap;
+        if (r.vanaf === null) vraag.venster = v.duur; else vraag.vanaf = r.vanaf;
+      } else if (r.geladen) {
+        vraag.na = r.na;   // vervolgvraag: alleen wat nieuw is
+      } else if (v.aantal) {
+        vraag.aantal = v.aantal;
+      } else {
+        vraag.venster = v.duur;
+      }
+      doelen.push({g, r, v, data: r.data, vraag});
+    }
+  }
+  if (!doelen.length) return;
+  bezig = true;
   try {
-    const d = await haal("/api/historie?sensor=" + encodeURIComponent(el("sensor").value)
-                         + "&van=" + van + "&tot=" + tot);
-    if (mijnReeks !== reeks) return;
-    wisGrafieken();
+    const antwoord = await fetch("/api/live", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({vragen: doelen.map(d => d.vraag)})});
+    if (!antwoord.ok) throw new Error("fout " + antwoord.status);
+    const d = await antwoord.json();
+    status(d.broker === false ? "De MQTT-broker is niet bereikbaar; er komen geen metingen binnen." : "");
+
+    doelen.forEach((doel, i) => {
+      const {g, r, v} = doel, data = r.data;
+      // Is er intussen iets anders gekozen (ander venster, reeks verwijderd), dan hoort dit
+      // antwoord bij een oude vraag en vervalt het.
+      if (data !== doel.data || !g.reeksen.includes(r)) return;
+      const punten = d.punten[i] || [];
+      r.geladen = true;
+      r.na = d.nr;
+      // Het lopende tijdvak verandert nog, en in het vak daarvoor kan sinds de vorige vraag
+      // nog een meting gevallen zijn: die twee worden de volgende keer opnieuw gevraagd.
+      if (v.stap) r.vanaf = (Math.floor(d.nu / v.stap) - 1) * v.stap;
+      if (v.stap && punten.length) {
+        // Tijdvakken die opnieuw binnenkomen, vervangen de oude.
+        const eerste = punten[0][0] * 1000;
+        while (data.length && data[data.length - 1].x >= eerste) data.pop();
+      }
+      for (const [ts, w] of punten) data.push({x: ts * 1000, y: w});
+    });
+
+    // Het venster toepassen op elke live-grafiek, ook als er niets nieuws kwam: de as
+    // schuift mee met de tijd en wat buiten het venster valt, verdwijnt.
+    for (const g of grafieken) {
+      if (g.bron !== "live" || !g.reeksen.length) continue;
+      const v = venster(g);
+      g.reeksen.forEach((r, i) => {
+        if (v.aantal) {
+          if (r.data.length > v.aantal) r.data.splice(0, r.data.length - v.aantal);
+        } else {
+          const begin = (d.nu - v.duur) * 1000;
+          let weg = 0;
+          while (weg < r.data.length && r.data[weg].x < begin) weg++;
+          r.data.splice(0, weg);
+        }
+        g.chart.data.datasets[i].pointRadius = v.aantal ? 2 : 0;
+      });
+      g.chart.options.scales.x.min = v.aantal ? undefined : (d.nu - v.duur) * 1000;
+      g.chart.options.scales.x.max = v.aantal ? undefined : d.nu * 1000;
+      g.chart.update();
+      toonWaarden(g);
+      const tekst = g.vak.querySelector(".venster").selectedOptions[0].textContent;
+      meld(g, g.reeksen.every(r => !r.data.length)
+        ? "Live: wachten op metingen …"
+        : "Live, " + tekst + ": " + (v.stap ? "samengevat per " + v.stap + " s" : "elke ontvangen meting")
+          + ", ververst om de " + LIVE_INTERVAL / 1000 + " s.");
+    }
+  } catch (e) {
+    status("Geen verbinding met de BRMS-webservice (" + e.message + ").");
+  } finally {
+    bezig = false;
+  }
+}
+
+// --- database: de opgeslagen historie ------------------------------------------------
+async function laadHistorie(g) {
+  const periode = Number(g.periode);
+  const tot = Math.floor(Date.now() / 1000) - g.verschuiving * periode;
+  const van = tot - periode;
+  const reeksen = g.reeksen.slice();
+  meld(g, "Database: laden …");
+  try {
+    const antwoorden = await Promise.all(reeksen.map(async r => {
+      const a = await fetch("/api/historie?sensor=" + encodeURIComponent(r.sensor)
+                            + "&grootheid=" + encodeURIComponent(r.grootheid) + "&van=" + van + "&tot=" + tot);
+      if (!a.ok) throw new Error("fout " + a.status);
+      return a.json();
+    }));
+    // Is er intussen iets anders gekozen, dan vervalt dit antwoord.
+    if (g.reeksen.length !== reeksen.length || g.reeksen.some((r, i) => r !== reeksen[i])
+        || Number(g.periode) !== periode) return;
     let rijen = 0;
-    for (const [naam, punten] of Object.entries(d.reeksen)) {
-      const data = [];
+    reeksen.forEach((r, i) => {
+      r.data.length = 0;
       let vorige = null;
-      for (const [ts, w] of punten) {
+      for (const [ts, w] of antwoorden[i].punten) {
         // Een interval zonder data levert geen rij op (§5.3.2). Zo'n gat blijft open:
         // een lijn eroverheen zou waarden suggereren die er niet zijn.
-        if (vorige !== null && ts - vorige > GAT) data.push({x: (vorige + 1) * 1000, y: null});
-        data.push({x: ts * 1000, y: w});
+        if (vorige !== null && ts - vorige > GAT) r.data.push({x: (vorige + 1) * 1000, y: null});
+        r.data.push({x: ts * 1000, y: w});
         vorige = ts;
       }
-      rijen += punten.length;
-      const g = grafiek(naam);
-      g.data.datasets[0].data = data;
-      g.data.datasets[0].pointRadius = punten.length <= 60 ? 2 : 0;
-      // De as toont de hele gekozen periode, ook waar geen data is.
-      g.options.scales.x.min = d.van * 1000;
-      g.options.scales.x.max = d.tot * 1000;
-      g.update();
-      toonLaatste(g, naam);
-    }
-    const bereik = datum(d.van * 1000) + " " + klok(d.van * 1000) + "  –  "
-                 + datum(d.tot * 1000) + " " + klok(d.tot * 1000);
-    status(rijen ? "Database: " + bereik + "  ·  " + rijen + " rijen (gemiddelde per 5 minuten)."
-                 : "Database: geen gegevens van deze sensor tussen " + bereik + ".");
+      rijen += antwoorden[i].punten.length;
+      g.chart.data.datasets[i].pointRadius = antwoorden[i].punten.length <= 60 ? 2 : 0;
+    });
+    // De as toont de hele gekozen periode, ook waar geen data is.
+    g.chart.options.scales.x.min = van * 1000;
+    g.chart.options.scales.x.max = tot * 1000;
+    g.chart.update();
+    toonWaarden(g);
+    const bereik = datum(van * 1000) + " " + klok(van * 1000) + "  –  " + datum(tot * 1000) + " " + klok(tot * 1000);
+    meld(g, rijen ? "Database: " + bereik + "  ·  " + rijen + " rijen (gemiddelde per 5 minuten)."
+                  : "Database: geen gegevens tussen " + bereik + ".");
+    status("");
   } catch (e) {
-    if (mijnReeks === reeks) status("Geen verbinding met de BRMS-webservice (" + e.message + ").", true);
+    status("Geen verbinding met de BRMS-webservice (" + e.message + ").");
   }
 }
 
-// --- keuze verwerken -------------------------------------------------------------
-function opnieuw() {
-  reeks += 1;
-  clearInterval(timer);
-  timer = null;
-  wisGrafieken();
-  const isLive = el("bron").value === "live";
-  el("periode-keuze").hidden = isLive;
-  el("blader").hidden = isLive;
-  el("later").disabled = el("nu").disabled = verschuiving === 0;
-  if (!el("sensor").value) { status("Er staan geen sensoren in de configuratie.", true); return; }
-  const mijnReeks = reeks;
-  if (isLive) {
-    laatsteNr = 0;   // eerst alles wat de webservice nog in het geheugen heeft
-    live(mijnReeks);
-    timer = setInterval(() => live(mijnReeks), LIVE_INTERVAL);
-  } else {
-    historie(mijnReeks);
-  }
-}
+// --- begin -----------------------------------------------------------------------------
+el("plus-live").addEventListener("click", () => { nieuweGrafiek("live"); bewaar(); });
+el("plus-database").addEventListener("click", () => { nieuweGrafiek("database"); bewaar(); });
 
-el("sensor").addEventListener("change", opnieuw);
-el("bron").addEventListener("change", () => { verschuiving = 0; opnieuw(); });
-el("periode").addEventListener("change", () => { verschuiving = 0; opnieuw(); });
-el("eerder").addEventListener("click", () => { verschuiving += 1; opnieuw(); });
-el("later").addEventListener("click", () => { verschuiving = Math.max(0, verschuiving - 1); opnieuw(); });
-el("nu").addEventListener("click", () => { verschuiving = 0; opnieuw(); });
-opnieuw();
+const vorigeKeer = bewaard();
+if (Array.isArray(vorigeKeer)) {
+  // De indeling van de vorige keer. Reeksen van sensoren die niet meer in de configuratie
+  // staan, vallen vanzelf af (voegReeksToe weigert ze).
+  for (const g of vorigeKeer) nieuweGrafiek(g.bron === "database" ? "database" : "live", g);
+} else if (SENSOREN.length) {
+  // Eerste bezoek: één live-grafiek met de eerste grootheid van de eerste sensor, zodat er
+  // meteen iets te zien is.
+  const g = nieuweGrafiek("live");
+  if (SENSOREN[0].grootheden.length) { voegReeksToe(g, SENSOREN[0].id, SENSOREN[0].grootheden[0]); ververs(g); }
+}
+el("leeg").hidden = grafieken.length > 0;
+if (!SENSOREN.length) status("Er staan geen sensoren in de configuratie.");
+setInterval(vraagLive, LIVE_INTERVAL);
 </script>
 </body>
 </html>

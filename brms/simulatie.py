@@ -1,11 +1,12 @@
 """Simulatie: een testreeks van gesimuleerde sensordata door de keten sturen
 (ARCHITECTURE.md §10.3).
 
-    brms simuleer kajuit
+    brms sim kajuit              (ook: meerdere sensoren, of 'all')
+    brms sim stop kajuit         (ook: 'all')
 
 Werking:
-1. De opdracht `brms simuleer` vraagt (zo nodig) om bevestiging en om de duur, en stuurt
-   dan alleen een startsein naar de BLE-reader:
+1. De opdracht `brms sim` waarschuwt, vraagt om akkoord en om de duur, en stuurt dan per
+   sensor alleen een startsein naar de BLE-reader:
 
        brms/opdracht/simulatie/aan   {"sensor_id": "A4:C1:38:...", "duur": 60}
 
@@ -25,14 +26,14 @@ komen onder het ID van de sensor in de database (§10.3 punt 7).
 Dit module bevat drie delen:
 - de testreeks en het omzetten daarvan naar bytes (zuivere functies);
 - de Simulator, die in de BLE-reader draait;
-- de opdracht `brms simuleer` voor de beheerder.
+- de opdracht `brms sim` voor de beheerder.
 """
 
 import asyncio
 import json
 import logging
 import os
-import queue
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -45,10 +46,9 @@ log = logging.getLogger(__name__)
 TOPIC_AAN = "brms/opdracht/simulatie/aan"
 TOPIC_UIT = "brms/opdracht/simulatie/uit"
 
-STANDAARD_DUUR = 60   # seconden; de standaard van 1 minuut (§10.3 punt 2)
+STANDAARD_DUUR = 600  # seconden; de standaard van 10 minuten (§10.3 punt 2)
 MAX_DUUR = 3600       # langer dan een uur simuleren is altijd een vergissing
 STAP = 2.0            # seconden tussen twee gesimuleerde advertenties
-LUISTERTIJD = 15      # zo lang luistert `brms simuleer` of de echte sensor metingen levert
 
 # Signaalsterkte van een gesimuleerde advertentie. Er is geen adapter die hem meet; een
 # vaste waarde maakt in de database herkenbaar dat het om simulatie ging.
@@ -248,13 +248,51 @@ class Simulator:
 
 
 # =============================================================================
-# De opdracht `brms simuleer <sensor>` (voor de beheerder)
+# De opdracht `brms sim ...` (voor de beheerder)
 # =============================================================================
+#
+#     brms sim kajuit                 één sensor
+#     brms sim kajuit vooronder       meerdere (ook met komma's: kajuit, vooronder)
+#     brms sim all                    alle sensoren die gesimuleerd kunnen worden
+#     brms sim stop kajuit            stoppen (ook: brms sim stop all)
+#
+# De opdracht geeft alleen het startsein en is daarna klaar: de shell is meteen weer vrij,
+# bijvoorbeeld voor een tweede `brms sim` voor een andere sensor. De simulatie loopt in de
+# BLE-reader en stopt vanzelf na de opgegeven duur.
+
+def kies_sensoren(cfg: Config, namen: list[str]) -> list[Sensor]:
+    """De sensoren die bij de opgegeven namen horen; ValueError met uitleg als het niet kan.
+
+    - Namen mogen los of met komma's gescheiden zijn: ["kajuit,", "vooronder"].
+    - "all" = alle sensoren uit de configuratie die gesimuleerd kunnen worden.
+    - Elke sensor hooguit één keer, in de opgegeven volgorde.
+    """
+    from brms import monitor
+
+    # Komma's zijn alleen scheidingstekens: "kajuit, vooronder" en "kajuit,vooronder".
+    namen = [n for deel in namen for n in deel.split(",") if n]
+    kan = [s for s in cfg.sensoren.values() if s.type in TYPES]
+    if not namen:
+        bekend = ", ".join(s.naam for s in kan) or "(geen)"
+        raise ValueError(f"geef één of meer sensoren, of 'all'; bekend: {bekend}")
+    if any(n.lower() == "all" for n in namen):
+        if not kan:
+            raise ValueError("er staan geen sensoren in de configuratie die gesimuleerd kunnen worden")
+        return kan
+    gekozen: list[Sensor] = []
+    for sensor in monitor.zoek_sensoren(namen, cfg):   # ValueError bij een onbekende naam
+        if sensor.type not in TYPES:
+            raise ValueError(f"{sensor.naam}: sensortype {sensor.type} kan niet gesimuleerd "
+                             f"worden (wel: {', '.join(TYPES)})")
+        if sensor not in gekozen:
+            gekozen.append(sensor)
+    return gekozen
+
 
 def vraag_duur(vraag=input) -> int:
     """Vraagt hoe lang de simulatie moet lopen; geeft de duur in seconden.
 
-    Alleen Enter = de standaard van 1 minuut. Bij ongeldige invoer wordt opnieuw gevraagd.
+    Alleen Enter = de standaard van 10 minuten. Bij ongeldige invoer wordt opnieuw gevraagd.
     """
     maximum = MAX_DUUR // 60
     while True:
@@ -271,109 +309,79 @@ def vraag_duur(vraag=input) -> int:
         print(f"Geef een getal groter dan 0 en hooguit {maximum} (minuten).")
 
 
-def opdracht(cfg: Config, namen: list[str], vraag=input) -> int:
-    """`brms simuleer <sensor>` (§10.3). Exitcode 0 = simulatie gelopen."""
-    from brms import monitor
+def _reader_draait() -> bool | None:
+    """True/False als systemd weet of de BLE-reader draait; None als dat niet te zeggen is
+    (geen systemd, bijv. op de pc)."""
+    try:
+        r = subprocess.run(["systemctl", "is-active", "--quiet", "brms-ble-reader"], timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.returncode == 0
+
+
+def _stuur(cfg: Config, topic: str, sensoren: list[Sensor], **inhoud) -> bool:
+    """Stuurt per sensor één opdracht naar de BLE-reader. False als de broker niet
+    bereikbaar is."""
     from brms.bus import Bus
 
-    if len(namen) != 1:
-        print("gebruik: brms simuleer <sensor>   (naam of ID uit de configuratie)")
-        return 1
-    try:
-        sensor = monitor.zoek_sensoren(namen, cfg)[0]
-    except ValueError as e:
-        print(e)
-        return 1
-    if sensor.type not in TYPES:
-        print(f"{sensor.naam}: sensortype {sensor.type} kan niet gesimuleerd worden "
-              f"(wel: {', '.join(TYPES)})")
-        return 1
-
-    # Alle metingen van deze sensor komen in `binnen`: eerst om te zien of de echte sensor
-    # zendt, daarna om de simulatie te volgen.
-    binnen: queue.Queue = queue.Queue()
     bus = Bus(f"simuleer-{os.getpid()}", cfg.mqtt.host, cfg.mqtt.port)
-    bus.abonneer(f"brms/meting/{sensor.id}/#", 0, lambda t, p: binnen.put(t))
     bus.start()
-    gestart = False
-
-    def stuur(topic: str, **inhoud) -> bool:
-        return bus.publiceer(topic, json.dumps({"sensor_id": sensor.id, **inhoud}), qos=1)
-
     try:
         # De bus verbindt op de achtergrond; even wachten tot dat gelukt is.
         wacht_tot = time.monotonic() + 5
         while not bus.verbonden and time.monotonic() < wacht_tot:
-            time.sleep(0.1)
+            time.sleep(0.05)
         if not bus.verbonden:
             print(f"De broker ({cfg.mqtt.host}:{cfg.mqtt.port}) is niet bereikbaar.")
-            return 1
-
-        # 1. Levert de echte sensor nu metingen? Dan eerst bevestiging vragen.
-        print(f"Luisteren of {sensor.naam} ({sensor.id}) nu metingen levert "
-              f"(hooguit {LUISTERTIJD} s) …")
-        try:
-            binnen.get(timeout=LUISTERTIJD)
-            aanwezig = True
-        except queue.Empty:
-            aanwezig = False
-        if aanwezig:
-            print(f"{sensor.naam} levert op dit moment metingen.")
-            antwoord = vraag("Weet je zeker dat je de sensor wilt by-passen met "
-                             "gesimuleerde data? [j/N] ")
-            if antwoord.strip().lower() not in ("j", "ja"):
-                print("Afgebroken; er is niets gesimuleerd.")
-                return 1
-        else:
-            print(f"Geen metingen van {sensor.naam} ontvangen; er valt niets te by-passen.")
-
-        # 2. Altijd de duur vragen.
-        duur = vraag_duur(vraag)
-
-        # 3. Startsein naar de BLE-reader.
-        while not binnen.empty():   # metingen van de echte sensor van vóór de start
-            binnen.get_nowait()
-        if not stuur(TOPIC_AAN, duur=duur):
-            print("Het startsein kon niet verstuurd worden (broker niet bereikbaar).")
-            return 1
-        gestart = True
-        print(f"Simulatie gestart voor {sensor.naam}, {duur} s. De waarden komen als gewone "
-              f"metingen in de database.")
-        print("Meekijken: brms monitor " + sensor.naam + "     Eerder stoppen: Ctrl-c")
-
-        # 4. Volgen tot de simulatie afgelopen is. De reader stopt zelf na `duur`; dit is
-        # alleen om de voortgang te tonen.
-        begin = time.monotonic()
-        einde = begin + duur + STAP + 1
-        aantal = 0
-        while time.monotonic() < einde:
-            try:
-                binnen.get(timeout=1)
-                aantal += 1
-                while True:
-                    binnen.get_nowait()
-                    aantal += 1
-            except queue.Empty:
-                pass
-            if aantal == 0 and time.monotonic() - begin > 5 * STAP:
-                print("\nGeen gesimuleerde metingen ontvangen. Draait de BLE-reader? "
-                      "(brms start)")
-                stuur(TOPIC_UIT)
-                time.sleep(0.3)
-                return 1
-            rest = max(0, round(begin + duur - time.monotonic()))
-            print(f"\r  nog {rest // 60}:{rest % 60:02d}   {aantal} metingen ontvangen ",
-                  end="", flush=True)
-        print(f"\nSimulatie afgelopen; {sensor.naam} telt weer gewoon mee.")
-        return 0
-    except (KeyboardInterrupt, EOFError):
-        # Ctrl-c, of geen toetsenbord om de vragen te beantwoorden.
-        if gestart:
-            stuur(TOPIC_UIT)
-            time.sleep(0.3)  # paho de tijd geven om de opdracht te versturen
-            print(f"\nSimulatie gestopt; {sensor.naam} telt weer gewoon mee.")
-        else:
-            print("\nAfgebroken; er is niets gesimuleerd.")
-        return 1
+            return False
+        gelukt = all([bus.publiceer(topic, json.dumps({"sensor_id": s.id, **inhoud}), qos=1)
+                      for s in sensoren])
+        time.sleep(0.3)  # paho de tijd geven om de opdrachten te versturen
+        return gelukt
     finally:
         bus.stop()
+
+
+def opdracht(cfg: Config, argumenten: list[str], vraag=input) -> int:
+    """`brms sim <sensor ...>` en `brms sim stop <sensor ...>` (§10.3). Exitcode 0 = gelukt."""
+    stoppen = bool(argumenten) and argumenten[0].lower() == "stop"
+    try:
+        sensoren = kies_sensoren(cfg, argumenten[1:] if stoppen else argumenten)
+    except ValueError as e:
+        print(e)
+        print("gebruik: brms sim <sensor ...> | all        brms sim stop <sensor ...> | all")
+        return 1
+    namen = ", ".join(s.naam for s in sensoren)
+
+    if stoppen:
+        if not _stuur(cfg, TOPIC_UIT, sensoren):
+            return 1
+        print(f"Simulatie gestopt voor: {namen}. De echte sensoren tellen weer mee.")
+        return 0
+
+    # Geen controle of de echte sensor zendt (dat kostte een wachttijd): altijd waarschuwen
+    # en om akkoord vragen (§10.3 punt 2).
+    print(f"Simuleren: {namen}")
+    print("Let op: zolang de simulatie loopt, worden de echte sensoren genegeerd (bypass). "
+          "De gesimuleerde\nwaarden komen als gewone metingen in de database.")
+    try:
+        if vraag("Doorgaan? [J/n] ").strip().lower() not in ("", "j", "ja"):
+            print("Afgebroken; er is niets gesimuleerd.")
+            return 1
+        duur = vraag_duur(vraag)
+    except (KeyboardInterrupt, EOFError):
+        # Ctrl-c, of geen toetsenbord om de vragen te beantwoorden.
+        print("\nAfgebroken; er is niets gesimuleerd.")
+        return 1
+
+    if not _stuur(cfg, TOPIC_AAN, sensoren, duur=duur):
+        return 1
+    einde = time.strftime("%H:%M:%S", time.localtime(time.time() + duur))
+    print(f"Simulatie gestart ({duur // 60}:{duur % 60:02d} min); loopt vanzelf af om {einde}.")
+    print(f"  meekijken:      brms monitor {sensoren[0].naam}")
+    print(f"  eerder stoppen: brms sim stop {'all' if len(sensoren) > 1 else sensoren[0].naam}")
+    if _reader_draait() is False:
+        # De opdracht is verstuurd, maar er is niemand die hem uitvoert.
+        print("LET OP: de BLE-reader draait niet (brms start); er wordt nu niets gesimuleerd.")
+        return 1
+    return 0

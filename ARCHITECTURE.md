@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.23 – concept** · 10 november 2026
+**Versie 0.25 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -896,12 +896,39 @@ schrijvers op dezelfde database en map.
    als MQTT-opdracht naar de opslag-service, die bestand en databaserij verwijdert.
 3. Het web leest uit SQLite en geeft opdrachten via MQTT (poll-nu, verwijderen); het
    schrijft niet zelf naar database of opnamemap.
-4. **Testpagina** (v0.22), de eerste pagina van het web: een sensor kiezen (keuzelijst) en
-   per grootheid een grafiek zien, uit één van twee bronnen:
+4. **Grafiekenpagina** (v0.22; indeling v0.25), de eerste pagina van het web. De
+   gebruiker stelt zelf samen wat hij ziet (v0.25):
+   - Met **"+ Live-grafiek"** en **"+ Database-grafiek"** voegt hij een grafiek toe; er
+     kunnen meerdere grafieken op de pagina staan. Elke grafiek heeft één bron en een
+     eigen venster of periode.
+   - Per grafiek kiest hij een **sensor**, daarna een **grootheid** van die sensor (wat
+     het sensortype levert, beperkt tot de lijst `grootheden` uit de configuratie, §5.4.2),
+     en voegt die met **"Toevoegen"** als reeks toe. Een grafiek kan reeksen van meerdere
+     sensoren en grootheden bevatten, hooguit **8** (zoveel kleuren zijn goed te
+     onderscheiden). Reeksen en grafieken zijn weer te verwijderen.
+   - Reeksen met **dezelfde eenheid** delen één verticale as. Elke **andere eenheid**
+     krijgt binnen de grafiek een eigen strook met een eigen as, onder elkaar op dezelfde
+     tijdas. Twee schalen door elkaar in één vlak zijn niet af te lezen.
+   - Boven de grafiek staat per reeks de kleur, de naam (sensor · grootheid) en de laatste
+     waarde met tijdstip. Een reeks houdt zijn kleur zolang hij in de grafiek staat.
+   - De **indeling** (grafieken en reeksen, geen meetwaarden) wordt in de browser
+     onthouden (`localStorage`); op een ander apparaat begint de pagina opnieuw.
+   - Alle live-grafieken samen doen elke 2 s **één** aanvraag aan de webservice.
+
+   De twee bronnen:
    - **Live**: elke meting zoals die over de MQTT-bus gaat. De webservice abonneert zich
-     op `brms/meting/#` en bewaart per sensor en grootheid de laatste 600 metingen in het
-     geheugen; de pagina vraagt elke 2 s wat er nieuw is. Na een herstart van de
-     webservice begint dat geheugen leeg.
+     op `brms/meting/#` en bewaart per sensor en grootheid de metingen van de laatste
+     **24 uur** in het geheugen (v0.24; hooguit 100.000 per reeks, 24 bytes per meting);
+     de pagina vraagt elke 2 s wat er nieuw is. Na een herstart van de webservice begint
+     dat geheugen leeg.
+
+     Het **venster** is te kiezen (v0.24): laatste 50 of 100 metingen, of laatste 10
+     minuten, 30 minuten, 1 uur, 3 uur, 12 uur, 24 uur. Tot en met 30 minuten toont de
+     grafiek elke meting. Vanaf 1 uur worden de metingen samengevat per tijdvak (5, 15, 60
+     en 120 s), zodat een grafiek hooguit ongeveer 720 punten heeft: alle losse metingen
+     van 24 uur zijn te veel voor de browser en voor de mobiele verbinding. Samenvatten
+     volgt de soort (§5.3.2): gemiddelde voor doorlopend, som voor toename, en voor een
+     toestand het maximum, zodat een korte 1 zichtbaar blijft.
    - **Database**: de opgeslagen rijen (per 5 minuten, §5.3.2), over 1 uur, 6 uur, 24 uur,
      7 dagen of 30 dagen, met bladeren naar eerdere perioden. Een interval zonder rij
      blijft in de grafiek open.
@@ -1271,12 +1298,15 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
   volstaat.
 
 **Specificatie.**
-1. Opdracht **`brms simuleer <sensor>`** (sensor = naam uit de configuratie of sensor-ID).
+1. Opdracht **`brms sim <sensor ...>`** (ook `brms simuleer`; sensor = naam uit de
+   configuratie of sensor-ID). Meerdere sensoren tegelijk kan (v0.25): los of met komma's
+   gescheiden, of **`all`** voor alle sensoren die gesimuleerd kunnen worden.
    Alleen voor BLE-sensoren (BTHome, Ruuvi); Shelly en GPIO volgen met hun readers.
-2. De opdracht luistert eerst hooguit 15 s op de bus of de sensor metingen levert. Zo ja,
-   dan vraagt hij: **"Weet je zeker dat je de sensor wilt by-passen met gesimuleerde
-   data?"** (standaard nee). Daarna vraagt hij **altijd** hoe lang de simulatie moet lopen:
-   standaard **1 minuut**, hooguit 60 minuten.
+2. De opdracht **waarschuwt** dat de echte sensoren worden genegeerd zolang de simulatie
+   loopt, vraagt om akkoord (Enter = ja) en vraagt hoe lang de simulatie moet lopen:
+   standaard **10 minuten**, hooguit 60 minuten. Daarna begint de simulatie meteen. Er
+   wordt niet meer eerst geluisterd of de echte sensor zendt (v0.25): dat kostte 15 s
+   wachttijd.
 3. **Startsein:** opdracht `brms/opdracht/simulatie/aan` met
    `{"sensor_id": ..., "duur": 60}` (seconden); eerder stoppen met
    `brms/opdracht/simulatie/uit` (`{"sensor_id": ...}`). De BLE-reader luistert mee.
@@ -1306,8 +1336,12 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
    `SIMULATIE`.
 7. Gesimuleerde waarden zijn voor de rest van het systeem **gewone metingen**: ze komen
    onder het ID van de sensor in de database en laten (later) alarmen afgaan.
-8. De opdracht toont de voortgang en stopt de simulatie bij Ctrl-c. Valt de ssh-sessie
-   weg, dan stopt de simulatie vanzelf na de opgegeven duur.
+8. De opdracht geeft alleen het startsein en is dan klaar (v0.25): de shell is meteen weer
+   vrij, bijvoorbeeld voor een tweede `brms sim` voor een andere sensor terwijl de eerste
+   nog loopt. Elke simulatie stopt vanzelf na haar eigen duur. Eerder stoppen:
+   **`brms sim stop <sensor ...>`** of **`brms sim stop all`**.
+9. Draait de BLE-reader niet (volgens systemd), dan meldt de opdracht dat er niets
+   gesimuleerd wordt.
 
 ---
 
@@ -1367,7 +1401,9 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.23** | 2026-11-10 | Claude Code, Fable 5.2 | `update.sh` (§10.1 punt 3): services volgen uit `deploy/systemd/`; een nieuwe service wordt vanzelf aangezet en gestart; bij "al bijgewerkt" worden niet-actieve services hersteld. |
+| **0.25** | 2026-11-10 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4): zelf grafieken toevoegen (live of database), per grafiek reeksen van meerdere sensoren en grootheden; een strook per eenheid; indeling onthouden in de browser. Simulatie (§10.3): `brms sim`, meerdere sensoren of `all`, geen wachttijd, standaard 10 minuten, opdracht keert direct terug, `brms sim stop`. |
+| 0.24 | 2026-11-10 | Claude Code, Fable 5.2 | Testpagina (§5.6 punt 4): live-venster te kiezen (laatste 50/100 metingen, 10 min t/m 24 uur); de webservice bewaart 24 uur aan metingen in het geheugen; vanaf 1 uur samengevat per tijdvak. |
+| 0.23 | 2026-11-10 | Claude Code, Fable 5.2 | `update.sh` (§10.1 punt 3): services volgen uit `deploy/systemd/`; een nieuwe service wordt vanzelf aangezet en gestart; bij "al bijgewerkt" worden niet-actieve services hersteld. |
 | 0.22 | 2026-11-10 | Claude Code, Fable 5.2 | Webinterface (§5.6): testpagina met grafieken per sensor uit de bus (live) of de database (historie); ingebouwde Flask-server als service `brms-web` op poort 8080 (`[web]` in de configuratie); Chart.js als bestand in de repo. |
 | 0.21 | 2026-11-10 | Claude Code, Fable 5.2 | Monitor (§10.2): vaste plaats per meting en per ketenstap in plaats van een doorlopende lijst; optioneel veld `deel` in traceberichten (§3.3). `brms update [--terug]` voert `deploy/update.sh` uit (§10.1 punt 3). |
 | 0.20 | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie (§10.3): `brms simuleer <sensor>` stuurt een testreeks door de keten; de BLE-reader maakt de advertenties zelf aan en negeert zolang de echte sensor (§5.2.1 punt 8); startsein via `brms/opdracht/simulatie/aan` (§3.3); gesimuleerde waarden komen in de database. |

@@ -1,11 +1,13 @@
 """Tests van de simulatie (ARCHITECTURE.md §10.3) – zonder broker en zonder Bluetooth,
 met een nep-bus en nep-klok."""
 
+import contextlib
+import io
 import json
 import unittest
 
 from brms import simulatie, trace
-from brms.config import Sensor
+from brms.config import Config, MqttConfig, OpslagConfig, Sensor
 from brms.readers import bthome, ruuvi
 from brms.readers.ble import Ontvanger
 
@@ -216,8 +218,8 @@ class TestVraagDuur(unittest.TestCase):
         reeks = iter(antwoorden)
         return simulatie.vraag_duur(lambda tekst: next(reeks))
 
-    def test_standaard_is_een_minuut(self):
-        self.assertEqual(self._vraag(""), 60)
+    def test_standaard_is_tien_minuten(self):
+        self.assertEqual(self._vraag(""), 600)
 
     def test_minuten(self):
         self.assertEqual(self._vraag("5"), 300)
@@ -225,6 +227,92 @@ class TestVraagDuur(unittest.TestCase):
 
     def test_ongeldige_invoer_opnieuw_vragen(self):
         self.assertEqual(self._vraag("lang", "0", "-1", "999", "2"), 120)
+
+
+CFG = Config(MqttConfig(), OpslagConfig(), SENSOREN)
+
+
+class TestKiesSensoren(unittest.TestCase):
+    def _ids(self, *namen):
+        return [s.id for s in simulatie.kies_sensoren(CFG, list(namen))]
+
+    def test_een_of_meer(self):
+        self.assertEqual(self._ids("kajuit"), [MAC])
+        self.assertEqual(self._ids("motorruim", "kajuit"), [RMAC, MAC])
+
+    def test_met_kommas(self):
+        self.assertEqual(self._ids("kajuit,", "motorruim"), [MAC, RMAC])
+        self.assertEqual(self._ids("kajuit,motorruim"), [MAC, RMAC])
+
+    def test_all(self):
+        self.assertEqual(self._ids("all"), [MAC, RMAC])
+        self.assertEqual(self._ids("ALL"), [MAC, RMAC])
+
+    def test_dubbel_telt_een_keer(self):
+        self.assertEqual(self._ids("kajuit", MAC.lower()), [MAC])
+
+    def test_onbekend_of_niets(self):
+        with self.assertRaises(ValueError) as ctx:
+            self._ids("salon")
+        self.assertIn("kajuit", str(ctx.exception))   # de melding noemt wat er wel is
+        with self.assertRaises(ValueError):
+            self._ids()
+
+
+class TestOpdracht(unittest.TestCase):
+    """`brms sim ...` zonder broker: _stuur is vervangen en onthoudt wat er verstuurd zou
+    worden."""
+
+    def setUp(self):
+        self.verstuurd = []
+        self._stuur, self._draait = simulatie._stuur, simulatie._reader_draait
+        simulatie._stuur = lambda cfg, topic, sensoren, **inhoud: (
+            self.verstuurd.append((topic, [s.id for s in sensoren], inhoud)) or True)
+        simulatie._reader_draait = lambda: None
+
+    def tearDown(self):
+        simulatie._stuur, simulatie._reader_draait = self._stuur, self._draait
+
+    def _sim(self, argumenten, *antwoorden):
+        reeks = iter(antwoorden)
+        with contextlib.redirect_stdout(io.StringIO()) as uit:
+            code = simulatie.opdracht(CFG, argumenten, lambda tekst: next(reeks))
+        return code, uit.getvalue()
+
+    def test_start_meteen_na_akkoord_en_duur(self):
+        code, uit = self._sim(["kajuit"], "", "")      # twee keer Enter: ja, 10 minuten
+        self.assertEqual(code, 0)
+        self.assertEqual(self.verstuurd, [(simulatie.TOPIC_AAN, [MAC], {"duur": 600})])
+        self.assertIn("genegeerd", uit)                # de waarschuwing over de bypass
+        self.assertIn("brms sim stop kajuit", uit)
+
+    def test_meerdere_sensoren_en_eigen_duur(self):
+        code, _ = self._sim(["all"], "j", "2")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.verstuurd, [(simulatie.TOPIC_AAN, [MAC, RMAC], {"duur": 120})])
+
+    def test_niet_akkoord(self):
+        code, uit = self._sim(["kajuit"], "n")
+        self.assertEqual((code, self.verstuurd), (1, []))
+        self.assertIn("Afgebroken", uit)
+
+    def test_stop(self):
+        # Stoppen vraagt niets.
+        self.assertEqual(self._sim(["stop", "kajuit"])[0], 0)
+        self.assertEqual(self._sim(["stop", "all"])[0], 0)
+        self.assertEqual(self.verstuurd, [(simulatie.TOPIC_UIT, [MAC], {}),
+                                          (simulatie.TOPIC_UIT, [MAC, RMAC], {})])
+
+    def test_onbekende_sensor(self):
+        code, uit = self._sim(["salon"])
+        self.assertEqual((code, self.verstuurd), (1, []))
+        self.assertIn("onbekende sensor", uit)
+
+    def test_waarschuwing_als_de_reader_niet_draait(self):
+        simulatie._reader_draait = lambda: False
+        code, uit = self._sim(["kajuit"], "", "")
+        self.assertEqual(code, 1)
+        self.assertIn("BLE-reader draait niet", uit)
 
 
 if __name__ == "__main__":
