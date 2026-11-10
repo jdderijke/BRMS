@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.41 – concept** · 10 november 2026
+**Versie 0.42 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1301,6 +1301,33 @@ schrijvers op dezelfde database en map.
      van de vaste vorm van §5.7 punt 10 binnen de opnamemap. Een video is in delen op te
      vragen, zodat spoelen niet het hele bestand ophaalt.
    - Er is geen aanmelding (OPEN-15): wie de pagina kan openen, kan ook verwijderen.
+
+   **Dagoverzicht** (v0.42; *ontworpen, nog niet gebouwd*). De intervalfoto's van een dag
+   vormen achter elkaar een versnelde film van die dag; zo worden ze normaal bekeken. Het
+   dagoverzicht is een tweede weergave van de opnamepagina, naast de lijst.
+   - De pagina speelt de opnames van de gekozen dag (en de gekozen camera) af **van oud
+     naar nieuw**, in de browser. Op de Pi wordt er geen videobestand van gemaakt.
+   - Een **intervalfoto** staat **0,5 s** in beeld.
+   - Een **foto bij een gebeurtenis** (elke andere aanleiding: alarm, op verzoek) staat
+     **5 s** in beeld.
+   - Een **video** wordt op zijn plaats in de tijd **volledig afgespeeld**; daarna gaat
+     het overzicht verder. Met de knop **"verder"** is de video over te slaan.
+   - **Bediening:** afspelen en pauze, en een tijdbalk van de dag waarop de gebeurtenissen
+     gemarkeerd staan; een klik op de balk springt naar dat moment. Bij het beeld staan
+     het tijdstip en de aanleiding.
+   - De pagina haalt de volgende foto's alvast op terwijl de huidige in beeld is. Is een
+     foto er nog niet, dan **wacht** het overzicht erop; er wordt niets overgeslagen.
+   - Het dagoverzicht gebruikt alle opnames van de dag; de grens van 500 van de lijst
+     geldt hier niet (een dag heeft 480 intervalfoto's plus de gebeurtenissen).
+   - **Dataverbruik:** een dagoverzicht haalt alle foto's van die dag op: bij 480 foto's
+     van bijna 300 kB ongeveer 140 MB, plus ongeveer 27 MB per video. Vanaf de boot gaat
+     dat van de databundel en vraagt het ruim 4 Mbit/s om bij te blijven.
+
+   Verworpen voor het dagoverzicht:
+   - *Op de Pi een video van de dag maken (ffmpeg).* Omrekenen belast de Pi zwaar, kost
+     opslag en moet opnieuw bij elke nieuwe of verwijderde opname.
+   - *Kleinere foto's voor het overzicht (miniaturen).* Scheelt data, maar vraagt een
+     extra afhankelijkheid of een tweede opname per foto; kan later alsnog.
 3. Het web leest uit SQLite en geeft opdrachten via MQTT (poll-nu, verwijderen); het
    schrijft niet zelf naar database of opnamemap.
 4. **Grafiekenpagina** (v0.22; indeling v0.25), de eerste pagina van het web. De
@@ -1991,7 +2018,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.41** | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (d) gebouwd (§5.6 punt 2): opnamepagina in het web (bekijken per dag, verwijderen via de opslag-service, "Foto nu" en "Video nu"). Het log vermeldt of een melding met foto is verstuurd. |
+| **0.42** | 2026-11-10 | Claude Code, Fable 5.2 | Ontwerp: dagoverzicht op de opnamepagina (§5.6 punt 2): de opnames van een dag afspelen van oud naar nieuw, intervalfoto 0,5 s, foto bij een gebeurtenis 5 s, video volledig met een knop "verder". Nog niet gebouwd. |
+| 0.41 | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (d) gebouwd (§5.6 punt 2): opnamepagina in het web (bekijken per dag, verwijderen via de opslag-service, "Foto nu" en "Video nu"). Het log vermeldt of een melding met foto is verstuurd. |
 | 0.40 | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (c) gebouwd (§5.5.3 punt 5 en 6, §5.7 punt 15): foto bij een notificatie (Telegram als afbeelding, e-mail als bijlage), acties `video` en `foto`, veld `camera` in een alarmregel. |
 | 0.39 | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (b) gebouwd (§5.7 punt 11 en 5): video op verzoek met `ffmpeg` (pakket in `deploy/pakketten.txt`), oudste video's weg als de maximale ruimte vol is. |
 | 0.38 | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (a) gebouwd (§5.7): service `brms-camera`, blokken `[[camera]]` en `[opnames]`, foto per interval en op poll-nu, tabel `opname`, opruimen van oude foto's. |
