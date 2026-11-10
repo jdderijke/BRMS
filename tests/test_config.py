@@ -78,7 +78,7 @@ class TestConfig(unittest.TestCase):
             correctie = { walstroom = 1, foo = 2, vocht = "x" }
             [[sensor]]
             id = "A4:C1:38:00:00:01"
-            type = "ruuvi"
+            type = "zigbee"
             naam = "b"
             kleur = "rood"
             [[sensor]]

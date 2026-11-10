@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.18 – concept** · 9 november 2026
+**Versie 0.20 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -161,7 +161,7 @@ staat; daarom QoS 1.
 |---|---|---|---|
 | Meting | `brms/meting/<sensor_id>/<grootheid>` | `{"ts", "sensor_id", "grootheid", "waarde", "soort"}` | 1 voor toestand, 0 voor doorlopend en toename |
 | Opname | `brms/opname/<camera_id>` | `{"ts", "camera_id", "type", "duur", "bestand", "bytes", "aanleiding"}` | 1 |
-| Opdracht | `brms/opdracht/<doel>/<actie>`, bijv. `brms/opdracht/camera/poll-nu`, `brms/opdracht/shelly/poll-nu`, `brms/opdracht/opslag/verwijder`, `brms/opdracht/trace/aan` | afhankelijk van de actie, bijv. `{"type": "video", "aanleiding": "alarm:beweging"}` | 1 |
+| Opdracht | `brms/opdracht/<doel>/<actie>`, bijv. `brms/opdracht/camera/poll-nu`, `brms/opdracht/shelly/poll-nu`, `brms/opdracht/opslag/verwijder`, `brms/opdracht/trace/aan`, `brms/opdracht/simulatie/aan` (§10.3) | afhankelijk van de actie, bijv. `{"type": "video", "aanleiding": "alarm:beweging"}` | 1 |
 | Trace (v0.16) | `brms/trace/<sensor_id>` | `{"ts", "sensor_id", "dienst", "stap", "tekst"}` – alleen zolang trace voor die sensor aanstaat (§10.2) | 0 |
 
 1. Elk bericht is **compleet**: ook wat in de topic staat, staat in de inhoud.
@@ -317,11 +317,14 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
 7. Elke reader heeft een **trace-uitgang** (v0.16, §10.2): staat trace voor een sensor aan,
    dan publiceert de reader per ontvangst wat hij in elke stap doet (ruw, gedecodeerd,
    gecorrigeerd, gepubliceerd). Standaard staat trace uit.
+8. De BLE-reader heeft een **simulatie-ingang** (v0.20, §10.3): op verzoek maakt hij zelf
+   advertenties aan en verwerkt die via dezelfde ingang als ontvangen advertenties; de
+   echte advertenties van die sensor negeert hij zolang.
 
 | Reader | Bron | Methode | Status |
 |---|---|---|---|
 | BTHome v2 | Xiaomi Monitor 3 (pvvx) | BLE-advertenties, eigen decoder (§5.2.3) | Eerste stap |
-| Ruuvi | RuuviTag (Pro) | BLE-advertenties, eigen decoder (§5.2.3) | Gepland |
+| Ruuvi | RuuviTag (Pro) | BLE-advertenties, eigen decoder (§5.2.3) | Gebouwd (v0.19); nog niet getest met een echte RuuviTag |
 | Victron | BMV-700, 3× MPPT, MultiPlus | BLE Instant Readout, decoder in de BLE-reader (§5.2.2) | Gepland |
 | Shelly | Bilge: hoogwatervlotter en pompspanning (Shelly Plus Uni) | Lokale HTTP-API (§5.2.4) | Gepland |
 | Camera | IP-camera dek | Foto per interval, video op poll-nu (§5.7) | Later |
@@ -398,10 +401,23 @@ contact en een spanningsmeting (0–15 / 0–30 V DC), en wordt rechtstreeks uit
 korter zijn dan het standaard poll-interval van 30 s en zou dan gemist worden; vaker
 pollen via dezelfde lokale HTTP-API is de eenvoudigste oplossing (P1).
 
+*Waarom wifi en niet Bluetooth (v0.19).* De overige sensoren komen via Bluetooth binnen
+omdat ze hun metingen zelf uitzenden als advertentie: de BLE-reader hoeft alleen te
+luisteren (§5.2.1). De Shelly Plus Uni doet dat niet. Hij gebruikt Bluetooth voor de eerste
+installatie en om zelf andere sensoren te ontvangen, maar zendt de toestand van zijn eigen
+ingangen niet uit. Uitlezen via Bluetooth kan alleen door per poll een verbinding op te
+bouwen, en dat elke 2 s op de ene adapter die continu moet scannen. Via wifi is de Uni
+rechtstreeks te bevragen met de gedocumenteerde lokale HTTP-API. Wifi kost hier niets
+extra: de Uni wordt uit het boordnet gevoed (geen batterij te sparen) en de router staat
+er al.
+
 **Verworpen alternatieven.**
 - *Bluetooth-waterdetector (bijv. SwitchBot Water Leak Detector).* Gemaakt voor een droge
   vloer: meldt alleen "nat", klotsend water geeft valse meldingen, en het formaat is geen
   BTHome (extra decoder).
+- *De Shelly Plus Uni via Bluetooth uitlezen.* De Uni zendt zijn toestand niet uit als
+  advertentie; een verbinding per poll botst met de continu scannende adapter (zie
+  redenering).
 - *De bestaande pompvlotter meegebruiken.* In gebruik door de pomp.
 - *Shelly stuurt zelf een bericht bij verandering (webhook of eigen MQTT).* Vraagt een extra
   ontvanger op de Pi; snel pollen volstaat.
@@ -444,7 +460,9 @@ recordtypes; daar is een bestaande bibliotheek de veiligere keuze.
 4. Waarden die een sensor als "ongeldig" uitzendt (bijv. luchtdruk bij een Ruuvi Pro
    3-in-1) worden niet gepubliceerd.
 5. De BLE-reader houdt per Ruuvi de vorige tellerstand bij en publiceert de toename
-   (§5.3.2); de ruwe tellerstand wordt niet gepubliceerd.
+   (§5.3.2); de ruwe tellerstand wordt niet gepubliceerd. De vorige stand staat alleen in
+   het geheugen: bij de eerste ontvangst na een (her)start is de toename onbekend en wordt
+   er geen `beweging` gepubliceerd (v0.19).
 
 ### 5.3 Opslag
 
@@ -565,8 +583,9 @@ van de reader, niet in de configuratie: een configfout mag een toestand niet tot
 gemiddelde maken.
 
 *Beweging (v0.5).* De Ruuvi-bewegingsteller (één byte, loopt op bij versnelling boven
-64 mG, vaste firmwaredrempel) springt na 255 terug naar 0. Een gemiddelde van de ruwe
-teller is betekenisloos (254, 255, 0, 1 → ~127). Wat telt is de *toename*: die is per
+64 mG, vaste firmwaredrempel) loopt van 0 t/m 254 en springt dan terug naar 0; de waarde
+255 betekent "ongeldig" (v0.19, volgens de specificatie van formaat 5). Een gemiddelde van
+de ruwe teller is betekenisloos (253, 254, 0, 1 → ~127). Wat telt is de *toename*: die is per
 ontvangen waarde te berekenen (rekening houdend met het terugspringen) en per interval op
 te tellen. Daarvoor is een derde soort nodig. De versnelling X/Y/Z is doorlopend; haar
 gemiddelde over 5 minuten geeft in feite de helling van de boot, de schokken zitten in de
@@ -608,7 +627,8 @@ flashdrive. Het OS zelf (logs, swap, caches) schrijft waarschijnlijk meer; dat i
    | Toestand (0/1) | bilgevlotter, bilgepomp, walstroom aanwezig | nooit gemiddeld; een rij bij **elke verandering** met het exacte tijdstip, plus elke **5 minuten** de actuele toestand op dat moment |
    | Toename | beweging (toename van de Ruuvi-bewegingsteller) | **som** over 5 minuten |
 
-   De ruwe bewegingsteller wordt niet opgeslagen; de Ruuvi-decoder levert de toename.
+   De ruwe bewegingsteller wordt niet opgeslagen; de BLE-reader levert de toename
+   (§5.2.3 punt 5).
 
 4. Een interval zonder ontvangen data levert geen rij op.
 5. Elk opslagmoment is één commit; geen extra buffering. Bij stroomuitval gaat hooguit het
@@ -1090,7 +1110,7 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
 7. **Geen automatische OS-updates.** OS, Tailscale en router-firmware worden met de hand
    bijgewerkt: eerst de test-Pi, daarna de boot-Pi.
 8. **Opdracht `brms`** (v0.18): de beheeropdrachten (`check-config`, `grootheden`,
-   `monitor`) zijn voor de gebruiker; de service-opdrachten (`ble-reader`, `opslag`) zijn
+   `monitor`, `simuleer`) zijn voor de gebruiker; de service-opdrachten (`ble-reader`, `opslag`) zijn
    voor systemd. Een service-opdracht weigert te starten als systemd die service al draait
    (een tweede exemplaar botst op de broker en, bij de opslag, op de database), behalve met
    `--toch` voor testen.
@@ -1159,6 +1179,84 @@ escape-codes is breekbaar (venstergrootte, programma's als `nano` en `less`).
    niet bij het draaiende systeem: BRMS werkt zonder monitor precies hetzelfde.
 6. `tmux` wordt door `deploy/install.sh` geïnstalleerd.
 
+### 10.3 Beheerhulpmiddel: simulatie (v0.20)
+
+**Aanleiding.** De keten moet te testen zijn met waarden die een echte sensor thuis niet
+levert (vorst, hoge luchtvochtigheid, een bijna lege sensorbatterij), en met sensoren die er
+nog niet zijn (Ruuvi). De gebruiker wil daarvoor zelf een testreeks van gesimuleerde
+sensordata door het systeem kunnen sturen.
+
+**Redenering.** Een test is het meest waard als de testdata zo vroeg mogelijk in de keten
+binnenkomt. Het vroegste punt is de interface zelf (de Bluetooth-adapter); dat vraagt een
+tweede adapter die echte advertenties uitzendt en is voor nu te hoog gegrepen. Het vroegste
+punt binnen de eigen code is waar bleak een ontvangen advertentie aflevert. Daar maakt de
+reader zelf de bytes aan, in het echte formaat van de sensor, en verwerkt ze via dezelfde
+ingang als een ontvangen advertentie. Daarmee worden decoder, grootheden-filter, correctie,
+bus, opslag en (later) de alarmen getest; alleen de radio, BlueZ en bleak blijven buiten de
+test.
+
+De testdata loopt niet over MQTT: in het echt krijgt een reader zijn data ook niet van de
+bus. Alleen het startsein gaat via de bus, zoals bij trace (§10.2).
+
+Zendt de echte sensor tegelijk, dan lopen echte en gesimuleerde waarden door elkaar en zegt
+het gemiddelde in de database niets meer. Daarom negeert de reader de echte sensor zolang
+de simulatie loopt, en vraagt de opdracht daarvoor eerst om bevestiging. Een vaste looptijd
+voorkomt dat een sensor per ongeluk genegeerd blijft.
+
+De gesimuleerde waarden komen als gewone metingen in de database: dat hoort bij een
+volledige test, en de opslag hoeft dan geen onderscheid te kennen.
+
+**Verworpen alternatieven.**
+- *Injecteren op adapterniveau (een tweede Bluetooth-adapter zendt echte advertenties uit).*
+  De meest volledige test, maar vraagt extra hardware en is niet beproefd: past een
+  Ruuvi-bericht van 31 bytes, welk MAC-adres ziet de scanner. Kan later alsnog.
+- *Testbytes via MQTT naar de reader sturen.* Een weg waarlangs data in het echt niet
+  binnenkomt.
+- *Kant-en-klare metingen direct op de bus zetten.* Slaat decoder en correctie over, en de
+  echte sensor zendt er dan tussendoor.
+- *Gesimuleerde waarden buiten de database houden.* Dan is de opslag niet getest.
+- *Testreeks uit een bestand van de gebruiker.* Niet nodig; een vaste reeks per grootheid
+  volstaat.
+
+**Specificatie.**
+1. Opdracht **`brms simuleer <sensor>`** (sensor = naam uit de configuratie of sensor-ID).
+   Alleen voor BLE-sensoren (BTHome, Ruuvi); Shelly en GPIO volgen met hun readers.
+2. De opdracht luistert eerst hooguit 15 s op de bus of de sensor metingen levert. Zo ja,
+   dan vraagt hij: **"Weet je zeker dat je de sensor wilt by-passen met gesimuleerde
+   data?"** (standaard nee). Daarna vraagt hij **altijd** hoe lang de simulatie moet lopen:
+   standaard **1 minuut**, hooguit 60 minuten.
+3. **Startsein:** opdracht `brms/opdracht/simulatie/aan` met
+   `{"sensor_id": ..., "duur": 60}` (seconden); eerder stoppen met
+   `brms/opdracht/simulatie/uit` (`{"sensor_id": ...}`). De BLE-reader luistert mee.
+4. Zolang de simulatie loopt:
+   - maakt de reader elke **2 s** een advertentie aan in het formaat van de sensor en
+     verwerkt die via dezelfde ingang als een advertentie van bleak, met het MAC-adres van
+     de sensor;
+   - **negeert** de reader de echte advertenties van die sensor (bypass). Andere sensoren
+     lopen gewoon door.
+
+   Na `duur` stopt de simulatie vanzelf en telt de echte sensor weer mee.
+5. **Testreeks:** elke grootheid loopt lineair van begin- naar eindwaarde over de duur.
+
+   | Grootheid | Verloop | Sensortype |
+   |---|---|---|
+   | `temperatuur` | 25 → −5 °C | BTHome, Ruuvi |
+   | `vocht` | 40 → 95 % | BTHome, Ruuvi |
+   | `batterijspanning` | 3,0 → 2,2 V | BTHome, Ruuvi |
+   | `luchtdruk` | 1020 → 980 hPa | Ruuvi |
+   | `versnelling_x` / `_y` / `_z` | 0 → 200 / 0 → −100 / 1000 → 975 mG | Ruuvi |
+   | `beweging` | 1 per advertentie (de teller loopt telkens één op) | Ruuvi |
+   | `rssi` | vast −60 dBm (er is geen adapter die hem meet) | BTHome, Ruuvi |
+
+   De lijst `grootheden` en de `correctie` van de sensor (§5.4.2) gelden ook voor
+   gesimuleerde waarden.
+6. In de trace (§10.2) begint de stap `ruw` van een gesimuleerde advertentie met
+   `SIMULATIE`.
+7. Gesimuleerde waarden zijn voor de rest van het systeem **gewone metingen**: ze komen
+   onder het ID van de sensor in de database en laten (later) alarmen afgaan.
+8. De opdracht toont de voortgang en stopt de simulatie bij Ctrl-c. Valt de ssh-sessie
+   weg, dan stopt de simulatie vanzelf na de opgegeven duur.
+
 ---
 
 ## 11. Open vragen
@@ -1216,4 +1314,6 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.15 | 2026-11-09 | Claude Code, Opus 5.5 | Indeling op de Pi herzien (§10.1, §5.4.1): alles in `~/BRMS` zoals op de pc (`config/brms.toml`, `data/`, `.venv`); services als `jandirk` in plaats van systeemgebruiker `brms`; `sqlite3` en `mosquitto-clients` als beheerhulpmiddelen. |
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
-| **0.18** | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
+| 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
+| **0.20** | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie (§10.3): `brms simuleer <sensor>` stuurt een testreeks door de keten; de BLE-reader maakt de advertenties zelf aan en negeert zolang de echte sensor (§5.2.1 punt 8); startsein via `brms/opdracht/simulatie/aan` (§3.3); gesimuleerde waarden komen in de database. |
+| 0.19 | 2026-11-10 | Claude Code, Fable 5.2 | Bilge (§5.2.4): vastgelegd waarom de Shelly Plus Uni via wifi wordt uitgelezen en niet via Bluetooth. Ruuvi-decoder gebouwd (§5.2.1): bewegingsteller loopt van 0 t/m 254, 255 = ongeldig (§5.3.2); geen `beweging` bij de eerste ontvangst na een herstart (§5.2.3 punt 5). |

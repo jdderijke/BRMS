@@ -87,7 +87,7 @@ class TestTraceInDeKeten(unittest.TestCase):
         _aan(tracer, [MAC])
         sensoren = {MAC: Sensor(MAC, "bthome", "kajuit", {"temperatuur": Correctie(offset=-0.3)},
                                  ("temperatuur", "vocht", "rssi"))}
-        verwerk(MAC, {FCD2_UUID: PVVX}, -70, 1, sensoren, tracer)
+        verwerk(MAC, {FCD2_UUID: PVVX}, {}, -70, 1, sensoren, tracer)
         stappen = {d["stap"]: d["tekst"] for _, d in bus.berichten}
         self.assertEqual(list(stappen), ["ruw", "gedecodeerd", "gecorrigeerd"])
         self.assertIn("40 00 a4 01 64 02 ca 09", stappen["ruw"])
@@ -99,7 +99,7 @@ class TestTraceInDeKeten(unittest.TestCase):
         bus = NepBus()
         tracer = trace.Tracer(bus, "ble-reader", klok=NepKlok())
         sensoren = {MAC: Sensor(MAC, "bthome", "kajuit", {})}
-        self.assertEqual(len(verwerk(MAC, {FCD2_UUID: PVVX}, -70, 1, sensoren, tracer)), 4)
+        self.assertEqual(len(verwerk(MAC, {FCD2_UUID: PVVX}, {}, -70, 1, sensoren, tracer)), 4)
         self.assertEqual(bus.berichten, [])
 
     def test_opslag_beschrijving(self):

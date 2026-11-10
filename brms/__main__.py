@@ -12,6 +12,7 @@ Opdrachten:
   monitor [sensor..]  monitor in tmux: busverkeer, of met sensor(en) de trace (§10.2)
   monitor stop        het monitorvak sluiten; de shell blijft
   grootheden [type]   alle grootheden, of wat een sensortype levert (§5.4.2)
+  simuleer <sensor>   een testreeks van gesimuleerde sensordata door de keten sturen (§10.3)
   start | stop | herstart   alle BRMS-services via systemd (§10.1 punt 9)
   monitor-vak [..]    (intern) het vak onderin dat 'monitor' in tmux start
 
@@ -162,12 +163,28 @@ def _monitor(args) -> int:
     return monitor.draai_vak(cfg, sensoren)
 
 
+def _simuleer(args) -> int:
+    """Simulatie (§10.3): configuratie lezen en de opdracht in brms.simulatie uitvoeren."""
+    from brms import simulatie
+
+    try:
+        cfg = config.lees(args.config)
+    except config.ConfigFout as e:
+        print("configuratiefout:", file=sys.stderr)
+        for f in e.fouten:
+            print(f"  - {f}", file=sys.stderr)
+        return 1
+    return simulatie.opdracht(cfg, args.sensoren)
+
+
 # Uitleg onder 'brms --help': eerst de opdrachten voor de beheerder, dan de services.
 OPDRACHTEN = """opdrachten voor de beheerder:
   check-config           configuratie controleren (vóór een herstart)
   grootheden [type]      alle grootheden, of wat een sensortype levert
   monitor [sensor ...]   monitor onderin het scherm; met sensor: trace van de keten
   monitor stop           het monitorvak sluiten
+  simuleer <sensor>      testreeks van gesimuleerde data door de keten sturen; vraagt om
+                         bevestiging als de echte sensor zendt, en om de duur
   start                  alle BRMS-services starten (na controle van de configuratie)
   stop                   alle BRMS-services stoppen (tot de volgende herstart van de Pi)
   herstart               configuratie controleren en alle services herstarten,
@@ -205,9 +222,10 @@ def main(argv=None) -> int:
                    help="een service toch met de hand starten naast die van systemd (voor testen)")
     p.add_argument("opdracht",
                    choices=("check-config", "grootheden", "start", "stop", "herstart",
-                            "monitor", "ble-reader", "opslag", "monitor-vak"))
+                            "monitor", "simuleer", "ble-reader", "opslag", "monitor-vak"))
     p.add_argument("sensoren", nargs="*",
                    help="bij monitor: naam of ID van sensor(en) voor trace; "
+                        "bij simuleer: naam of ID van de sensor; "
                         "bij grootheden: sensortype")
     args = p.parse_args(argv)
 
@@ -222,6 +240,9 @@ def main(argv=None) -> int:
 
     if args.opdracht in ("monitor", "monitor-vak"):
         return _monitor(args)
+
+    if args.opdracht == "simuleer":
+        return _simuleer(args)
 
     # Beveiliging: een service niet met de hand starten als systemd hem al draait.
     if _al_actief(args.opdracht) and not args.toch:

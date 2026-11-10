@@ -24,7 +24,7 @@ import tomllib
 from dataclasses import dataclass, field
 
 from brms import grootheden
-from brms.readers import bthome
+from brms.readers import bthome, ruuvi
 
 # Projectmap: de map waarin de map 'brms' (dit pakket) staat. Op de Pi ~/BRMS.
 # Alle standaardpaden zijn hiervan afgeleid, zodat dezelfde code op de pc en op de Pi werkt.
@@ -32,9 +32,9 @@ PROJECTMAP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 STANDAARD_PAD = os.path.join(PROJECTMAP, "config", "brms.toml")
 
-# Sensortypen die via Bluetooth binnenkomen (hun id is een MAC-adres). Ruuvi en Victron
-# komen erbij zodra hun decoders er zijn.
-BLE_TYPES = ("bthome",)
+# Sensortypen die via Bluetooth binnenkomen (hun id is een MAC-adres). Victron komt erbij
+# zodra die decoder er is.
+BLE_TYPES = ("bthome", "ruuvi")
 SENSOR_TYPES = BLE_TYPES
 
 # Welke grootheden elk sensortype kan leveren (§5.4.2 punt 3). De decoder legt dat vast;
@@ -42,6 +42,7 @@ SENSOR_TYPES = BLE_TYPES
 # 'grootheden' en 'correctie', en door `brms grootheden <type>`.
 LEVERT: dict[str, tuple[str, ...]] = {
     "bthome": bthome.LEVERT + ("rssi",),
+    "ruuvi": ruuvi.LEVERT + ("rssi",),
 }
 
 # MAC-adres in de vorm AA:BB:CC:DD:EE:FF (na omzetten naar hoofdletters).

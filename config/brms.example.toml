@@ -15,6 +15,7 @@ database = "data/brms.db"
 # Eén blok per sensor. Alleen sensoren die hier staan worden verwerkt (ARCHITECTURE.md §5.4.2).
 #   id          vaste ID; bij BLE-sensoren het MAC-adres (AA:BB:CC:DD:EE:FF)
 #   type        bthome (Xiaomi Monitor 3 met pvvx-firmware, BTHome v2)
+#               ruuvi  (RuuviTag en RuuviTag Pro, dataformaat 5)
 #   naam        naam/locatie voor weergave; hernoemen laat de historie intact
 #   grootheden  optioneel: alleen deze grootheden meenemen; zonder lijst gaat alles mee.
 #               Welke namen een type levert:  brms grootheden bthome
