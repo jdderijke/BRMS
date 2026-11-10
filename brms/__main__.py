@@ -9,6 +9,7 @@ Opdrachten:
   check-config        configuratie controleren, bijv. vóór een herstart (§5.4.1)
   ble-reader          de BLE-reader-service starten (§5.2.1)
   opslag              de opslag-service starten (§5.3)
+  web                 de webservice starten (§5.6)
   monitor [sensor..]  monitor in tmux: busverkeer, of met sensor(en) de trace (§10.2)
   monitor stop        het monitorvak sluiten; de shell blijft
   grootheden [type]   alle grootheden, of wat een sensortype levert (§5.4.2)
@@ -217,6 +218,7 @@ OPDRACHTEN = """opdrachten voor de beheerder:
 services (worden door systemd gestart – niet met de hand; gebruik brms herstart):
   ble-reader             BLE-reader      (systemd-unit brms-ble-reader)
   opslag                 opslag-service  (systemd-unit brms-opslag)
+  web                    webinterface    (systemd-unit brms-web)
 """
 
 
@@ -248,7 +250,7 @@ def main(argv=None) -> int:
                    help="bij update: terug naar de versie van vóór de laatste update")
     p.add_argument("opdracht",
                    choices=("check-config", "grootheden", "start", "stop", "herstart", "update",
-                            "monitor", "simuleer", "ble-reader", "opslag", "monitor-vak"))
+                            "monitor", "simuleer", "ble-reader", "opslag", "web", "monitor-vak"))
     p.add_argument("sensoren", nargs="*",
                    help="bij monitor: naam of ID van sensor(en) voor trace; "
                         "bij simuleer: naam of ID van de sensor; "
@@ -301,7 +303,12 @@ def main(argv=None) -> int:
 
     log.info("BRMS %s, %s", VERSION, args.opdracht)
     try:
-        asyncio.run(_service(args.opdracht, cfg))
+        if args.opdracht == "web":
+            # Het web is Flask (geen asyncio, §3.2) en heeft zijn eigen hoofdlus.
+            from brms import web
+            web.draai(cfg)
+        else:
+            asyncio.run(_service(args.opdracht, cfg))
     except KeyboardInterrupt:
         pass
     return 0

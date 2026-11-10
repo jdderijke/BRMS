@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.21 – concept** · 10 november 2026
+**Versie 0.22 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -896,6 +896,32 @@ schrijvers op dezelfde database en map.
    als MQTT-opdracht naar de opslag-service, die bestand en databaserij verwijdert.
 3. Het web leest uit SQLite en geeft opdrachten via MQTT (poll-nu, verwijderen); het
    schrijft niet zelf naar database of opnamemap.
+4. **Testpagina** (v0.22), de eerste pagina van het web: een sensor kiezen (keuzelijst) en
+   per grootheid een grafiek zien, uit één van twee bronnen:
+   - **Live**: elke meting zoals die over de MQTT-bus gaat. De webservice abonneert zich
+     op `brms/meting/#` en bewaart per sensor en grootheid de laatste 600 metingen in het
+     geheugen; de pagina vraagt elke 2 s wat er nieuw is. Na een herstart van de
+     webservice begint dat geheugen leeg.
+   - **Database**: de opgeslagen rijen (per 5 minuten, §5.3.2), over 1 uur, 6 uur, 24 uur,
+     7 dagen of 30 dagen, met bladeren naar eerdere perioden. Een interval zonder rij
+     blijft in de grafiek open.
+
+   Toestanden (0/1) worden als trap getekend. Tijden staan in de lokale tijd van de browser.
+5. **Server** (v0.22): de ingebouwde server van Flask (Werkzeug), één thread per aanvraag,
+   als service `brms-web` (`brms web`). Adres en poort staan in de configuratie
+   (`[web]`, standaard alle interfaces, poort **8080**): `http://brms:8080` via Tailscale.
+   De server schrijft geen regel per aanvraag in het log (P7).
+6. **Chart.js staat als bestand in de repo** (`brms/web/static/`), niet via een CDN: de
+   pagina werkt ook zonder internet (P3).
+7. De database wordt per aanvraag geopend met een **alleen-lezen** verbinding.
+
+*Verworpen bij de testpagina (v0.22).*
+- *Live via een open verbinding (Server-Sent Events of websockets).* Houdt per kijker een
+  verbinding en een thread vast; elke 2 s vragen is eenvoudiger en voor een grafiek genoeg.
+- *De browser rechtstreeks op de broker (MQTT over websockets).* Vraagt een extra ingang op
+  Mosquitto en een MQTT-bibliotheek in de pagina.
+- *Een aparte webserver (gunicorn, waitress).* Extra afhankelijkheid (P3); voor één of
+  enkele kijkers achter Tailscale volstaat de ingebouwde server.
 
 **[OPEN-15]** Is authenticatie nodig naast Tailscale?
 
@@ -1335,6 +1361,7 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.21** | 2026-11-10 | Claude Code, Fable 5.2 | Monitor (§10.2): vaste plaats per meting en per ketenstap in plaats van een doorlopende lijst; optioneel veld `deel` in traceberichten (§3.3). `brms update [--terug]` voert `deploy/update.sh` uit (§10.1 punt 3). |
+| **0.22** | 2026-11-10 | Claude Code, Fable 5.2 | Webinterface (§5.6): testpagina met grafieken per sensor uit de bus (live) of de database (historie); ingebouwde Flask-server als service `brms-web` op poort 8080 (`[web]` in de configuratie); Chart.js als bestand in de repo. |
+| 0.21 | 2026-11-10 | Claude Code, Fable 5.2 | Monitor (§10.2): vaste plaats per meting en per ketenstap in plaats van een doorlopende lijst; optioneel veld `deel` in traceberichten (§3.3). `brms update [--terug]` voert `deploy/update.sh` uit (§10.1 punt 3). |
 | 0.20 | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie (§10.3): `brms simuleer <sensor>` stuurt een testreeks door de keten; de BLE-reader maakt de advertenties zelf aan en negeert zolang de echte sensor (§5.2.1 punt 8); startsein via `brms/opdracht/simulatie/aan` (§3.3); gesimuleerde waarden komen in de database. |
 | 0.19 | 2026-11-10 | Claude Code, Fable 5.2 | Bilge (§5.2.4): vastgelegd waarom de Shelly Plus Uni via wifi wordt uitgelezen en niet via Bluetooth. Ruuvi-decoder gebouwd (§5.2.1): bewegingsteller loopt van 0 t/m 254, 255 = ongeldig (§5.3.2); geen `beweging` bij de eerste ontvangst na een herstart (§5.2.3 punt 5). |

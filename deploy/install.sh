@@ -176,13 +176,14 @@ sudo systemctl daemon-reload
 # Eerst de configuratie controleren; bij een fout stopt het script hier (set -e).
 brms check-config
 # 'enable' = starten bij het opstarten van de Pi; '--now' = ook nu direct (her)starten.
-sudo systemctl enable -q --now brms-opslag brms-ble-reader
-sudo systemctl restart brms-opslag brms-ble-reader
+sudo systemctl enable -q --now brms-opslag brms-ble-reader brms-web
+sudo systemctl restart brms-opslag brms-ble-reader brms-web
 
 echo
 echo "Klaar."
 echo "  Status:    systemctl status 'brms-*'"
 echo "  Logs:      journalctl -u 'brms-*' -f"
 echo "  Live:      mosquitto_sub -v -t 'brms/meting/#'"
+echo "  Web:       http://$(hostname):8080  (poort uit [web] in config/brms.toml)"
 echo "  Monitor:   brms monitor            (met sensornaam: trace van de hele keten)"
 echo "  Database:  sqlite3 -readonly $BRMS/data/brms.db"

@@ -15,6 +15,7 @@ Opbouw van het bestand (zie config/brms.example.toml):
     [mqtt]      host, port              – de lokale broker
     [opslag]    database                – pad van de SQLite-database; een relatief pad
                                           geldt vanaf de projectmap (bijv. data/brms.db)
+    [web]       host, port              – waar de webinterface luistert (§5.6)
     [[sensor]]  id, type, naam, grootheden, correctie – één blok per sensor (§5.4.2)
 """
 
@@ -69,6 +70,15 @@ class OpslagConfig:
 
 
 @dataclass(frozen=True)
+class WebConfig:
+    # 0.0.0.0 = alle netwerkinterfaces: het lokale netwerk van de boot én Tailscale. De
+    # router laat van buitenaf niets door (CGNAT, geen poorten open), dus bereikbaar is de
+    # pagina alleen via Tailscale of aan boord (§5.6 punt 1).
+    host: str = "0.0.0.0"
+    port: int = 8080
+
+
+@dataclass(frozen=True)
 class Correctie:
     """Lineaire correctie: gecorrigeerd = gemeten × factor + offset (§5.4.2 punt 2)."""
     factor: float = 1.0
@@ -108,6 +118,7 @@ class Config:
     mqtt: MqttConfig
     opslag: OpslagConfig
     sensoren: dict[str, Sensor]  # id -> Sensor
+    web: WebConfig = WebConfig()
 
 
 def lees(pad: str = STANDAARD_PAD) -> Config:
@@ -172,7 +183,7 @@ def controleer(data: dict) -> Config:
     zichtbaar is wat er gerepareerd moet worden.
     """
     fouten: list[str] = []
-    _onbekend(fouten, "bovenste niveau", data, ("mqtt", "opslag", "sensor"))
+    _onbekend(fouten, "bovenste niveau", data, ("mqtt", "opslag", "web", "sensor"))
 
     # --- [mqtt] ---
     m = _tabel(fouten, data, "mqtt")
@@ -196,6 +207,16 @@ def controleer(data: dict) -> Config:
         # waarin de service toevallig gestart wordt.
         # normpath maakt van "data/brms.db" op Windows "data\brms.db".
         database = os.path.normpath(os.path.join(PROJECTMAP, database))
+
+    # --- [web] ---
+    w = _tabel(fouten, data, "web")
+    _onbekend(fouten, "[web]", w, ("host", "port"))
+    web_host = w.get("host", WebConfig.host)
+    web_port = w.get("port", WebConfig.port)
+    if not isinstance(web_host, str) or not web_host:
+        fouten.append("[web] host moet een niet-lege tekst zijn")
+    if isinstance(web_port, bool) or not isinstance(web_port, int) or not 1 <= web_port <= 65535:
+        fouten.append("[web] port moet een geheel getal tussen 1 en 65535 zijn")
 
     # --- [[sensor]] (lijst van tabellen) ---
     sensoren: dict[str, Sensor] = {}
@@ -276,4 +297,5 @@ def controleer(data: dict) -> Config:
 
     if fouten:
         raise ConfigFout(fouten)
-    return Config(MqttConfig(host, port), OpslagConfig(database), sensoren)
+    return Config(MqttConfig(host, port), OpslagConfig(database), sensoren,
+                  WebConfig(web_host, web_port))

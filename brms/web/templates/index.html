@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="nl">
+<!--
+  Testpagina van BRMS (ARCHITECTURE.md §5.6 punt 4).
+
+  Eén sensor kiezen, daarna per grootheid een grafiek. Twee bronnen:
+    live      /api/live      de metingen zoals ze nu over de MQTT-bus gaan
+    database  /api/historie  wat de opslag heeft weggeschreven (per 5 minuten)
+
+  Chart.js komt uit static/ (geen CDN): de pagina werkt ook zonder internet.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BRMS</title>
+<style>
+  :root { --bg: #f6f7f9; --vlak: #ffffff; --tekst: #1c2330; --zacht: #5b6676;
+          --rand: #d5dae2; --lijn: #1f6fb2; --fout: #b3261e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14181f; --vlak: #1c222c; --tekst: #e6e9ee; --zacht: #9aa5b5;
+            --rand: #323b49; --lijn: #6cb4f0; --fout: #f2867f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--tekst);
+         font: 15px/1.4 system-ui, sans-serif; }
+  main { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 12px; }
+  h1 small { font-weight: normal; color: var(--zacht); font-size: 13px; }
+  .keuze { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: end;
+           background: var(--vlak); border: 1px solid var(--rand); border-radius: 8px;
+           padding: 12px; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--zacht); }
+  select, button { font: inherit; color: var(--tekst); background: var(--bg);
+                   border: 1px solid var(--rand); border-radius: 6px; padding: 6px 10px; }
+  button { cursor: pointer; }
+  button:disabled { opacity: .4; cursor: default; }
+  .blader { display: flex; gap: 6px; }
+  #status { margin: 12px 2px; color: var(--zacht); min-height: 1.4em; }
+  #status.fout { color: var(--fout); }
+  .grafiek { background: var(--vlak); border: 1px solid var(--rand); border-radius: 8px;
+             padding: 10px 12px; margin-bottom: 12px; }
+  .grafiek h2 { font-size: 15px; margin: 0 0 6px; display: flex; justify-content: space-between; }
+  .grafiek h2 span { font-weight: normal; color: var(--zacht); }
+  .grafiek div { position: relative; height: 200px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>BRMS <small>testpagina · versie {{ versie }}</small></h1>
+
+  <div class="keuze">
+    <label>Sensor
+      <select id="sensor">
+        {% for s in sensoren %}
+        <option value="{{ s.id }}">{{ s.naam }} ({{ s.type }})</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Bron
+      <select id="bron">
+        <option value="live">Live (MQTT-bus)</option>
+        <option value="database">Database (historie)</option>
+      </select>
+    </label>
+    <label id="periode-keuze" hidden>Periode
+      <select id="periode">
+        <option value="3600">1 uur</option>
+        <option value="21600">6 uur</option>
+        <option value="86400" selected>24 uur</option>
+        <option value="604800">7 dagen</option>
+        <option value="2592000">30 dagen</option>
+      </select>
+    </label>
+    <div class="blader" id="blader" hidden>
+      <button id="eerder" title="Eén periode eerder">◀ eerder</button>
+      <button id="later" title="Eén periode later">later ▶</button>
+      <button id="nu" title="Terug naar nu">nu</button>
+    </div>
+  </div>
+
+  <p id="status"></p>
+  <div id="grafieken"></div>
+</main>
+
+<script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
+<script>
+// Naam -> {eenheid, soort}; de volgorde is die van de tabel van grootheden (§5.3.3).
+const GROOTHEDEN = {{ grootheden | tojson }};
+const LIVE_INTERVAL = 2000;   // ms tussen twee vragen aan /api/live
+const LIVE_PUNTEN = 600;      // zoveel punten blijven in een live-grafiek staan
+const GAT = 900;              // s; een groter gat in de historie wordt niet doorverbonden
+
+const el = id => document.getElementById(id);
+const kleur = naam => getComputedStyle(document.documentElement).getPropertyValue(naam).trim();
+
+let grafieken = {};    // grootheid -> Chart
+let timer = null;      // de herhaling van de live-vraag
+let laatsteNr = 0;     // hoogste volgnummer dat al in de live-grafieken staat
+let verschuiving = 0;  // database: hoeveel perioden terug vanaf nu
+let reeks = 0;         // telt op bij elke nieuwe keuze; antwoorden van een oude keuze vervallen
+
+// --- tijd ---------------------------------------------------------------------
+// Tijdstempels zijn Unix-seconden UTC; de browser toont ze in de lokale tijd.
+const twee = n => String(n).padStart(2, "0");
+function klok(ms, metSeconden) {
+  const d = new Date(ms);
+  return twee(d.getHours()) + ":" + twee(d.getMinutes()) + (metSeconden ? ":" + twee(d.getSeconds()) : "");
+}
+function datum(ms) {
+  const d = new Date(ms);
+  return d.getDate() + "-" + (d.getMonth() + 1);
+}
+const getal = w => Number(w).toLocaleString("nl-NL", {maximumFractionDigits: 3});
+
+// --- grafieken ----------------------------------------------------------------
+function wisGrafieken() {
+  Object.values(grafieken).forEach(g => g.destroy());
+  grafieken = {};
+  el("grafieken").replaceChildren();
+}
+
+// Maakt (één keer) de grafiek voor een grootheid. De grafieken staan in de volgorde van
+// de tabel van grootheden, ongeacht welke het eerst binnenkomt.
+function grafiek(naam) {
+  if (grafieken[naam]) return grafieken[naam];
+  const info = GROOTHEDEN[naam] || {eenheid: "", soort: "doorlopend"};
+  const vak = document.createElement("section");
+  vak.className = "grafiek";
+  vak.dataset.naam = naam;
+  vak.innerHTML = "<h2></h2><div><canvas></canvas></div>";
+  vak.querySelector("h2").textContent = naam;
+  vak.querySelector("h2").appendChild(document.createElement("span"));
+  const volgorde = Object.keys(GROOTHEDEN);
+  const na = [...el("grafieken").children].find(
+    v => volgorde.indexOf(v.dataset.naam) > volgorde.indexOf(naam));
+  el("grafieken").insertBefore(vak, na || null);
+
+  const lijn = kleur("--lijn"), zacht = kleur("--zacht"), rand = kleur("--rand");
+  grafieken[naam] = new Chart(vak.querySelector("canvas"), {
+    type: "line",
+    data: {datasets: [{
+      data: [], borderColor: lijn, backgroundColor: lijn, borderWidth: 1.5,
+      pointRadius: 0, pointHitRadius: 8,
+      // Een toestand (0/1) springt; die als schuine lijn tekenen zou misleiden.
+      stepped: info.soort === "toestand" ? "before" : false,
+    }]},
+    options: {
+      animation: false, parsing: false, maintainAspectRatio: false,
+      interaction: {mode: "nearest", axis: "x", intersect: false},
+      scales: {
+        x: {type: "linear", grid: {color: rand},
+            ticks: {color: zacht, maxTicksLimit: 8, maxRotation: 0,
+                    // Meer dan twee dagen op de as: datum. Minder dan tien minuten
+                    // (live): tijd met seconden. Anders uren en minuten.
+                    callback: function (v) {
+                      const breedte = this.max - this.min;
+                      return breedte > 2 * 86400e3 ? datum(v) : klok(v, breedte < 600e3);
+                    }}},
+        y: {grid: {color: rand}, ticks: {color: zacht, callback: v => getal(v)},
+            title: {display: true, text: info.eenheid, color: zacht}},
+      },
+      plugins: {
+        legend: {display: false},
+        tooltip: {callbacks: {
+          title: items => datum(items[0].parsed.x) + "  " + klok(items[0].parsed.x, true),
+          label: item => getal(item.parsed.y) + " " + info.eenheid,
+        }},
+      },
+    },
+  });
+  grafieken[naam].vak = vak;
+  return grafieken[naam];
+}
+
+// Zet de laatste waarde rechts in de titel van de grafiek.
+function toonLaatste(g, naam) {
+  const punten = g.data.datasets[0].data.filter(p => p.y !== null);
+  const laatste = punten[punten.length - 1];
+  const info = GROOTHEDEN[naam] || {eenheid: ""};
+  g.vak.querySelector("span").textContent =
+    laatste ? getal(laatste.y) + " " + info.eenheid + "  ·  " + klok(laatste.x, true) : "";
+}
+
+function status(tekst, fout) {
+  el("status").textContent = tekst;
+  el("status").classList.toggle("fout", !!fout);
+}
+
+async function haal(adres) {
+  const antwoord = await fetch(adres);
+  if (!antwoord.ok) throw new Error("fout " + antwoord.status);
+  return antwoord.json();
+}
+
+// --- live: de metingen van de bus ----------------------------------------------
+async function live(mijnReeks) {
+  try {
+    const d = await haal("/api/live?sensor=" + encodeURIComponent(el("sensor").value) + "&na=" + laatsteNr);
+    if (mijnReeks !== reeks) return;   // er is intussen iets anders gekozen
+    laatsteNr = d.nr;
+    for (const [naam, punten] of Object.entries(d.reeksen)) {
+      const g = grafiek(naam), data = g.data.datasets[0].data;
+      for (const [ts, w] of punten) data.push({x: ts * 1000, y: w});
+      if (data.length > LIVE_PUNTEN) data.splice(0, data.length - LIVE_PUNTEN);
+      g.update();
+      toonLaatste(g, naam);
+    }
+    if (d.broker === false) status("De MQTT-broker is niet bereikbaar; er komen geen metingen binnen.", true);
+    else if (!Object.keys(grafieken).length) status("Live: wachten op metingen van deze sensor …");
+    else status("Live: elke ontvangen meting, ververst om de " + LIVE_INTERVAL / 1000 + " s.");
+  } catch (e) {
+    if (mijnReeks === reeks) status("Geen verbinding met de BRMS-webservice (" + e.message + ").", true);
+  }
+}
+
+// --- database: de opgeslagen historie ------------------------------------------
+async function historie(mijnReeks) {
+  const periode = Number(el("periode").value);
+  const tot = Math.floor(Date.now() / 1000) - verschuiving * periode;
+  const van = tot - periode;
+  status("Database: laden …");
+  try {
+    const d = await haal("/api/historie?sensor=" + encodeURIComponent(el("sensor").value)
+                         + "&van=" + van + "&tot=" + tot);
+    if (mijnReeks !== reeks) return;
+    wisGrafieken();
+    let rijen = 0;
+    for (const [naam, punten] of Object.entries(d.reeksen)) {
+      const data = [];
+      let vorige = null;
+      for (const [ts, w] of punten) {
+        // Een interval zonder data levert geen rij op (§5.3.2). Zo'n gat blijft open:
+        // een lijn eroverheen zou waarden suggereren die er niet zijn.
+        if (vorige !== null && ts - vorige > GAT) data.push({x: (vorige + 1) * 1000, y: null});
+        data.push({x: ts * 1000, y: w});
+        vorige = ts;
+      }
+      rijen += punten.length;
+      const g = grafiek(naam);
+      g.data.datasets[0].data = data;
+      g.data.datasets[0].pointRadius = punten.length <= 60 ? 2 : 0;
+      // De as toont de hele gekozen periode, ook waar geen data is.
+      g.options.scales.x.min = d.van * 1000;
+      g.options.scales.x.max = d.tot * 1000;
+      g.update();
+      toonLaatste(g, naam);
+    }
+    const bereik = datum(d.van * 1000) + " " + klok(d.van * 1000) + "  –  "
+                 + datum(d.tot * 1000) + " " + klok(d.tot * 1000);
+    status(rijen ? "Database: " + bereik + "  ·  " + rijen + " rijen (gemiddelde per 5 minuten)."
+                 : "Database: geen gegevens van deze sensor tussen " + bereik + ".");
+  } catch (e) {
+    if (mijnReeks === reeks) status("Geen verbinding met de BRMS-webservice (" + e.message + ").", true);
+  }
+}
+
+// --- keuze verwerken -------------------------------------------------------------
+function opnieuw() {
+  reeks += 1;
+  clearInterval(timer);
+  timer = null;
+  wisGrafieken();
+  const isLive = el("bron").value === "live";
+  el("periode-keuze").hidden = isLive;
+  el("blader").hidden = isLive;
+  el("later").disabled = el("nu").disabled = verschuiving === 0;
+  if (!el("sensor").value) { status("Er staan geen sensoren in de configuratie.", true); return; }
+  const mijnReeks = reeks;
+  if (isLive) {
+    laatsteNr = 0;   // eerst alles wat de webservice nog in het geheugen heeft
+    live(mijnReeks);
+    timer = setInterval(() => live(mijnReeks), LIVE_INTERVAL);
+  } else {
+    historie(mijnReeks);
+  }
+}
+
+el("sensor").addEventListener("change", opnieuw);
+el("bron").addEventListener("change", () => { verschuiving = 0; opnieuw(); });
+el("periode").addEventListener("change", () => { verschuiving = 0; opnieuw(); });
+el("eerder").addEventListener("click", () => { verschuiving += 1; opnieuw(); });
+el("later").addEventListener("click", () => { verschuiving = Math.max(0, verschuiving - 1); opnieuw(); });
+el("nu").addEventListener("click", () => { verschuiving = 0; opnieuw(); });
+opnieuw();
+</script>
+</body>
+</html>

@@ -36,7 +36,7 @@ set -euo pipefail
 BRMS="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 # Hier staat de commit van vóór de laatste geslaagde update (voor --terug).
 VORIGE="$BRMS/data/vorige-commit"
-SERVICES="brms-opslag brms-ble-reader"
+SERVICES="brms-opslag brms-ble-reader brms-web"
 GEBRUIKER="$(id -un)"
 
 if [ "$EUID" -eq 0 ]; then
@@ -100,6 +100,8 @@ for unit in deploy/systemd/brms-*.service; do
         | sudo tee "/etc/systemd/system/$(basename "$unit")" >/dev/null
 done
 sudo systemctl daemon-reload
+# 'enable': een service die met deze update nieuw is, start voortaan ook bij het opstarten.
+sudo systemctl enable -q $SERVICES
 sudo systemctl restart $SERVICES
 echo "Bijgewerkt en services herstart. Terug kan met: brms update --terug"
 exit 0

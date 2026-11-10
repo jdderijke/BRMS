@@ -12,6 +12,12 @@ port = 1883
 # Relatief pad = vanaf de projectmap; op de Pi dus ~/BRMS/data/brms.db.
 database = "data/brms.db"
 
+[web]
+# Webinterface (ARCHITECTURE.md §5.6): http://brms:8080 via Tailscale of aan boord.
+# 0.0.0.0 = luisteren op alle netwerkinterfaces van de Pi.
+host = "0.0.0.0"
+port = 8080
+
 # Eén blok per sensor. Alleen sensoren die hier staan worden verwerkt (ARCHITECTURE.md §5.4.2).
 #   id          vaste ID; bij BLE-sensoren het MAC-adres (AA:BB:CC:DD:EE:FF)
 #   type        bthome (Xiaomi Monitor 3 met pvvx-firmware, BTHome v2)
