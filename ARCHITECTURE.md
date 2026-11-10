@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.36 – concept** · 10 november 2026
+**Versie 0.37 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1358,7 +1358,9 @@ schrijvers op dezelfde database en map.
 **[OPEN-15]** Is authenticatie nodig naast Tailscale? Met de schakelaar (v0.31) kan iemand
 met toegang tot het web een alarmregel uitzetten.
 
-### 5.7 Camera (later)
+### 5.7 Camera
+
+*Ontworpen; nog niet gebouwd.*
 
 **Redenering.** De camera bekijkt het dek. Een regelmatige foto toont de toestand van de
 boot; een video legt een gebeurtenis vast (iemand stapt aan boord, storm). Een IP-camera
@@ -1375,6 +1377,13 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
   de accucapaciteit maakt besparen onnodig. Het relais vervalt.
 - *Lopende video verlengen bij een nieuwe poll-nu.* Onnodig complex; de rustperiode
   (§5.5.1) en de vaste duur volstaan.
+- *Ook de foto via RTSP met `ffmpeg`* (v0.37). Werkt bij elk merk, maar start voor elke
+  foto een zwaar programma en wacht op het eerste volledige beeld van de stroom. Een
+  snapshot-adres is één HTTP-aanvraag.
+- *ONVIF gebruiken om de adressen op te vragen* (v0.37). Een extra protocol en een extra
+  afhankelijkheid voor twee adressen die de gebruiker één keer in de configuratie zet.
+- *Video omrekenen naar een kleiner formaat* (v0.37). Belast de Pi zwaar; de camera levert
+  al H.264 en de maximale ruimte (punt 5) begrenst het gebruik.
 
 **Specificatie.**
 1. IP-camera (wifi 2,4 GHz, RTSP/ONVIF, 12V), **altijd aan**.
@@ -1395,8 +1404,82 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
    niet via MQTT.
 5. Voor video's geldt een **maximale ruimte** (instelbaar). Dreigt die vol te raken, dan
    verwijdert de opslag-service de **oudste video's** tot er weer ruimte is.
-6. **[OPEN-24]** Opnamemethode (snapshot-URL / RTSP; voor video in de praktijk `ffmpeg`
-   via apt) – afhankelijk van het cameratype.
+6. **Opnamemethode** (besluit OPEN-24, v0.37): de **foto** komt van het snapshot-adres
+   van de camera (één HTTP-aanvraag), de **video** van de RTSP-stroom met `ffmpeg`. Beide
+   adressen staan per camera in de configuratie, zodat een ander merk camera geen nieuwe
+   code vraagt.
+7. **Configuratie** (§5.4): één blok `[[camera]]` per camera en één blok `[opnames]`.
+
+   | Veld van `[[camera]]` | Betekenis |
+   |---|---|
+   | `id` | vaste naam; staat in de database en in de bestandsnaam |
+   | `naam` | naam voor weergave |
+   | `foto_url` | het snapshot-adres (`http://` of `https://`) |
+   | `video_url` | het adres van de RTSP-stroom (`rtsp://`); zonder dit veld maakt de camera geen video's |
+   | `gebruiker`, `wachtwoord` | het account op de camera |
+   | `foto_interval` | standaard `"3m"` |
+   | `video_duur` | standaard `"120s"` |
+
+   | Veld van `[opnames]` | Betekenis |
+   |---|---|
+   | `map` | de opnamemap; standaard `data/opnames` |
+   | `foto_bewaren` | standaard `"14d"` |
+   | `video_ruimte` | maximale ruimte voor video's in GB; standaard 20 |
+
+   In de adressen staan `{gebruiker}` en `{wachtwoord}` op de plaats waar het account
+   moet komen; de camera-reader vult ze in. Het wachtwoord staat zo op één plek.
+8. Het **wachtwoord** van de camera komt nooit in het log, een foutmelding of de trace
+   (zoals de Victron-sleutel en de Telegram-token): een adres wordt alleen zonder account
+   getoond. Bij `ffmpeg` staat het adres met wachtwoord in de opdrachtregel en is het
+   zolang de opname loopt zichtbaar voor wie op de Pi is ingelogd; dat is alleen de
+   gebruiker zelf.
+9. De camera-reader is een eigen service, **`brms-camera`** (§3.1). Hij heeft `ffmpeg`
+   nodig (via apt; `deploy/install.sh` installeert het). `check-config` meldt het als er
+   een `video_url` is ingesteld en `ffmpeg` ontbreekt.
+10. **Foto.** De reader haalt het snapshot-adres op (timeout 10 s) en controleert dat het
+    antwoord een JPEG is. Het bestand wordt eerst onder een tijdelijke naam geschreven en
+    dan hernoemd, zodat er nooit een half bestand staat. Plaats:
+    `<map>/<camera_id>/JJJJ/MM/DD/UUMMSS.jpg` (UTC).
+11. **Video.** De reader start `ffmpeg` met de RTSP-stroom over TCP, de vaste duur en
+    **zonder omrekenen** (het beeld wordt gekopieerd naar een MP4-bestand); het geluid
+    wordt niet opgenomen. Dezelfde plaats en naamgeving als de foto, met `.mp4`. Is
+    `ffmpeg` 30 s na de duur nog niet klaar, dan wordt het gestopt. Een mislukte opname
+    laat geen bestand achter. Tijdens een video gaan de intervalfoto's gewoon door.
+12. **Poll-nu** (§5.2.1 punt 6): opdracht `brms/opdracht/camera/poll-nu` met
+    `{"camera_id": ..., "type": "foto"|"video", "aanleiding": ...}`. Zonder `camera_id`:
+    alle camera's.
+13. Na een geslaagde opname publiceert de reader de metadata op `brms/opname/<camera_id>`
+    (§3.3). Een **mislukte** opname (camera onbereikbaar, geen JPEG, `ffmpeg` geeft een
+    fout) geeft één waarschuwing in het log en geen bericht; de reader probeert het niet
+    opnieuw, de volgende intervalfoto komt vanzelf. Zolang de klok niet gesynchroniseerd
+    is, maakt de reader geen opnames (§4.2).
+14. De **opslag-service** legt de metadata vast in de tabel `opname` en ruimt op: foto's
+    ouder dan de bewaartermijn eenmaal per uur, en de oudste video's zodra de maximale
+    ruimte vol raakt (punt 5). Een bestand zonder rij in de tabel (het bericht ging
+    verloren, §3.3) wordt na de bewaartermijn ook verwijderd.
+15. **Foto bij een alarm** (§5.5.3 punt 5 en 6). De alarmlaag geeft een poll-nu met de
+    regel als aanleiding (`alarm:<alarm_id>`), wacht hooguit 15 s op het bericht op
+    `brms/opname/<camera_id>` met die aanleiding en leest het bestand uit de opnamemap
+    (alleen-lezen). Telegram krijgt de foto als afbeelding met de meldingstekst als
+    onderschrift, de e-mail als bijlage. Welke camera, staat in de regel (`camera =
+    "<id>"`); zonder dat veld de eerste camera uit de configuratie.
+16. De camera wordt **niet gesimuleerd** (§10.3): de reader is te testen met een echte
+    camera. De testcamera thuis is een Foscam HD-camera (192.168.178.202, webpoort 89),
+    met naar verwachting deze adressen (nog niet beproefd):
+
+    ```toml
+    [[camera]]
+    id = "dek"
+    naam = "Dek"
+    gebruiker = "brms"
+    wachtwoord = "..."
+    foto_url = "http://192.168.178.202:89/cgi-bin/CGIProxy.fcgi?cmd=snapPicture2&usr={gebruiker}&pwd={wachtwoord}"
+    video_url = "rtsp://{gebruiker}:{wachtwoord}@192.168.178.202:89/videoMain"
+    ```
+17. **Bouwvolgorde:** (a) camera-reader met foto per interval en poll-nu, tabel `opname`
+    en het opruimen van foto's; (b) video en de maximale ruimte; (c) foto en video bij
+    een alarm (alarmlaag en meldingskanalen); (d) bekijken en verwijderen in het web
+    (§5.6).
 
 ---
 
@@ -1820,7 +1903,7 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 | 21 | Maatregelen op OS-niveau tegen flashslijtage | §7 |
 | 22 | ~~MQTT-clientbibliotheek~~ – **besloten in v0.8**: `paho-mqtt==2.1.0` direct, met eigen busmodule | §3.2 |
 | 23 | ~~MQTT-topic-indeling en berichtformaat~~ – **besloten in v0.8**: `brms/meting`, `brms/opname`, `brms/opdracht`, complete JSON-berichten, geen retain | §3.3 |
-| 24 | Opnamemethode camera (snapshot/RTSP, ffmpeg) | §5.7 |
+| 24 | ~~Opnamemethode camera~~ – **besloten in v0.37**: foto via het snapshot-adres, video via RTSP met `ffmpeg` zonder omrekenen; beide adressen per camera in de configuratie | §5.7 |
 | 25 | ~~Tabel van grootheden~~ – **besloten in v0.9** | §5.3.3 |
 
 Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/eSIM.
@@ -1849,7 +1932,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.36** | 2026-11-10 | Claude Code, Fable 5.2 | Web: de pagina laadt zichzelf opnieuw na een herstart van de webservice, zodat nieuwe sensoren en alarmregels meteen gelden (§5.6). |
+| **0.37** | 2026-11-10 | Claude Code, Fable 5.2 | OPEN-24 besloten en de camera uitgewerkt (§5.7 punt 6–17): foto via het snapshot-adres, video via RTSP met `ffmpeg`; blokken `[[camera]]` en `[opnames]`; service `brms-camera`; foto bij een alarm; bouwvolgorde. Testcamera thuis: Foscam. Nog niet gebouwd. |
+| 0.36 | 2026-11-10 | Claude Code, Fable 5.2 | Web: de pagina laadt zichzelf opnieuw na een herstart van de webservice, zodat nieuwe sensoren en alarmregels meteen gelden (§5.6). |
 | 0.35 | 2026-11-10 | Claude Code, Fable 5.2 | Simulatie: de testreeks loopt binnen de duur twee keer heen en weer, zodat ook het herstellen van een alarm te testen is (§10.3 punt 5). |
 | 0.34 | 2026-11-10 | Claude Code, Fable 5.2 | Fout hersteld: na een herstart van de Pi bleef een alarm in de database (en de grafiek) open staan. De alarmlaag meldt nu elke minuut welke alarmen actief zijn; de opslag sluit de rest af (§3.3, §5.5.3 punt 8). |
 | 0.33 | 2026-11-10 | Claude Code, Fable 5.2 | Alarmlaag stap (a) gebouwd (§5.5.3, §5.5.4): service `brms-alarm`, alarmregels `[[alarm]]` en kanalen `[melding.telegram]`/`[melding.email]` in `brms.toml`, tabel `alarm`, grenzen en alarmperioden in de grafieken. Meldingen worden hooguit een dag opnieuw geprobeerd. |
