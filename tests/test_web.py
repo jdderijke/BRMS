@@ -1,6 +1,7 @@
 """Tests van de webinterface (ARCHITECTURE.md §5.6) – zonder broker, met een tijdelijke
 database en de testclient van Flask."""
 
+import json
 import os
 import pathlib
 import sqlite3
@@ -319,6 +320,158 @@ class TestWebConfig(unittest.TestCase):
         fouten = "\n".join(ctx.exception.fouten)
         for verwacht in ["[web] host", "[web] port", "onbekende sleutel 'poort'"]:
             self.assertIn(verwacht, fouten)
+
+
+class NepBus:
+    verbonden = True
+
+    def __init__(self):
+        self.berichten = []
+
+    def publiceer(self, topic, payload, qos=0):
+        if not self.verbonden:
+            return False
+        self.berichten.append((topic, json.loads(payload), qos))
+        return True
+
+
+class TestOpnames(unittest.TestCase):
+    """De opnamepagina en haar aanvragen (§5.6 punt 2)."""
+
+    JPEG = b"\xff\xd8\xff\xe0foto"
+
+    def setUp(self):
+        self._map = tempfile.TemporaryDirectory()
+        self.pad = os.path.join(self._map.name, "brms.db")
+        self.map = os.path.join(self._map.name, "opnames")
+        db = Database(self.pad)
+        # (ts, camera, type, duur, bestand, bytes, aanleiding)
+        for rij in [(1000, "dek", "foto", None, "dek/1970/01/01/001640.jpg", 9, "interval"),
+                    (1180, "dek", "foto", None, "dek/1970/01/01/001940.jpg", 9, "alarm:vorst"),
+                    (1200, "dek", "video", 120, "dek/1970/01/01/002000.mp4", 4000, "alarm:vorst"),
+                    (1300, "mast", "foto", None, "mast/1970/01/01/002140.jpg", 9, "handmatig"),
+                    (90000, "dek", "foto", None, "dek/1970/01/02/010000.jpg", 9, "interval")]:
+            db.opname(*rij)
+        db.sluit()
+        for bestand, inhoud in [("dek/1970/01/01/001640.jpg", self.JPEG),
+                                ("dek/1970/01/01/002000.mp4", b"0123456789")]:
+            pad = os.path.join(self.map, *bestand.split("/"))
+            os.makedirs(os.path.dirname(pad), exist_ok=True)
+            with open(pad, "wb") as f:
+                f.write(inhoud)
+        with open(os.path.join(self._map.name, "geheim.txt"), "w") as f:
+            f.write("buiten de opnamemap")
+        cameras = {"dek": config.Camera("dek", "Dek", "http://c/snap", "rtsp://c/video"),
+                   "mast": config.Camera("mast", "Mast", "http://c2/snap")}
+        self.cfg = config.Config(config.MqttConfig(), config.OpslagConfig(self.pad), {},
+                                 cameras=cameras, opnames=config.OpnamenConfig(self.map))
+        self.bus = NepBus()
+        self.client = web.maak_app(self.cfg, web.LiveBuffer(), self.bus).test_client()
+
+    def tearDown(self):
+        self._map.cleanup()
+
+    def _lijst(self, vraag="van=0&tot=86400"):
+        r = self.client.get("/api/opnames?" + vraag)
+        self.assertEqual(r.status_code, 200)
+        return r.get_json()
+
+    def test_pagina(self):
+        tekst = self.client.get("/opnames").get_data(as_text=True)
+        for verwacht in ['"naam": "Dek"', '"video": true', '"naam": "Mast"', '"video": false',
+                         'href="/"']:
+            self.assertIn(verwacht, tekst)
+        # De adressen van de camera's (met het account) horen niet in de pagina.
+        self.assertNotIn("rtsp://", tekst)
+        self.assertIn('href="/opnames"', self.client.get("/").get_data(as_text=True))
+
+    def test_lijst_van_een_dag_nieuwste_eerst_met_totalen(self):
+        d = self._lijst()
+        self.assertEqual([o["ts"] for o in d["opnames"]], [1300, 1200, 1180, 1000])
+        self.assertEqual(d["opnames"][1], {
+            "ts": 1200, "camera_id": "dek", "type": "video", "duur": 120,
+            "bestand": "dek/1970/01/01/002000.mp4", "bytes": 4000, "aanleiding": "alarm:vorst"})
+        # De totalen gaan over alle dagen.
+        self.assertEqual(d["totalen"], {"foto": [4, 36], "video": [1, 4000]})
+        self.assertFalse(d["vol"])
+
+    def test_filters(self):
+        self.assertEqual([o["ts"] for o in self._lijst("van=0&tot=86400&camera=mast")["opnames"]], [1300])
+        self.assertEqual([o["ts"] for o in self._lijst("van=0&tot=86400&type=video")["opnames"]], [1200])
+        self.assertEqual([o["ts"] for o in self._lijst("van=0&tot=86400&interval=0")["opnames"]],
+                         [1300, 1200, 1180])
+        self.assertEqual([o["ts"] for o in self._lijst("van=86400&tot=172800")["opnames"]], [90000])
+
+    def test_ongeldige_vragen(self):
+        for vraag, code in [("van=5&tot=5", 400), ("van=0&tot=9&camera=onbekend", 404),
+                            ("van=0&tot=9&type=film", 400)]:
+            self.assertEqual(self.client.get("/api/opnames?" + vraag).status_code, code)
+
+    def test_zonder_database(self):
+        cfg = config.Config(config.MqttConfig(), config.OpslagConfig(self.pad + ".weg"), {})
+        r = web.maak_app(cfg, web.LiveBuffer()).test_client().get("/api/opnames?van=0&tot=9")
+        self.assertEqual(r.get_json(), {"opnames": [], "totalen": {"foto": [0, 0], "video": [0, 0]},
+                                        "vol": False})
+
+    def test_bestand_van_een_opname(self):
+        r = self.client.get("/opname/dek/1970/01/01/001640.jpg")
+        self.assertEqual((r.status_code, r.mimetype, r.data), (200, "image/jpeg", self.JPEG))
+        r.close()
+        # Een deel van een video opvragen (spoelen).
+        r = self.client.get("/opname/dek/1970/01/01/002000.mp4", headers={"Range": "bytes=2-5"})
+        self.assertEqual((r.status_code, r.mimetype, r.data), (206, "video/mp4", b"2345"))
+        r.close()
+
+    def test_alleen_bestanden_uit_de_opnamemap(self):
+        for pad in ["/opname/dek/1970/01/01/999999.jpg",       # bestaat niet
+                    "/opname/../geheim.txt", "/opname/dek/../../geheim.txt",
+                    "/opname/geheim.txt", "/opname/dek/1970/01/01/001640.jpg.tmp"]:
+            self.assertEqual(self.client.get(pad).status_code, 404, pad)
+
+    def test_verwijderen_wordt_een_opdracht_op_de_bus(self):
+        r = self.client.post("/api/opnames/verwijder", json={"opnames": [["dek", 1000], ["mast", 1300]]})
+        self.assertEqual((r.status_code, r.get_json()), (200, {"gevraagd": 2}))
+        self.assertEqual(self.bus.berichten, [("brms/opdracht/opslag/verwijder",
+                                               {"opnames": [["dek", 1000], ["mast", 1300]]}, 1)])
+        # Het web verwijdert niet zelf: het bestand staat er nog.
+        self.assertTrue(os.path.exists(os.path.join(self.map, "dek", "1970", "01", "01", "001640.jpg")))
+
+    def test_opdracht_past_bij_de_opslag(self):
+        from brms import storage
+        self.client.post("/api/opnames/verwijder", json={"opnames": [["dek", 1000]]})
+        db = Database(self.pad)
+        try:
+            opdracht = json.dumps(self.bus.berichten[0][1]).encode()
+            self.assertEqual(storage.verwerk_verwijder(db, self.map, opdracht), 1)
+        finally:
+            db.sluit()
+        self.assertEqual([o["ts"] for o in self._lijst()["opnames"]], [1300, 1200, 1180])
+
+    def test_ongeldige_verwijderopdracht(self):
+        for inhoud in [{}, {"opnames": []}, {"opnames": [["dek"]]}, {"opnames": [["dek", "1000"]]},
+                       {"opnames": [["dek", 1]] * (web.MAX_OPNAMES + 1)}]:
+            self.assertEqual(self.client.post("/api/opnames/verwijder", json=inhoud).status_code, 400)
+        self.assertEqual(self.bus.berichten, [])
+
+    def test_foto_en_video_nu(self):
+        r = self.client.post("/api/opnames/nu", json={"camera_id": "dek", "type": "video"})
+        self.assertEqual((r.status_code, r.get_json()), (200, {"gevraagd": "video"}))
+        self.client.post("/api/opnames/nu", json={"camera_id": "mast", "type": "foto"})
+        self.assertEqual(self.bus.berichten, [
+            ("brms/opdracht/camera/poll-nu", {"camera_id": "dek", "type": "video", "aanleiding": "handmatig"}, 1),
+            ("brms/opdracht/camera/poll-nu", {"camera_id": "mast", "type": "foto", "aanleiding": "handmatig"}, 1)])
+        # De mast heeft geen videostroom; een onbekende camera of soort kan niet.
+        for inhoud in [{"camera_id": "mast", "type": "video"}, {"camera_id": "boeg", "type": "foto"},
+                       {"camera_id": "dek", "type": "film"}, {}]:
+            self.assertEqual(self.client.post("/api/opnames/nu", json=inhoud).status_code, 400)
+
+    def test_broker_niet_bereikbaar(self):
+        self.bus.verbonden = False
+        for adres, inhoud in [("/api/opnames/verwijder", {"opnames": [["dek", 1000]]}),
+                              ("/api/opnames/nu", {"camera_id": "dek", "type": "foto"})]:
+            r = self.client.post(adres, json=inhoud)
+            self.assertEqual(r.status_code, 503)
+            self.assertIn("broker", r.get_json()["fout"])
 
 
 if __name__ == "__main__":

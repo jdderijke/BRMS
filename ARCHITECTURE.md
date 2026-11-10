@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.40 – concept** · 10 november 2026
+**Versie 0.41 – concept** · 10 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1276,6 +1276,31 @@ schrijvers op dezelfde database en map.
 1. Flask + Chart.js: actuele waarden en grafieken. Alleen bereikbaar via Tailscale/LAN.
 2. Foto's en video's bekijken, en **verwijderen** (één of een selectie). Verwijderen gaat
    als MQTT-opdracht naar de opslag-service, die bestand en databaserij verwijdert.
+
+   **Opnamepagina** (gebouwd in v0.41), bereikbaar via "Opnames" op de grafiekenpagina:
+   - De pagina toont de opnames van **één dag**, de nieuwste bovenaan, als lijst (tijd,
+     soort, camera, aanleiding, grootte), met daarboven één grote weergave van de gekozen
+     opname: een foto, of een video met afspeelknoppen. Bladeren met "ouder" en "nieuwer"
+     of de pijltjestoetsen. De dag loopt van middernacht tot middernacht in de tijd van
+     de browser.
+   - **Geen miniaturen:** een dag heeft honderden intervalfoto's van enkele honderden kB;
+     dat is te veel voor de mobiele verbinding, en miniaturen maken vraagt een extra
+     afhankelijkheid (P3). Een foto wordt pas opgehaald als hij gekozen wordt.
+   - **Keuze:** de dag, de camera, de soort (foto's, video's of beide) en of de
+     intervalfoto's meetellen (uit: alleen wat op verzoek of bij een alarm is gemaakt).
+     De lijst toont hooguit 500 opnames; zijn er meer, dan meldt de pagina dat.
+   - **Verwijderen:** opnames aanvinken en "Verwijder selectie", met een tweede klik ter
+     bevestiging. De opdracht is `brms/opdracht/opslag/verwijder` met
+     `{"opnames": [[camera_id, ts], ...]}` (hooguit 500 per keer); de pagina haalt de
+     lijst kort daarna opnieuw op.
+   - **"Foto nu"** en **"Video nu"** geven de camera-reader een poll-nu met aanleiding
+     `handmatig` (§5.7 punt 12).
+   - Onderaan staan de totalen: aantal en omvang van de foto's en video's, de
+     bewaartermijn en de maximale ruimte.
+   - De bestanden zelf levert de webservice uit op `/opname/<pad>`, alleen voor een pad
+     van de vaste vorm van §5.7 punt 10 binnen de opnamemap. Een video is in delen op te
+     vragen, zodat spoelen niet het hele bestand ophaalt.
+   - Er is geen aanmelding (OPEN-15): wie de pagina kan openen, kan ook verwijderen.
 3. Het web leest uit SQLite en geeft opdrachten via MQTT (poll-nu, verwijderen); het
    schrijft niet zelf naar database of opnamemap.
 4. **Grafiekenpagina** (v0.22; indeling v0.25), de eerste pagina van het web. De
@@ -1363,11 +1388,12 @@ met toegang tot het web een alarmregel uitzetten.
 
 ### 5.7 Camera
 
-*Stap (a), (b) en (c) van punt 17 zijn gebouwd: de camera-reader met een foto per
-interval en op verzoek (poll-nu), de tabel `opname` en het opruimen van oude foto's
-(v0.38), video op verzoek met de maximale ruimte (v0.39), en foto en video bij een alarm
-(v0.40, punt 15). Nog niet gebouwd: bekijken en verwijderen in het web. Foto's en video's
-zijn getest met de testcamera (Foscam); de foto bij een alarm nog niet.*
+*Alle stappen van punt 17 zijn gebouwd: de camera-reader met een foto per interval en op
+verzoek (poll-nu), de tabel `opname` en het opruimen van oude foto's (v0.38), video op
+verzoek met de maximale ruimte (v0.39), foto en video bij een alarm (v0.40, punt 15), en
+bekijken en verwijderen in het web (v0.41, §5.6 punt 2). Foto's, video's en de foto bij
+een alarm zijn getest met de testcamera (Foscam) en Telegram; de opnamepagina alleen op
+de pc.*
 
 **Redenering.** De camera bekijkt het dek. Een regelmatige foto toont de toestand van de
 boot; een video legt een gebeurtenis vast (iemand stapt aan boord, storm). Een IP-camera
@@ -1965,7 +1991,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.40** | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (c) gebouwd (§5.5.3 punt 5 en 6, §5.7 punt 15): foto bij een notificatie (Telegram als afbeelding, e-mail als bijlage), acties `video` en `foto`, veld `camera` in een alarmregel. |
+| **0.41** | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (d) gebouwd (§5.6 punt 2): opnamepagina in het web (bekijken per dag, verwijderen via de opslag-service, "Foto nu" en "Video nu"). Het log vermeldt of een melding met foto is verstuurd. |
+| 0.40 | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (c) gebouwd (§5.5.3 punt 5 en 6, §5.7 punt 15): foto bij een notificatie (Telegram als afbeelding, e-mail als bijlage), acties `video` en `foto`, veld `camera` in een alarmregel. |
 | 0.39 | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (b) gebouwd (§5.7 punt 11 en 5): video op verzoek met `ffmpeg` (pakket in `deploy/pakketten.txt`), oudste video's weg als de maximale ruimte vol is. |
 | 0.38 | 2026-11-10 | Claude Code, Fable 5.2 | Camera stap (a) gebouwd (§5.7): service `brms-camera`, blokken `[[camera]]` en `[opnames]`, foto per interval en op poll-nu, tabel `opname`, opruimen van oude foto's. |
 | 0.37 | 2026-11-10 | Claude Code, Fable 5.2 | OPEN-24 besloten en de camera uitgewerkt (§5.7 punt 6–17): foto via het snapshot-adres, video via RTSP met `ffmpeg`; blokken `[[camera]]` en `[opnames]`; service `brms-camera`; foto bij een alarm; bouwvolgorde. Testcamera thuis: Foscam. Nog niet gebouwd. |

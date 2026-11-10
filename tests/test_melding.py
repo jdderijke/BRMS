@@ -172,6 +172,16 @@ class TestVerzender(unittest.TestCase):
         self.assertEqual(self.verstuurd, [("Telegram", "een"), ("e-mail", "een")])
         self.assertEqual(self.v.wachtend, 0)
 
+    def test_log_vermeldt_of_de_foto_meeging(self):
+        self.v.voeg_toe(Melding("zonder"))
+        self.v.voeg_toe(Melding("met", foto=b"jpeg"))
+        with self.assertLogs("brms.melding", "INFO") as log:
+            self._ronde()
+        self.assertEqual([r.split("brms.melding:")[1] for r in log.output], [
+            "melding verstuurd via Telegram: zonder", "melding verstuurd via e-mail: zonder",
+            "melding verstuurd via Telegram (met foto): met",
+            "melding verstuurd via e-mail (met foto): met"])
+
     def test_mislukt_kanaal_wordt_opnieuw_geprobeerd(self):
         self.stuk = {"Telegram"}
         self.v.voeg_toe(Melding("een"))

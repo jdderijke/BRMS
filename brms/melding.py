@@ -220,7 +220,11 @@ class Verzender:
                                     e, post.melding.titel)
                 else:
                     post.open.remove(naam)
-                    log.info("melding verstuurd via %s: %s", naam, post.melding.titel)
+                    # Erbij of de foto is meegegaan (§5.7 punt 15): dat is anders niet
+                    # uit het log op te maken.
+                    log.info("melding verstuurd via %s%s: %s", naam,
+                             " (met foto)" if post.melding.foto is not None else "",
+                             post.melding.titel)
             if not post.open:
                 self._wachtrij.remove(post)
             elif self._klok() - post.sinds > MAX_LEEFTIJD:

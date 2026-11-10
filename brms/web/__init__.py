@@ -21,6 +21,11 @@ Adressen:
     /api/live         (POST) metingen van de bus voor een lijst reeksen, zie api_live
     /api/historie     ?sensor=<id>&grootheid=<naam>&van=<ts>&tot=<ts>  rijen uit de database
     /api/alarmen      ?sensor=<id>&grootheid=<naam>&van=<ts>&tot=<ts>  alarmperioden (§5.5.3)
+    /opnames          de pagina met foto's en video's van de camera's (§5.6 punt 2)
+    /api/opnames      ?van=<ts>&tot=<ts>[&camera=<id>][&type=foto|video][&interval=0]
+    /opname/<pad>     het bestand van één opname (JPEG of MP4)
+    /api/opnames/verwijder   (POST) opnames verwijderen; gaat als opdracht naar de opslag
+    /api/opnames/nu          (POST) nu een foto of video laten maken (poll-nu)
 
 Er is geen aanmelding: de pagina is alleen via Tailscale of het lokale netwerk bereikbaar
 (OPEN-15).
@@ -29,18 +34,31 @@ Er is geen aanmelding: de pagina is alleen via Tailscale of het lokale netwerk b
 import array
 import bisect
 import logging
+import json
 import pathlib
+import re
 import sqlite3
 import threading
 import time
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, abort, jsonify, render_template, request, send_from_directory
 
 from brms import VERSION, config, grootheden
 from brms.config import Config
 from brms.meting import TOPIC_PREFIX, Meting
 
 log = logging.getLogger(__name__)
+
+# Opdrachten die het web over de bus geeft (§5.6 punt 3); zie brms/storage.py en
+# brms/readers/camera.py.
+TOPIC_VERWIJDER = "brms/opdracht/opslag/verwijder"
+TOPIC_POLL_NU = "brms/opdracht/camera/poll-nu"
+# Zoveel opnames toont de pagina hooguit in één keer, en zoveel mag één verwijderopdracht
+# noemen.
+MAX_OPNAMES = 500
+# Het pad van een opname binnen de opnamemap (zie brms/storage.py); alleen deze vorm wordt
+# uitgeleverd.
+_BESTAND = re.compile(r"^[A-Za-z0-9_-]+/\d{4}/\d{2}/\d{2}/\d{6}\.(jpg|mp4)$")
 
 # Naam van de kop waarin de webservice bij elk antwoord zijn starttijdstip meestuurt. De
 # pagina ziet daaraan dat de webservice herstart is en laadt zichzelf dan opnieuw (§5.6).
@@ -261,6 +279,49 @@ def lees_alarmen(pad: str, sensor_id: str, grootheid: str, van: int, tot: int) -
         con.close()
 
 
+def lees_opnames(pad: str, van: int, tot: int, camera_id: str | None = None,
+                 type_: str | None = None, interval: bool = True) -> tuple[list, dict]:
+    """Leest de opnames tussen `van` en `tot` (de nieuwste eerst, hooguit MAX_OPNAMES), en
+    de totalen van alle opnames per type.
+
+    camera_id, type_  alleen deze camera of dit type (None = alle)
+    interval          False = zonder de intervalfoto's: alleen wat op verzoek of bij een
+                      alarm is gemaakt
+    Geeft (opnames, totalen): opnames als lijst van dicts, totalen als
+    {"foto": [aantal, bytes], "video": [aantal, bytes]}. Bestaat de database of de tabel
+    (nog) niet, dan is alles leeg.
+    """
+    totalen = {"foto": [0, 0], "video": [0, 0]}
+    if not pathlib.Path(pad).exists():
+        return [], totalen
+    waar, waarden = ["ts >= ?", "ts < ?"], [van, tot]
+    if camera_id is not None:
+        waar.append("camera_id = ?")
+        waarden.append(camera_id)
+    if type_ is not None:
+        waar.append("type = ?")
+        waarden.append(type_)
+    if not interval:
+        waar.append("aanleiding != 'interval'")
+    con = sqlite3.connect(pathlib.Path(pad).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+    try:
+        rijen = con.execute(
+            "SELECT ts, camera_id, type, duur, bestand, bytes, aanleiding FROM opname "
+            f"WHERE {' AND '.join(waar)} ORDER BY ts DESC, camera_id LIMIT ?",
+            (*waarden, MAX_OPNAMES)).fetchall()
+        for type__, aantal, bytes_ in con.execute(
+                "SELECT type, COUNT(*), SUM(bytes) FROM opname GROUP BY type"):
+            if type__ in totalen:
+                totalen[type__] = [aantal, bytes_]
+    except sqlite3.OperationalError as e:
+        log.debug("opnames niet leesbaar: %s", e)
+        return [], totalen
+    finally:
+        con.close()
+    sleutels = ("ts", "camera_id", "type", "duur", "bestand", "bytes", "aanleiding")
+    return [dict(zip(sleutels, rij)) for rij in rijen], totalen
+
+
 def _regels(cfg: Config) -> dict:
     """De alarmregels per sensor en grootheid, voor de grafieken (§5.5.3 punt 9):
     {sensor-ID: {grootheid: [{"id", "naam", "boven"|"onder", "herstel"}, ...]}}.
@@ -410,6 +471,71 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
         if tot <= van:
             return jsonify(fout="'tot' moet later zijn dan 'van'"), 400
         return jsonify(perioden=lees_alarmen(cfg.opslag.database, sensor.id, grootheid, van, tot))
+
+    # --- opnames van de camera's (§5.6 punt 2) ----------------------------------------
+    @app.get("/opnames")
+    def pagina_opnames():
+        return render_template(
+            "opnames.html", versie=VERSION,
+            cameras=[{"id": c.id, "naam": c.naam, "video": c.video_url is not None,
+                      "video_duur": c.video_duur} for c in cfg.cameras.values()],
+            video_ruimte=cfg.opnames.video_ruimte, foto_bewaren=cfg.opnames.foto_bewaren)
+
+    @app.get("/api/opnames")
+    def api_opnames():
+        van, tot = _getal(request.args.get("van"), 0), _getal(request.args.get("tot"), 0)
+        if tot <= van:
+            return jsonify(fout="'tot' moet later zijn dan 'van'"), 400
+        camera = request.args.get("camera") or None
+        type_ = request.args.get("type") or None
+        if camera is not None and camera not in cfg.cameras:
+            return jsonify(fout="onbekende camera"), 404
+        if type_ not in (None, "foto", "video"):
+            return jsonify(fout="'type' moet foto of video zijn"), 400
+        opnames, totalen = lees_opnames(cfg.opslag.database, van, tot, camera, type_,
+                                        interval=request.args.get("interval") != "0")
+        # 'vol': er zijn er meer dan de pagina in één keer toont.
+        return jsonify(opnames=opnames, totalen=totalen, vol=len(opnames) >= MAX_OPNAMES)
+
+    @app.get("/opname/<path:bestand>")
+    def opname(bestand):
+        # Alleen een pad van de vaste vorm; send_from_directory weigert bovendien alles
+        # wat buiten de opnamemap uitkomt. conditional: de browser kan een deel van een
+        # video opvragen (spoelen) zonder het hele bestand te halen.
+        if not _BESTAND.match(bestand):
+            abort(404)
+        return send_from_directory(cfg.opnames.map, bestand, conditional=True)
+
+    def _opdracht(topic: str, inhoud: dict):
+        """Zet een opdracht op de bus (§5.6 punt 3); een foutantwoord als dat niet kan."""
+        if bus is None or not bus.publiceer(topic, json.dumps(inhoud), qos=1):
+            return jsonify(fout="de MQTT-broker is niet bereikbaar; probeer het opnieuw"), 503
+        return None
+
+    @app.post("/api/opnames/verwijder")
+    def api_verwijder():
+        inhoud = request.get_json(silent=True)
+        lijst = inhoud.get("opnames") if isinstance(inhoud, dict) else None
+        if (not isinstance(lijst, list) or not lijst or len(lijst) > MAX_OPNAMES
+                or not all(isinstance(p, list) and len(p) == 2 and isinstance(p[0], str)
+                           and isinstance(p[1], int) and not isinstance(p[1], bool) for p in lijst)):
+            return jsonify(fout=f"'opnames' moet een lijst van 1 tot {MAX_OPNAMES} paren "
+                                f"[camera_id, ts] zijn"), 400
+        # Het web verwijdert niet zelf: de opslag-service is de enige die schrijft (§3.1).
+        return _opdracht(TOPIC_VERWIJDER, {"opnames": lijst}) or jsonify(gevraagd=len(lijst))
+
+    @app.post("/api/opnames/nu")
+    def api_opname_nu():
+        inhoud = request.get_json(silent=True)
+        inhoud = inhoud if isinstance(inhoud, dict) else {}
+        camera, type_ = cfg.cameras.get(inhoud.get("camera_id")), inhoud.get("type")
+        if camera is None or type_ not in ("foto", "video"):
+            return jsonify(fout="onbekende camera of type"), 400
+        if type_ == "video" and camera.video_url is None:
+            return jsonify(fout="deze camera maakt geen video's (geen video_url)"), 400
+        return (_opdracht(TOPIC_POLL_NU, {"camera_id": camera.id, "type": type_,
+                                          "aanleiding": "handmatig"})
+                or jsonify(gevraagd=type_))
 
     return app
 

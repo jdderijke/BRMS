@@ -27,7 +27,9 @@ En de opnames van de camera's (§5.7 punt 14): de camera-reader schrijft het bes
 meldt de gegevens ervan op de bus (brms/opname/<camera_id>); de opslag legt die vast in de
 tabel `opname` en verwijdert eens per uur de foto's die ouder zijn dan de bewaartermijn.
 Video's blijven staan tot de gebruiker ze verwijdert; alleen als ze samen meer ruimte
-innemen dan `video_ruimte`, verwijdert de opslag de oudste (§5.7 punt 5).
+innemen dan `video_ruimte`, verwijdert de opslag de oudste (§5.7 punt 5). Het web vraagt
+het verwijderen van opnames aan met een opdracht op de bus (§5.6 punt 2); ook dan is het
+de opslag die bestand en rij verwijdert.
 """
 
 import asyncio
@@ -97,6 +99,11 @@ TOPIC_HERSTART = "brms/alarm/herstart"
 
 # Topic van de camera-reader (zie brms/readers/camera.py).
 TOPIC_OPNAME = "brms/opname"
+# Opdracht van het web om opnames te verwijderen (§5.6 punt 2):
+# {"opnames": [[camera_id, ts], ...]}.
+TOPIC_VERWIJDER = "brms/opdracht/opslag/verwijder"
+# Zoveel opnames mag één opdracht hooguit noemen.
+MAX_VERWIJDER = 1000
 # Om de hoeveel seconden oude foto's worden opgeruimd (§5.7 punt 14).
 OPRUIM_INTERVAL = 3600
 # Het pad van een opname binnen de opnamemap: <camera_id>/JJJJ/MM/DD/UUMMSS.jpg of .mp4.
@@ -197,6 +204,12 @@ class Database:
         return self._con.execute(
             "SELECT camera_id, ts, bestand, bytes FROM opname WHERE type = 'video' "
             "ORDER BY ts, camera_id").fetchall()
+
+    def bestand_van(self, camera_id: str, ts: int) -> str | None:
+        """Het pad van één opname binnen de opnamemap, of None als de opname niet bestaat."""
+        rij = self._con.execute("SELECT bestand FROM opname WHERE camera_id = ? AND ts = ?",
+                                (camera_id, ts)).fetchone()
+        return rij[0] if rij else None
 
     def verwijder_opnames(self, sleutels: list[tuple[str, int]]) -> None:
         """Verwijdert de rijen van de opnames met deze (camera_id, ts)."""
@@ -468,6 +481,61 @@ def ruim_fotos(db: Database, map_: str, bewaren: float, nu: float) -> int:
     return aantal
 
 
+def verwerk_verwijder(db: Database, map_: str, payload: bytes) -> int:
+    """Voert een verwijderopdracht van het web uit (§5.6 punt 2): van elke genoemde opname
+    het bestand en de rij. Geeft het aantal verwijderde opnames; ValueError bij een
+    ongeldige opdracht (dan wordt er niets verwijderd)."""
+    try:
+        d = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise ValueError(f"geen geldige JSON: {e}") from None
+    lijst = d.get("opnames") if isinstance(d, dict) else None
+    if not isinstance(lijst, list) or len(lijst) > MAX_VERWIJDER:
+        raise ValueError(f"'opnames' moet een lijst van hooguit {MAX_VERWIJDER} zijn")
+    for paar in lijst:
+        if (not isinstance(paar, list) or len(paar) != 2 or not isinstance(paar[0], str)
+                or isinstance(paar[1], bool) or not isinstance(paar[1], int)):
+            raise ValueError("elke opname moet een paar [camera_id, ts] zijn")
+
+    weg = []
+    for camera_id, ts in lijst:
+        bestand = db.bestand_van(camera_id, ts)
+        if bestand is None:
+            continue            # bestaat niet (meer): niets te doen
+        # Alleen een pad van de bekende vorm, zoals bij het opruimen.
+        if not _BESTAND.match(bestand):
+            log.warning("opname %s van %s heeft een onverwacht pad (%r); niet verwijderd",
+                        ts, camera_id, bestand)
+            continue
+        try:
+            os.remove(os.path.join(map_, *bestand.split("/")))
+        except FileNotFoundError:
+            pass                # al weg: de rij mag ook weg
+        except OSError as e:
+            log.warning("opname %s niet te verwijderen: %s", bestand, e)
+            continue
+        weg.append((camera_id, ts))
+    if weg:
+        db.verwijder_opnames(weg)
+    return len(weg)
+
+
+async def _verwijderen(db: Database, q: asyncio.Queue, stop: asyncio.Event, map_: str) -> None:
+    """Voert de verwijderopdrachten van het web uit. Loopt naast de hoofdlus in dezelfde
+    asyncio-loop (en dus in dezelfde thread als de database)."""
+    while not stop.is_set():
+        try:
+            topic, payload = await asyncio.wait_for(q.get(), timeout=1.0)
+        except TimeoutError:
+            continue
+        try:
+            log.info("%d opnames verwijderd op verzoek van het web", verwerk_verwijder(db, map_, payload))
+        except ValueError as e:
+            log.warning("ongeldige opdracht op %s genegeerd: %s", topic, e)
+        except sqlite3.Error:
+            log.exception("verwijderen van opnames mislukt")
+
+
 def ruim_videos(db: Database, map_: str, ruimte: float) -> int:
     """Houdt de video's binnen de maximale ruimte (§5.7 punt 5): nemen ze samen meer dan
     `ruimte` bytes in, dan gaan de oudste weg (bestand en rij) tot het weer past. Geeft het
@@ -577,6 +645,9 @@ async def draai(config: Config, bus, stop: asyncio.Event, klok_ok=klok_gesynchro
         _opnames(db, bus.wachtrij(f"{TOPIC_OPNAME}/#", qos=1), stop, klok_ok,
                  config.opnames.map, config.opnames.foto_bewaren,
                  config.opnames.video_ruimte * 1e9))
+    # Verwijderopdrachten van het web (§5.6 punt 2).
+    verwijdertaak = asyncio.create_task(
+        _verwijderen(db, bus.wachtrij(TOPIC_VERWIJDER, qos=1), stop, config.opnames.map))
     moment = volgend_moment(time.time())
     log.info("opslag gestart; database %s", config.opslag.database)
     try:
@@ -635,7 +706,7 @@ async def draai(config: Config, bus, stop: asyncio.Event, klok_ok=klok_gesynchro
                      m.grootheid)
     finally:
         # Eerst de neventaken laten stoppen; die gebruiken de database nog.
-        for taak in (alarmtaak, opnametaak):
+        for taak in (alarmtaak, opnametaak, verwijdertaak):
             if not stop.is_set():
                 taak.cancel()
             try:

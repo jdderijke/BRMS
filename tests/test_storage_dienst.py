@@ -28,6 +28,8 @@ class NepBus:
             self.alarmen = q
         elif topic.startswith("brms/opname"):
             self.opnames = q
+        elif topic.startswith("brms/opdracht"):
+            self.opdrachten = q      # verwijderopdrachten van het web
         else:
             self.q = q
         return q
@@ -285,6 +287,34 @@ class TestOpnames(unittest.TestCase):
         with self.assertLogs("brms.storage", "INFO"):
             self.assertEqual(storage.ruim_videos(self.db, self.map, 400), 1)
         self.assertEqual([r[1] for r in self._rijen()], [foto, namen[2]])
+
+    def test_verwijderen_op_verzoek_van_het_web(self):
+        namen = ["dek/1970/01/02/000000.jpg", "dek/1970/01/02/000100.mp4", "dek/1970/01/02/000200.jpg"]
+        tijden = [86400, 86460, 86520]
+        paden = []
+        for ts, naam in zip(tijden, namen):
+            storage.verwerk_opname(self.db, _opname(ts, bestand=naam,
+                                                    type_="video" if naam.endswith("mp4") else "foto"))
+            paden.append(self._bestand(naam))
+        # De eerste twee, een opname die niet bestaat en een van een andere camera.
+        opdracht = json.dumps({"opnames": [["dek", 86400], ["dek", 86460], ["dek", 1], ["mast", 86520]]})
+        self.assertEqual(storage.verwerk_verwijder(self.db, self.map, opdracht.encode()), 2)
+        self.assertEqual([os.path.exists(p) for p in paden], [False, False, True])
+        self.assertEqual(self._rijen(), [(86520, namen[2])])
+        # Het bestand is al weg: de rij verdwijnt toch.
+        os.remove(paden[2])
+        self.assertEqual(storage.verwerk_verwijder(self.db, self.map, b'{"opnames": [["dek", 86520]]}'), 1)
+        self.assertEqual(self._rijen(), [])
+
+    def test_ongeldige_verwijderopdracht_verwijdert_niets(self):
+        storage.verwerk_opname(self.db, _opname(86400))
+        for inhoud in [b"kapot", b"[1]", b'{"opnames": "alles"}', b'{"opnames": [["dek"]]}',
+                       b'{"opnames": [["dek", "86400"]]}', b'{"opnames": [[1, 86400]]}',
+                       b'{"opnames": [["dek", 86400], ["dek", true]]}',
+                       json.dumps({"opnames": [["dek", 1]] * (storage.MAX_VERWIJDER + 1)}).encode()]:
+            with self.assertRaises(ValueError):
+                storage.verwerk_verwijder(self.db, self.map, inhoud)
+        self.assertEqual(len(self._rijen()), 1)
 
     def test_rij_zonder_bestand_verdwijnt_ook(self):
         storage.verwerk_opname(self.db, _opname(86400))

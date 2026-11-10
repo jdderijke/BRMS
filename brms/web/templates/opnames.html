@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="nl">
+<!--
+  Opnamepagina van BRMS (ARCHITECTURE.md §5.6 punt 2, §5.7): de foto's en video's van de
+  camera's bekijken en verwijderen.
+
+  De pagina toont de opnames van één dag (de nieuwste bovenaan) als lijst, met daarboven
+  één grote weergave van de gekozen opname. Er zijn bewust geen miniaturen: een dag heeft
+  honderden intervalfoto's van elk enkele honderden kB, en over de mobiele verbinding van
+  de boot is dat te veel. Een foto wordt pas opgehaald als hij gekozen wordt.
+
+  Verwijderen gaat niet rechtstreeks: de pagina vraagt het aan de webservice, die een
+  opdracht op de MQTT-bus zet; de opslag-service verwijdert bestand en databaserij (§3.1:
+  één schrijver). Daarom wordt de lijst kort na een opdracht opnieuw opgehaald.
+
+  "Foto nu" en "Video nu" geven de camera-reader een opdracht (poll-nu, §5.7 punt 12).
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BRMS – opnames</title>
+<style>
+  /* Dezelfde kleuren als de grafiekenpagina. */
+  :root { --pagina: #f9f9f7; --vlak: #fcfcfb; --tekst: #0b0b0b; --zacht: #52514e;
+          --raster: #e1e0d9; --rand: #c3c2b7; --fout: #b3261e; --keuze: #e3edf9; --link: #1f5fae; }
+  @media (prefers-color-scheme: dark) {
+    :root { --pagina: #0d0d0d; --vlak: #1a1a19; --tekst: #f0efec; --zacht: #c3c2b7;
+            --raster: #2c2c2a; --rand: #383835; --fout: #f2867f; --keuze: #1d2c40; --link: #7fb0ee; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--pagina); color: var(--tekst);
+         font: 15px/1.4 system-ui, sans-serif; }
+  main { max-width: 1000px; margin: 0 auto; }
+  header { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-bottom: 8px; }
+  h1 { font-size: 20px; margin: 0; flex: 1 1 auto; }
+  h1 small { font-weight: normal; color: var(--zacht); font-size: 13px; }
+  a { color: var(--link); }
+  select, button, input { font: inherit; color: var(--tekst); background: var(--pagina);
+                          border: 1px solid var(--rand); border-radius: 6px; padding: 5px 9px; }
+  button { cursor: pointer; }
+  button:disabled { opacity: .4; cursor: default; }
+  button.gevaar { border-color: var(--fout); color: var(--fout); }
+  label { color: var(--zacht); font-size: 13px; }
+  .rij { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .rij .ruimte { flex: 1 1 auto; }
+  .blok { background: var(--vlak); border: 1px solid var(--rand); border-radius: 8px;
+          padding: 10px 12px; margin-bottom: 14px; }
+  #status { margin: 0 2px 10px; min-height: 1.4em; color: var(--zacht); }
+  #status.fout { color: var(--fout); }
+  #totalen { color: var(--zacht); font-size: 13px; margin: 0 2px 10px; }
+  /* De weergave: de opname past altijd in de breedte en blijft binnen het venster. */
+  #beeld { display: flex; justify-content: center; align-items: center; min-height: 200px;
+           background: #000; border-radius: 6px; overflow: hidden; }
+  #beeld img, #beeld video { max-width: 100%; max-height: 70vh; display: block; }
+  #beeld .leeg { color: #bbb; padding: 40px 12px; text-align: center; }
+  #bij { margin: 8px 0 0; }
+  #bij .tijd { font-weight: 600; margin-right: 8px; }
+  #bij .rest { color: var(--zacht); }
+  /* De lijst. */
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-weight: 600; font-size: 13px; color: var(--zacht);
+       border-bottom: 1px solid var(--rand); padding: 4px 8px; }
+  td { padding: 5px 8px; border-bottom: 1px solid var(--raster); }
+  td.getal, th.getal { text-align: right; font-variant-numeric: tabular-nums; }
+  td.vink, th.vink { width: 30px; padding-right: 0; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--raster); }
+  tbody tr.gekozen { background: var(--keuze); }
+  .lijst { max-height: 60vh; overflow: auto; }
+  /* Met één camera is de kolom 'Camera' overbodig; dat scheelt ruimte op een telefoon. */
+  body.een-camera .cam { display: none; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>BRMS <small>opnames · versie {{ versie }}</small></h1>
+    <a href="/">Grafieken</a>
+  </header>
+
+  <div class="rij">
+    <button id="vorige" title="Een dag eerder">◀</button>
+    <input type="date" id="dag" title="De dag waarvan de opnames getoond worden">
+    <button id="volgende" title="Een dag later">▶</button>
+    <button id="vandaag">vandaag</button>
+    <label>Camera <select id="camera"></select></label>
+    <label>Soort <select id="type">
+      <option value="">foto's en video's</option>
+      <option value="foto">alleen foto's</option>
+      <option value="video">alleen video's</option>
+    </select></label>
+    <label title="Uit: alleen wat op verzoek of bij een alarm is gemaakt">
+      <input type="checkbox" id="interval" checked> intervalfoto's</label>
+    <span class="ruimte"></span>
+    <button id="foto-nu" title="Laat de camera nu een foto maken">Foto nu</button>
+    <button id="video-nu" title="Laat de camera nu een video opnemen">Video nu</button>
+  </div>
+  <p id="status"></p>
+
+  <!-- De gekozen opname, groot. -->
+  <section class="blok">
+    <div id="beeld"><div class="leeg">Kies een opname uit de lijst.</div></div>
+    <div class="rij" id="bij" hidden>
+      <span><span class="tijd"></span><span class="rest"></span></span>
+      <span class="ruimte"></span>
+      <button id="ouder" title="De opname ervoor (pijl links)">◀ ouder</button>
+      <button id="nieuwer" title="De opname erna (pijl rechts)">nieuwer ▶</button>
+    </div>
+  </section>
+
+  <!-- De opnames van de gekozen dag. -->
+  <section class="blok">
+    <div class="rij">
+      <button id="alles">Alles selecteren</button>
+      <button id="geen">Niets selecteren</button>
+      <span class="ruimte"></span>
+      <!-- Verwijderen in twee stappen, zodat één misklik niets weggooit. -->
+      <button id="verwijder" class="gevaar" disabled>Verwijder selectie</button>
+      <span id="zeker" hidden>
+        <span id="vraag"></span>
+        <button id="ja" class="gevaar">Ja, verwijder</button>
+        <button id="nee">Annuleer</button>
+      </span>
+    </div>
+    <div class="lijst">
+      <table>
+        <thead><tr><th class="vink"></th><th>Tijd</th><th>Soort</th><th class="cam">Camera</th>
+          <th>Aanleiding</th><th class="getal">Grootte</th></tr></thead>
+        <tbody id="rijen"></tbody>
+      </table>
+    </div>
+  </section>
+  <p id="totalen"></p>
+</main>
+
+<script>
+// Door de webservice ingevuld: de camera's uit de configuratie en de grenzen voor opnames.
+const CAMERAS = {{ cameras | tojson }};
+const VIDEO_RUIMTE = {{ video_ruimte | tojson }};     // GB
+const FOTO_BEWAREN = {{ foto_bewaren | tojson }};     // seconden
+
+const el = id => document.getElementById(id);
+let opnames = [];        // de opnames van de gekozen dag, de nieuwste eerst
+let gekozen = null;      // sleutel van de opname in de weergave
+let aanvraag = 0;        // volgnummer van de laatste aanvraag van de lijst
+const geselecteerd = new Set();   // sleutels van de aangevinkte opnames
+
+// Een opname is uniek door camera en tijdstip (de primaire sleutel van de tabel).
+const sleutel = o => o.camera_id + "|" + o.ts;
+
+// --- tekst -----------------------------------------------------------------------------
+const twee = n => String(n).padStart(2, "0");
+const tijd = ts => { const d = new Date(ts * 1000);
+  return twee(d.getHours()) + ":" + twee(d.getMinutes()) + ":" + twee(d.getSeconds()); };
+const datum = d => d.getFullYear() + "-" + twee(d.getMonth() + 1) + "-" + twee(d.getDate());
+const grootte = b => b >= 1e9 ? (b / 1e9).toFixed(1).replace(".", ",") + " GB"
+                   : b >= 1e6 ? (b / 1e6).toFixed(1).replace(".", ",") + " MB"
+                   : Math.round(b / 1e3) + " kB";
+const cameraNaam = id => (CAMERAS.find(c => c.id === id) || {naam: id}).naam;
+// "alarm:vorst" -> "alarm vorst"; de andere aanleidingen staan er zoals ze zijn.
+const aanleiding = a => a.startsWith("alarm:") ? "alarm " + a.slice(6) : a;
+const soort = o => o.type === "video" ? "video " + o.duur + " s" : "foto";
+
+function meld(tekst, fout) {
+  el("status").textContent = tekst || "";
+  el("status").classList.toggle("fout", !!fout);
+}
+
+// --- ophalen ---------------------------------------------------------------------------
+// De gekozen dag loopt van middernacht tot middernacht in de tijd van de browser.
+async function laad() {
+  const begin = new Date(el("dag").value + "T00:00:00");
+  if (isNaN(begin)) return;
+  const eind = new Date(begin); eind.setDate(eind.getDate() + 1);
+  const vraag = new URLSearchParams({van: Math.floor(begin / 1000), tot: Math.floor(eind / 1000)});
+  if (el("camera").value) vraag.set("camera", el("camera").value);
+  if (el("type").value) vraag.set("type", el("type").value);
+  if (!el("interval").checked) vraag.set("interval", "0");
+  // Snel achter elkaar een andere dag of keuze: de antwoorden kunnen in een andere volgorde
+  // terugkomen. Alleen het antwoord op de laatste aanvraag telt.
+  const mijn = ++aanvraag;
+  try {
+    const a = await fetch("/api/opnames?" + vraag);
+    if (!a.ok) throw new Error("fout " + a.status);
+    const d = await a.json();
+    if (mijn !== aanvraag) return;
+    opnames = d.opnames;
+    toonTotalen(d.totalen);
+    // Wat niet meer bestaat, kan niet geselecteerd of gekozen blijven.
+    const er = new Set(opnames.map(sleutel));
+    for (const s of [...geselecteerd]) if (!er.has(s)) geselecteerd.delete(s);
+    if (gekozen !== null && !er.has(gekozen)) gekozen = null;
+    toonLijst();
+    if (gekozen === null) toon(opnames.length ? opnames[0] : null);
+    if (d.vol) meld("Alleen de nieuwste " + opnames.length + " opnames van deze dag staan in de lijst. "
+                    + "Zet de intervalfoto's uit of kies een soort om de rest te zien.");
+  } catch (e) {
+    if (mijn === aanvraag) meld("De opnames konden niet worden opgehaald (" + e.message + ").", true);
+  }
+}
+
+function toonTotalen(t) {
+  const dagen = Math.round(FOTO_BEWAREN / 86400);
+  el("totalen").textContent =
+    "Foto's: " + t.foto[0] + " (" + grootte(t.foto[1] || 0) + "), worden " + dagen + " dagen bewaard"
+    + " · Video's: " + t.video[0] + " (" + grootte(t.video[1] || 0) + " van " + VIDEO_RUIMTE
+    + " GB); is die ruimte vol, dan verdwijnen de oudste.";
+}
+
+// --- de lijst --------------------------------------------------------------------------
+function toonLijst() {
+  const tbody = el("rijen");
+  tbody.replaceChildren();
+  if (!opnames.length) {
+    const tr = tbody.insertRow(), td = tr.insertCell();
+    td.colSpan = 6; td.textContent = "Geen opnames op deze dag (met deze keuze).";
+    td.style.color = "var(--zacht)";
+  }
+  for (const o of opnames) {
+    const tr = tbody.insertRow();
+    tr.dataset.sleutel = sleutel(o);
+    tr.classList.toggle("gekozen", sleutel(o) === gekozen);
+    const vink = document.createElement("input");
+    vink.type = "checkbox"; vink.checked = geselecteerd.has(sleutel(o));
+    vink.title = "Selecteren om te verwijderen";
+    // Het vinkje selecteert alleen; een klik elders op de rij toont de opname.
+    vink.addEventListener("click", e => e.stopPropagation());
+    vink.addEventListener("change", () => {
+      vink.checked ? geselecteerd.add(sleutel(o)) : geselecteerd.delete(sleutel(o));
+      toonKnoppen();
+    });
+    const c0 = tr.insertCell(); c0.className = "vink"; c0.append(vink);
+    tr.insertCell().textContent = tijd(o.ts);
+    tr.insertCell().textContent = soort(o);
+    const c3 = tr.insertCell(); c3.className = "cam"; c3.textContent = cameraNaam(o.camera_id);
+    tr.insertCell().textContent = aanleiding(o.aanleiding);
+    const c5 = tr.insertCell(); c5.className = "getal"; c5.textContent = grootte(o.bytes);
+    tr.addEventListener("click", () => toon(o));
+  }
+  toonKnoppen();
+}
+
+function toonKnoppen() {
+  const n = geselecteerd.size;
+  el("verwijder").disabled = n === 0;
+  el("verwijder").textContent = n ? "Verwijder selectie (" + n + ")" : "Verwijder selectie";
+  el("verwijder").hidden = false;
+  el("zeker").hidden = true;
+}
+
+// --- de weergave -----------------------------------------------------------------------
+function toon(o) {
+  gekozen = o ? sleutel(o) : null;
+  for (const tr of el("rijen").rows) tr.classList.toggle("gekozen", tr.dataset.sleutel === gekozen);
+  const beeld = el("beeld");
+  if (!o) {
+    beeld.innerHTML = '<div class="leeg">Kies een opname uit de lijst.</div>';
+    el("bij").hidden = true;
+    return;
+  }
+  // Het pad bestaat alleen uit letters, cijfers, '-', '_', '/' en '.' (door de opslag
+  // gecontroleerd); het kan zo in het adres.
+  const adres = "/opname/" + o.bestand;
+  let inhoud;
+  if (o.type === "video") {
+    inhoud = document.createElement("video");
+    inhoud.controls = true;
+    inhoud.preload = "metadata";      // nog niet de hele video ophalen
+  } else {
+    inhoud = document.createElement("img");
+    inhoud.alt = "Foto van " + cameraNaam(o.camera_id) + " om " + tijd(o.ts);
+  }
+  inhoud.src = adres;
+  beeld.replaceChildren(inhoud);
+  el("bij").hidden = false;
+  el("bij").querySelector(".tijd").textContent = el("dag").value + " " + tijd(o.ts);
+  el("bij").querySelector(".rest").textContent =
+    cameraNaam(o.camera_id) + " · " + soort(o) + " · " + aanleiding(o.aanleiding) + " · " + grootte(o.bytes);
+  const i = opnames.findIndex(x => sleutel(x) === gekozen);
+  // De lijst loopt van nieuw naar oud: "ouder" is verder naar beneden.
+  el("ouder").disabled = i < 0 || i >= opnames.length - 1;
+  el("nieuwer").disabled = i <= 0;
+}
+
+function stap(richting) {
+  const i = opnames.findIndex(x => sleutel(x) === gekozen);
+  const doel = opnames[i + richting];
+  if (i < 0 || !doel) return;
+  toon(doel);
+  const tr = [...el("rijen").rows].find(r => r.dataset.sleutel === gekozen);
+  if (tr) tr.scrollIntoView({block: "nearest"});
+}
+
+// --- opdrachten ------------------------------------------------------------------------
+async function opdracht(adres, inhoud) {
+  const a = await fetch(adres, {method: "POST", headers: {"Content-Type": "application/json"},
+                                body: JSON.stringify(inhoud)});
+  const d = await a.json().catch(() => ({}));
+  if (!a.ok) throw new Error(d.fout || "fout " + a.status);
+  return d;
+}
+
+async function verwijder() {
+  const lijst = opnames.filter(o => geselecteerd.has(sleutel(o))).map(o => [o.camera_id, o.ts]);
+  try {
+    await opdracht("/api/opnames/verwijder", {opnames: lijst});
+    meld(lijst.length + " opnames worden verwijderd …");
+    geselecteerd.clear();
+    // De opslag-service verwijdert; kort daarna staat het in de database.
+    setTimeout(laad, 1000);
+    setTimeout(() => { laad(); meld(""); }, 4000);
+  } catch (e) { meld("Verwijderen is niet gelukt: " + e.message, true); }
+  toonKnoppen();
+}
+
+async function opnameNu(type) {
+  const camera = CAMERAS.find(c => c.id === el("camera").value) || CAMERAS[0];
+  if (!camera) return;
+  try {
+    await opdracht("/api/opnames/nu", {camera_id: camera.id, type});
+    if (type === "foto") {
+      meld("Foto van " + camera.naam + " gevraagd …");
+      setTimeout(() => { naarVandaag(); meld(""); }, 3000);
+    } else {
+      // De video staat er pas als de opname klaar is.
+      const klaar = Math.round(camera.video_duur) + 8;
+      meld("Video van " + camera.naam + " gestart; hij staat over ongeveer " + klaar + " s in de lijst.");
+      setTimeout(() => { naarVandaag(); meld(""); }, klaar * 1000);
+    }
+  } catch (e) { meld("De opdracht is niet gelukt: " + e.message, true); }
+}
+
+// --- dag kiezen ------------------------------------------------------------------------
+function zetDag(d) { el("dag").value = datum(d); gekozen = null; geselecteerd.clear(); laad(); }
+function naarVandaag() {
+  if (el("dag").value === datum(new Date())) { gekozen = null; laad(); } else zetDag(new Date());
+}
+function schuif(dagen) {
+  const d = new Date(el("dag").value + "T00:00:00");
+  if (isNaN(d)) return;
+  d.setDate(d.getDate() + dagen);
+  zetDag(d);
+}
+
+// --- start -----------------------------------------------------------------------------
+document.body.classList.toggle("een-camera", CAMERAS.length <= 1);
+el("camera").parentElement.hidden = CAMERAS.length <= 1;
+el("camera").add(new Option("alle camera's", ""));
+for (const c of CAMERAS) el("camera").add(new Option(c.naam, c.id));
+// Zonder camera in de configuratie valt er niets op te nemen.
+el("foto-nu").disabled = !CAMERAS.length;
+function zetVideoKnop() {
+  const camera = CAMERAS.find(c => c.id === el("camera").value) || CAMERAS[0];
+  el("video-nu").disabled = !camera || !camera.video;
+}
+zetVideoKnop();
+if (!CAMERAS.length) meld("Er is geen camera ingesteld in brms.toml ([[camera]]).");
+
+el("vorige").addEventListener("click", () => schuif(-1));
+el("volgende").addEventListener("click", () => schuif(1));
+el("vandaag").addEventListener("click", () => zetDag(new Date()));
+el("dag").addEventListener("change", () => { gekozen = null; geselecteerd.clear(); laad(); });
+for (const id of ["camera", "type", "interval"])
+  el(id).addEventListener("change", () => { gekozen = null; zetVideoKnop(); laad(); });
+el("ouder").addEventListener("click", () => stap(1));
+el("nieuwer").addEventListener("click", () => stap(-1));
+el("alles").addEventListener("click", () => { for (const o of opnames) geselecteerd.add(sleutel(o)); toonLijst(); });
+el("geen").addEventListener("click", () => { geselecteerd.clear(); toonLijst(); });
+el("verwijder").addEventListener("click", () => {
+  el("vraag").textContent = geselecteerd.size + " opnames verwijderen? Dit kan niet ongedaan worden.";
+  el("verwijder").hidden = true;
+  el("zeker").hidden = false;
+});
+el("nee").addEventListener("click", toonKnoppen);
+el("ja").addEventListener("click", verwijder);
+el("foto-nu").addEventListener("click", () => opnameNu("foto"));
+el("video-nu").addEventListener("click", () => opnameNu("video"));
+// Pijltjes bladeren door de opnames, behalve als de datum of een keuzelijst de invoer heeft.
+document.addEventListener("keydown", e => {
+  if (["INPUT", "SELECT", "VIDEO"].includes(document.activeElement.tagName)) return;
+  if (e.key === "ArrowLeft") stap(1);
+  if (e.key === "ArrowRight") stap(-1);
+});
+
+el("dag").value = datum(new Date());
+laad();
+</script>
+</body>
+</html>

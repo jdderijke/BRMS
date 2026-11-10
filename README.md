@@ -13,7 +13,7 @@ brms/            Python-package
   alarms.py      alarmlaag: alarmregels beoordelen
   melding.py     meldingen via Telegram en e-mail
   config.py      inlezen config/brms.toml
-  web/           Flask + Chart.js
+  web/           Flask + Chart.js: grafieken en camera-opnames
 config/          brms.example.toml; eigen brms.toml ernaast (niet in git)
 deploy/systemd/  service-bestanden
 data/            SQLite-database en camera-opnames (niet in git)

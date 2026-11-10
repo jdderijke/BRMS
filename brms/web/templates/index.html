@@ -48,6 +48,7 @@
   header { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-bottom: 8px; }
   h1 { font-size: 20px; margin: 0; flex: 1 1 auto; }
   h1 small { font-weight: normal; color: var(--zacht); font-size: 13px; }
+  header a { color: var(--reeks-1); }
   select, button { font: inherit; color: var(--tekst); background: var(--pagina);
                    border: 1px solid var(--rand); border-radius: 6px; padding: 5px 9px; }
   button { cursor: pointer; }
@@ -81,6 +82,7 @@
 <main>
   <header>
     <h1>BRMS <small>grafieken · versie {{ versie }}</small></h1>
+    <a href="/opnames" title="Foto's en video's van de camera's">Opnames</a>
     <button id="plus-live">+ Live-grafiek</button>
     <button id="plus-database">+ Database-grafiek</button>
   </header>
