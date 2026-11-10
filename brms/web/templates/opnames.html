@@ -579,28 +579,74 @@ async function verwijder() {
   toonKnoppen();
 }
 
+// De opnames van het laatste uur die op verzoek of bij een alarm zijn gemaakt, voor één
+// camera en één soort. Hiermee herkent de pagina de opname die zij zelf net gevraagd heeft.
+async function recent(camera, type) {
+  const nu = Math.floor(Date.now() / 1000);
+  const vraag = new URLSearchParams({van: nu - 3600, tot: nu + 3600, camera: camera.id, type, interval: "0"});
+  const a = await fetch("/api/opnames?" + vraag);
+  if (!a.ok) throw new Error("fout " + a.status);
+  return (await a.json()).opnames;
+}
+
+// Wacht tot er een opname op verzoek bij is gekomen die nog niet in `bekend` staat; kijkt
+// elke seconde, hooguit `seconden` lang. Geeft de opname, of null als hij niet komt.
+async function wachtOpNieuwe(camera, type, bekend, seconden) {
+  for (let i = 0; i < seconden; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    const nieuw = (await recent(camera, type))
+      .find(o => !bekend.has(sleutel(o)) && o.aanleiding === "handmatig");
+    if (nieuw) return nieuw;
+  }
+  return null;
+}
+
+// Gaat naar de dag van een opname en zet die opname in beeld, in de lijst of in het
+// dagoverzicht (dat blijft dan stilstaan op die opname).
+async function toonOpname(o) {
+  el("dag").value = datum(new Date(o.ts * 1000));
+  // De keuze van de soort mag de opname niet verbergen.
+  if (el("type").value && el("type").value !== o.type) el("type").value = "";
+  gekozen = null;
+  await laad();
+  if (weergave === "dag") {
+    const i = film.findIndex(x => sleutel(x) === sleutel(o));
+    if (i >= 0) { plek = i; toonPlek(); }
+  } else {
+    const gevonden = opnames.find(x => sleutel(x) === sleutel(o));
+    if (gevonden) toon(gevonden);
+  }
+}
+
 async function opnameNu(type) {
   const camera = CAMERAS.find(c => c.id === el("camera").value) || CAMERAS[0];
   if (!camera) return;
+  el("foto-nu").disabled = el("video-nu").disabled = true;
   try {
+    // Wat er al is, vóór de opdracht: alles wat daarna bijkomt is de gevraagde opname.
+    const bekend = new Set((await recent(camera, type)).map(sleutel));
     await opdracht("/api/opnames/nu", {camera_id: camera.id, type});
+    let nieuw;
     if (type === "foto") {
-      meld("Foto van " + camera.naam + " gevraagd …");
-      setTimeout(() => { naarVandaag(); meld(""); }, 3000);
+      meld("Foto van " + camera.naam + " wordt gemaakt …");
+      nieuw = await wachtOpNieuwe(camera, type, bekend, 15);
     } else {
       // De video staat er pas als de opname klaar is.
-      const klaar = Math.round(camera.video_duur) + 8;
-      meld("Video van " + camera.naam + " gestart; hij staat over ongeveer " + klaar + " s in de lijst.");
-      setTimeout(() => { naarVandaag(); meld(""); }, klaar * 1000);
+      const duur = Math.round(camera.video_duur);
+      meld("Video van " + camera.naam + " wordt opgenomen (" + duur + " s) …");
+      await new Promise(r => setTimeout(r, Math.max(0, duur - 2) * 1000));
+      nieuw = await wachtOpNieuwe(camera, type, bekend, 45);
     }
+    if (nieuw) { meld(""); await toonOpname(nieuw); }
+    else meld("De " + type + " is niet binnengekomen. De reden staat in het log van de "
+              + "camera-reader (journalctl -u brms-camera).", true);
   } catch (e) { meld("De opdracht is niet gelukt: " + e.message, true); }
+  el("foto-nu").disabled = !CAMERAS.length;
+  zetVideoKnop();
 }
 
 // --- dag kiezen ------------------------------------------------------------------------
 function zetDag(d) { el("dag").value = datum(d); gekozen = null; geselecteerd.clear(); laad(); }
-function naarVandaag() {
-  if (el("dag").value === datum(new Date())) { gekozen = null; laad(); } else zetDag(new Date());
-}
 function schuif(dagen) {
   const d = new Date(el("dag").value + "T00:00:00");
   if (isNaN(d)) return;
