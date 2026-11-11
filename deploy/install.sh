@@ -10,6 +10,7 @@
 #         config/brms.toml    configuratie (niet in git)
 #         data/brms.db        database (niet in git)
 #         deploy/             deze scripts en de systemd-units
+#         bin/go2rtc          het programma voor het live-beeld (niet in git)
 #         .venv/              Python-omgeving (niet in git)
 #
 # Gebruik – als gewone gebruiker (bijv. jandirk), NIET met sudo ervoor. Het script vraagt
@@ -29,11 +30,13 @@
 #   3. de deploy key klaarzetten waarmee de Pi de code van GitHub mag LEZEN
 #   4. de code ophalen naar ~/BRMS, daarna de systeempakketten uit
 #      deploy/pakketten.txt installeren (alleen wat ontbreekt)              (sudo)
+#      en het programma go2rtc ophalen (het live-beeld, deploy/go2rtc.sh)
 #   5. een Python-venv maken en de vastgepinde pakketten installeren
 #   6. config/brms.toml aanmaken uit het voorbeeld (alleen als hij nog niet bestaat)
 #   7. de opdracht 'brms' installeren (/usr/local/bin/brms)                (sudo)
 #   8. Mosquitto inrichten volgens §3.1 (alleen lokaal, geen persistence)  (sudo)
 #   9. de systemd-services installeren en starten                          (sudo)
+#  10. Tailscale installeren en de aanmeldlink tonen (toegang van buiten)  (sudo)
 #
 # Het script is veilig om opnieuw te draaien: elke stap kijkt eerst of hij al gedaan is.
 #
@@ -126,6 +129,14 @@ fi
 echo "== 4b. Systeempakketten"
 bash "$BRMS/deploy/pakketten.sh"
 
+# go2rtc geeft het live-beeld van de camera's door (§5.7 punt 18). Het zit niet in apt;
+# deploy/go2rtc.sh haalt een vaste versie op en controleert die. Lukt dat niet, dan gaat
+# de inrichting door: alleen het live-beeld ontbreekt dan ('brms update' probeert het
+# later opnieuw).
+echo "== 4c. go2rtc"
+bash "$BRMS/deploy/go2rtc.sh" \
+    || echo "   LET OP: go2rtc is niet geïnstalleerd; er is geen live-beeld. Later opnieuw: brms update" >&2
+
 # -----------------------------------------------------------------------------
 echo "== 5. Python-venv"
 # Eigen venv in ~/BRMS/.venv (staat in .gitignore), net als op de pc. Pakketten exact
@@ -175,9 +186,35 @@ done
 sudo systemctl daemon-reload
 # Eerst de configuratie controleren; bij een fout stopt het script hier (set -e).
 brms check-config
+# Alle BRMS-services: de units in deploy/systemd/ (zoals in update.sh), zodat een nieuwe
+# service hier niet apart genoemd hoeft te worden.
+SERVICES=()
+for unit in "$BRMS"/deploy/systemd/brms-*.service; do
+    SERVICES+=("$(basename "$unit" .service)")
+done
 # 'enable' = starten bij het opstarten van de Pi; '--now' = ook nu direct (her)starten.
-sudo systemctl enable -q --now brms-opslag brms-alarm brms-ble-reader brms-shelly-reader brms-camera brms-web
-sudo systemctl restart brms-opslag brms-alarm brms-ble-reader brms-shelly-reader brms-camera brms-web
+sudo systemctl enable -q --now "${SERVICES[@]}"
+sudo systemctl restart "${SERVICES[@]}"
+
+# -----------------------------------------------------------------------------
+echo "== 10. Tailscale"
+# Tailscale is de toegang van buiten: de boot zit achter het mobiele netwerk en is anders
+# niet te bereiken (§9). Het zit niet in apt van Raspberry Pi OS; Tailscale levert een
+# eigen installatiescript, dat zijn pakketbron toevoegt en het pakket installeert (sudo).
+if ! command -v tailscale >/dev/null; then
+    curl -fsSL https://tailscale.com/install.sh | sh
+fi
+# Aanmelden kan niet met een wachtwoord in een bestand: het gaat één keer via de browser.
+# 'tailscale up' toont een link en wacht tot de Pi daar is goedgekeurd. Is de Pi al
+# aangemeld, dan gebeurt er niets.
+if ! tailscale status >/dev/null 2>&1; then
+    echo "   Meld de Pi aan: open de link hieronder in een browser en keur de Pi goed."
+    sudo tailscale up
+fi
+echo "   Tailscale-adres van deze Pi: $(tailscale ip -4 2>/dev/null || echo 'onbekend')"
+echo "   LET OP: zet in https://login.tailscale.com/admin/machines bij deze Pi 'Disable key"
+echo "   expiry' aan. Anders valt de Pi na een half jaar van het netwerk, en dat is op de"
+echo "   boot niet op afstand te herstellen."
 
 echo
 echo "Klaar."

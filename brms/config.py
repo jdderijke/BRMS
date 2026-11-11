@@ -230,8 +230,10 @@ class Alarmregel:
 # Grenzen van de camera-instellingen (§5.7), in seconden.
 MIN_FOTO_INTERVAL, MAX_FOTO_INTERVAL = 10.0, 86400.0
 MIN_VIDEO_DUUR, MAX_VIDEO_DUUR = 5.0, 600.0
-# Beelden per seconde van het live-beeld (§5.7 punt 18).
-MIN_LIVE_BEELDEN, MAX_LIVE_BEELDEN = 0.2, 30.0
+# Velden van [[camera]] die niet meer bestaan (§5.7 punt 18, v0.48): het live-beeld kwam
+# tot code v0.17 van de MJPEG-stroom van de camera. Staan ze nog in brms.toml, dan is dat
+# geen fout maar een waarschuwing: een update mag er niet op stuklopen.
+VERVALLEN_CAMERA = ("live_url", "live_beelden")
 # De invulplaatsen voor het account in een camera-adres (§5.7 punt 7).
 PLAATS_GEBRUIKER, PLAATS_WACHTWOORD = "{gebruiker}", "{wachtwoord}"
 
@@ -251,12 +253,9 @@ class Camera:
     # adressen staan niet in de repr: iemand kan het wachtwoord er letterlijk in zetten.
     wachtwoord: str | None = field(default=None, repr=False)
     foto_interval: float = 180.0
-    video_duur: float = 120.0
-    # Het adres van de MJPEG-stroom voor het live-beeld in het web (§5.7 punt 18); None =
-    # deze camera heeft geen live-beeld.
-    live_url: str | None = field(default=None, repr=False)
-    # Zoveel beelden per seconde geeft de webservice hooguit door.
-    live_beelden: float = 5.0
+    video_duur: float = 60.0
+    # Het live-beeld in het web (§5.7 punt 18) heeft geen eigen velden: elke camera met een
+    # video_url heeft live-beeld, via go2rtc (zie brms/go2rtc.py).
 
 
 @dataclass(frozen=True)
@@ -278,6 +277,9 @@ class Config:
     alarmen: tuple[Alarmregel, ...] = ()
     cameras: dict[str, Camera] = field(default_factory=dict)   # id -> Camera
     opnames: OpnamenConfig = OpnamenConfig()
+    # Opmerkingen over de configuratie die geen fout zijn (bijv. een veld dat niet meer
+    # bestaat en genegeerd wordt). `brms check-config` toont ze; de services starten gewoon.
+    waarschuwingen: tuple[str, ...] = ()
 
 
 def levert(sensor: Sensor) -> tuple[str, ...]:
@@ -521,8 +523,12 @@ def _adres(fouten, plek, c: dict, sleutel: str, schemas: tuple[str, ...]) -> str
     return w
 
 
-def _cameras(fouten, data: dict, sensoren: dict[str, Sensor]) -> dict[str, Camera]:
-    """Controleert de blokken [[camera]] (§5.7 punt 7)."""
+def _cameras(fouten, data: dict, sensoren: dict[str, Sensor],
+             waarschuwingen: list[str] | None = None) -> dict[str, Camera]:
+    """Controleert de blokken [[camera]] (§5.7 punt 7). In `waarschuwingen` komt wat geen
+    fout is maar wel het melden waard (een vervallen veld)."""
+    if waarschuwingen is None:
+        waarschuwingen = []
     lijst = data.get("camera", [])
     if not isinstance(lijst, list):
         fouten.append("[[camera]] moet een lijst van tabellen zijn")
@@ -534,8 +540,8 @@ def _cameras(fouten, data: dict, sensoren: dict[str, Sensor]) -> dict[str, Camer
             fouten.append(f"{plek}: moet een tabel zijn")
             continue
         _onbekend(fouten, plek, c, ("id", "naam", "foto_url", "video_url", "gebruiker",
-                                    "wachtwoord", "foto_interval", "video_duur",
-                                    "live_url", "live_beelden"))
+                                    "wachtwoord", "foto_interval", "video_duur")
+                  + VERVALLEN_CAMERA)
         aantal_fouten = len(fouten)
 
         cid = c.get("id")
@@ -548,6 +554,14 @@ def _cameras(fouten, data: dict, sensoren: dict[str, Sensor]) -> dict[str, Camer
             # Het ID wordt een mapnaam en een topic; het mag niet botsen met een sensor.
             if cid in cameras or cid in sensoren:
                 fouten.append(f"{plek}: id {cid} komt meer dan eens voor")
+        # Vervallen velden worden genegeerd, wat er ook in staat (§5.7 punt 18).
+        oud = [k for k in VERVALLEN_CAMERA if k in c]
+        if oud:
+            waarschuwingen.append(
+                f"{plek}: {' en '.join(repr(k) for k in oud)} "
+                f"{'bestaat' if len(oud) == 1 else 'bestaan'} niet meer en "
+                f"{'wordt' if len(oud) == 1 else 'worden'} genegeerd; het live-beeld komt nu "
+                f"via go2rtc van de 'video_url'. Haal de regel(s) weg uit brms.toml.")
         # Zonder naam geldt het ID als naam.
         naam = c.get("naam", cid or "?")
         if not isinstance(naam, str) or not naam.strip():
@@ -566,19 +580,8 @@ def _cameras(fouten, data: dict, sensoren: dict[str, Sensor]) -> dict[str, Camer
                 fouten.append(f"{plek}: '{sleutel}' moet een niet-lege tekst zijn")
         if (gebruiker is None) != (wachtwoord is None):
             fouten.append(f"{plek}: 'gebruiker' en 'wachtwoord' horen bij elkaar; een van de twee ontbreekt")
-        # Het live-beeld (§5.7 punt 18): de MJPEG-stroom van de camera, over HTTP.
-        live_url = None
-        if "live_url" in c:
-            live_url = _adres(fouten, plek, c, "live_url", ("http://", "https://"))
-        live_beelden = c.get("live_beelden", Camera.live_beelden)
-        if not _getal(live_beelden) or not MIN_LIVE_BEELDEN <= live_beelden <= MAX_LIVE_BEELDEN:
-            fouten.append(f"{plek}: 'live_beelden' moet een getal tussen {MIN_LIVE_BEELDEN:g} en "
-                          f"{MAX_LIVE_BEELDEN:g} zijn (beelden per seconde)")
-            live_beelden = Camera.live_beelden
-        elif "live_url" not in c and "live_beelden" in c:
-            fouten.append(f"{plek}: 'live_beelden' zonder 'live_url' doet niets")
 
-        adressen = (foto_url or "") + (video_url or "") + (live_url or "")
+        adressen = (foto_url or "") + (video_url or "")
         if gebruiker is None and (PLAATS_GEBRUIKER in adressen or PLAATS_WACHTWOORD in adressen):
             fouten.append(f"{plek}: een adres bevat {PLAATS_GEBRUIKER} of {PLAATS_WACHTWOORD}, "
                           f"maar 'gebruiker' en 'wachtwoord' ontbreken")
@@ -589,7 +592,7 @@ def _cameras(fouten, data: dict, sensoren: dict[str, Sensor]) -> dict[str, Camer
                            MIN_VIDEO_DUUR, MAX_VIDEO_DUUR)
         if len(fouten) == aantal_fouten:
             cameras[cid] = Camera(cid, naam.strip(), foto_url, video_url, gebruiker, wachtwoord,
-                                  foto_interval, video_duur, live_url, float(live_beelden))
+                                  foto_interval, video_duur)
     return cameras
 
 
@@ -966,7 +969,8 @@ def controleer(data: dict) -> Config:
                                tuple(lijst_g) if lijst_g is not None else None, sleutel, **shelly)
 
     # --- [[camera]] en [opnames] (§5.7) ---
-    cameras = _cameras(fouten, data, sensoren)
+    waarschuwingen: list[str] = []
+    cameras = _cameras(fouten, data, sensoren, waarschuwingen)
     opnames = _opnames(fouten, data)
 
     # --- [melding] en [[alarm]] (§5.5.3, §5.5.4); de regels verwijzen naar de sensoren
@@ -977,4 +981,5 @@ def controleer(data: dict) -> Config:
     if fouten:
         raise ConfigFout(fouten)
     return Config(MqttConfig(host, port), OpslagConfig(database), sensoren,
-                  WebConfig(web_host, web_port), melding, alarmen, cameras, opnames)
+                  WebConfig(web_host, web_port), melding, alarmen, cameras, opnames,
+                  tuple(waarschuwingen))

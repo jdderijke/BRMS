@@ -13,9 +13,12 @@ brms/            Python-package
   alarms.py      alarmlaag: alarmregels beoordelen
   melding.py     meldingen via Telegram en e-mail
   config.py      inlezen config/brms.toml
-  web/           Flask + Chart.js: grafieken en camera-opnames
+  go2rtc.py      live-beeld van de camera's via het programma go2rtc (WebRTC)
+  web/           Flask + Chart.js: grafieken, camera-opnames en live-beeld
 config/          brms.example.toml; eigen brms.toml ernaast (niet in git)
+deploy/          install.sh, update.sh, go2rtc.sh (haalt go2rtc op naar bin/)
 deploy/systemd/  service-bestanden
+bin/             het programma go2rtc (niet in git)
 data/            SQLite-database en camera-opnames (niet in git)
 tests/
 ```

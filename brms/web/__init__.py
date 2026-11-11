@@ -27,7 +27,8 @@ Adressen:
     /opname/<pad>     het bestand van één opname (JPEG of MP4)
     /api/opnames/verwijder   (POST) opnames verwijderen; gaat als opdracht naar de opslag
     /api/opnames/nu          (POST) nu een foto of video laten maken (poll-nu)
-    /live/<camera_id>        het live-beeld van een camera (MJPEG-stroom, §5.7 punt 18)
+    /live/<camera_id>        (POST) het live-beeld van een camera aanvragen (WebRTC via
+                             go2rtc, §5.7 punt 18)
 
 Er is geen aanmelding: de pagina is alleen via Tailscale of het lokale netwerk bereikbaar
 (OPEN-15).
@@ -42,11 +43,10 @@ import re
 import sqlite3
 import threading
 import time
-import urllib.request
 
 from flask import Flask, Response, abort, jsonify, render_template, request, send_from_directory
 
-from brms import VERSION, config, grootheden
+from brms import VERSION, config, go2rtc, grootheden
 from brms.config import Config
 from brms.meting import TOPIC_PREFIX, Meting
 
@@ -73,20 +73,13 @@ _BESTAND = re.compile(r"^[A-Za-z0-9_-]+/\d{4}/\d{2}/\d{2}/\d{6}\.(jpg|mp4)$")
 
 # --- live-beeld (§5.7 punt 18) ---
 # Na zoveel seconden stopt een live-beeld vanzelf: een vergeten tabblad mag de databundel
-# van de boot niet leegtrekken.
+# van de boot niet leegtrekken (het volle beeld is ongeveer 14 MB per minuut). De pagina
+# bewaakt deze tijd zelf: de video loopt rechtstreeks tussen de browser en go2rtc, dus de
+# webservice kan hem niet afbreken.
 MAX_LIVE = 600
-# Zoveel kijkers tegelijk: elke kijker is een eigen verbinding met de camera.
+# Zoveel kijkers tegelijk per camera. Ze delen één verbinding met de camera, maar elke
+# kijker kost data.
 MAX_KIJKERS = 3
-# Langste wachttijd op de camera (verbinden, en op het volgende stuk van de stroom).
-LIVE_TIMEOUT = 10.0
-# Een beeld groter dan dit is geen beeld (vangnet tegen een adres waarop iets anders
-# antwoordt).
-MAX_BEELD = 5 * 1024 * 1024
-# De grens tussen twee beelden in de stroom naar de browser.
-LIVE_GRENS = "brmsbeeld"
-# Begin en einde van een JPEG.
-_SOI, _EOI = b"\xff\xd8", b"\xff\xd9"
-_LENGTE = re.compile(rb"content-length:\s*(\d+)", re.IGNORECASE)
 
 # Naam van de kop waarin de webservice bij elk antwoord zijn starttijdstip meestuurt. De
 # pagina ziet daaraan dat de webservice herstart is en laadt zichzelf dan opnieuw (§5.6).
@@ -351,67 +344,6 @@ def lees_opnames(pad: str, van: int, tot: int, camera_id: str | None = None,
     return [dict(zip(sleutels, rij)) for rij in rijen], totalen
 
 
-def beelden(stroom, blok: int = 16384):
-    """Haalt de losse JPEG-beelden uit een MJPEG-stroom (multipart/x-mixed-replace).
-
-    stroom: een object met read(n) (het antwoord van de camera). Geeft elk beeld als bytes.
-    Stuurt de camera bij een beeld de lengte mee (Content-Length), dan wordt die gebruikt;
-    anders loopt een beeld van het begin van een JPEG tot het einde ervan. Stopt als de
-    stroom ophoudt; ValueError bij iets dat geen beeld kan zijn.
-    """
-    buffer = b""
-    while True:
-        stuk = stroom.read(blok)
-        if not stuk:
-            return
-        buffer += stuk
-        while True:
-            begin = buffer.find(_SOI)
-            if begin < 0:
-                # Nog geen begin van een beeld; alleen het staartje bewaren (een begin
-                # kan over twee stukken verdeeld zijn, en de kop met de lengte gaat vooraf).
-                buffer = buffer[-512:]
-                break
-            # De kop van dit beeld staat vlak vóór het begin.
-            lengte = _LENGTE.search(buffer[max(0, begin - 512):begin])
-            if lengte:
-                einde = begin + int(lengte.group(1))
-                if int(lengte.group(1)) > MAX_BEELD:
-                    raise ValueError("beeld groter dan toegestaan")
-                if len(buffer) < einde:
-                    break                # de rest van het beeld komt nog
-            else:
-                einde = buffer.find(_EOI, begin + 2)
-                if einde < 0:
-                    if len(buffer) - begin > MAX_BEELD:
-                        raise ValueError("geen einde van het beeld gevonden")
-                    break
-                einde += 2
-            yield buffer[begin:einde]
-            buffer = buffer[einde:]
-
-
-def live_stroom(stroom, per_seconde: float, klok=time.monotonic, max_duur: float = MAX_LIVE):
-    """Zet de MJPEG-stroom van een camera om in de stroom voor de browser (§5.7 punt 18).
-
-    Geeft hooguit `per_seconde` beelden per seconde door en slaat de rest over: de camera
-    levert er meer dan nodig is, en over de mobiele verbinding telt elke kB. Stopt na
-    `max_duur` seconden, of als de camera ophoudt. klok: te vervangen in tests.
-    """
-    begin = klok()
-    volgende = begin
-    for beeld in beelden(stroom):
-        nu = klok()
-        if nu - begin >= max_duur:
-            return
-        if nu < volgende:
-            continue                     # te snel na het vorige: overslaan
-        # Vaste tussenpozen; na een hapering niet inhalen.
-        volgende = max(volgende + 1.0 / per_seconde, nu)
-        yield (f"--{LIVE_GRENS}\r\nContent-Type: image/jpeg\r\n"
-               f"Content-Length: {len(beeld)}\r\n\r\n").encode() + beeld + b"\r\n"
-
-
 def _regels(cfg: Config) -> dict:
     """De alarmregels per sensor en grootheid, voor de grafieken (§5.5.3 punt 9):
     {sensor-ID: {grootheid: [{"id", "naam", "boven"|"onder", "herstel"}, ...]}}.
@@ -568,7 +500,9 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
         return render_template(
             "opnames.html", versie=VERSION,
             cameras=[{"id": c.id, "naam": c.naam, "video": c.video_url is not None,
-                      "video_duur": c.video_duur, "live": c.live_url is not None}
+                      "video_duur": c.video_duur,
+                      # Live-beeld heeft elke camera met een videostroom (§5.7 punt 18).
+                      "live": c.video_url is not None}
                      for c in cfg.cameras.values()],
             max_live=MAX_LIVE,
             video_ruimte=cfg.opnames.video_ruimte, foto_bewaren=cfg.opnames.foto_bewaren)
@@ -634,69 +568,31 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
                 or jsonify(gevraagd=type_))
 
     # --- live-beeld (§5.7 punt 18) ----------------------------------------------------
-    # Het aantal kijkers op dit moment; elke aanvraag loopt in een eigen thread.
-    kijkers = {"aantal": 0}
-    kijkers_slot = threading.Lock()
-
-    @app.get("/live/<camera_id>")
+    @app.post("/live/<camera_id>")
     def live_beeld(camera_id):
-        """Geeft de MJPEG-stroom van de camera door aan de browser. De browser praat zo
-        niet zelf met de camera: het wachtwoord blijft op de Pi."""
-        from brms.readers import camera as camerahulp
+        """Vraagt het live-beeld van een camera aan.
 
+        De pagina stuurt haar WebRTC-aanbod (SDP, tekst); de webservice geeft dat door aan
+        go2rtc op de Pi en stuurt het antwoord terug. Daarna loopt de video rechtstreeks
+        tussen de browser en go2rtc (poort 8555). De browser praat zo nooit met de camera
+        en niet met het beheer van go2rtc: het wachtwoord van de camera blijft op de Pi.
+        """
         camera = cfg.cameras.get(camera_id)
-        if camera is None or camera.live_url is None:
-            return jsonify(fout="deze camera heeft geen live-beeld (geen live_url)"), 404
-        with kijkers_slot:
-            if kijkers["aantal"] >= MAX_KIJKERS:
-                return jsonify(fout=f"er kijken al {MAX_KIJKERS} mensen live; probeer het later"), 503
-            kijkers["aantal"] += 1
-
-        def klaar():
-            with kijkers_slot:
-                kijkers["aantal"] -= 1
-
+        if camera is None or camera.video_url is None:
+            return jsonify(fout="deze camera heeft geen live-beeld (geen video_url)"), 404
+        aanbod = request.get_data(cache=False, as_text=True)
+        # Een aanbod is enkele kB tekst en begint altijd met "v=0".
+        if not aanbod.startswith("v=0") or len(aanbod) > go2rtc.MAX_SDP:
+            return jsonify(fout="de aanvraag is geen WebRTC-aanbod"), 400
         try:
-            stroom = urllib.request.urlopen(camerahulp.vul_in(camera.live_url, camera),
-                                            timeout=LIVE_TIMEOUT)
-        except (OSError, ValueError) as e:
-            klaar()
-            # Het adres (met het wachtwoord) hoort niet in het log of in het antwoord.
-            log.warning("live-beeld van %s (%s) op %s niet te openen: %s", camera.naam, camera.id,
-                        camerahulp.toon(camera.live_url), camerahulp.schoon(str(e), camera))
-            return jsonify(fout="de camera is niet bereikbaar"), 502
-
-        def geef():
-            try:
-                yield from live_stroom(stroom, camera.live_beelden)
-            except (OSError, ValueError) as e:
-                # De camera viel weg tijdens het kijken; de browser houdt het laatste beeld.
-                log.info("live-beeld van %s (%s) gestopt: %s", camera.naam, camera.id,
-                         camerahulp.schoon(str(e), camera))
-            finally:
-                # Ook als de browser de verbinding verbreekt (de gebruiker stopt of verlaat
-                # de pagina): de verbinding met de camera sluiten en de plaats vrijgeven.
-                stroom.close()
-                klaar()
-
-        antwoord = Response(geef(), mimetype=f"multipart/x-mixed-replace; boundary={LIVE_GRENS}")
-        antwoord.headers["Cache-Control"] = "no-store"
-        # Sluit Flask het antwoord zonder dat de stroom ooit gelezen is (de browser was al
-        # weg), dan loopt 'geef' niet en moet het hier worden opgeruimd.
-        gestart = {"ja": False}
-
-        def bewaakt():
-            gestart["ja"] = True
-            yield from geef()
-
-        antwoord.response = bewaakt()
-
-        @antwoord.call_on_close
-        def _sluit():
-            if not gestart["ja"]:
-                stroom.close()
-                klaar()
-        return antwoord
+            if go2rtc.kijkers(camera.id) >= MAX_KIJKERS:
+                return jsonify(fout=f"er kijken al {MAX_KIJKERS} mensen live; probeer het later"), 503
+            antwoord = go2rtc.webrtc(camera.id, aanbod)
+        except go2rtc.Go2rtcFout as e:
+            log.warning("live-beeld van %s (%s) niet gestart: %s", camera.naam, camera.id, e)
+            return jsonify(fout=str(e)), 502
+        return Response(antwoord, mimetype="application/sdp",
+                        headers={"Cache-Control": "no-store"})
 
     return app
 

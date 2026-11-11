@@ -495,160 +495,80 @@ class TestOpnames(unittest.TestCase):
             self.assertIn("broker", r.get_json()["fout"])
 
 
-def _jpeg(nr: int, vulling: int = 20) -> bytes:
-    """Een herkenbaar nep-beeld: begin en einde van een JPEG met het nummer ertussen."""
-    return b"\xff\xd8" + f"beeld{nr:03d}".encode() + b"x" * vulling + b"\xff\xd9"
-
-
-def _camerastroom(beelden_, met_lengte=True) -> bytes:
-    """Een MJPEG-stroom zoals een camera die stuurt (de Foscam stuurt de lengte mee)."""
-    uit = b""
-    for b in beelden_:
-        uit += b"--ThisString\nContent-type:image/jpeg\n"
-        uit += f"Content-Length:{len(b)}\n".encode() if met_lengte else b""
-        uit += b"\n" + b + b"\n"
-    return uit
-
-
-class _Stroom:
-    """Het antwoord van de camera: geeft de bytes in kleine stukken, zoals een verbinding."""
-
-    def __init__(self, data: bytes, stuk: int = 7, daarna=None):
-        self._data, self._stuk, self._daarna = data, stuk, daarna
-        self.gesloten = False
-
-    def read(self, n):
-        deel, self._data = self._data[:self._stuk], self._data[self._stuk:]
-        if not deel and self._daarna is not None:
-            raise self._daarna
-        return deel
-
-    def close(self):
-        self.gesloten = True
-
-
-class TestLiveBeeld(unittest.TestCase):
-    """Het live-beeld: de MJPEG-stroom van de camera doorgeven (§5.7 punt 18)."""
-
-    def test_beelden_uit_de_stroom_met_lengte(self):
-        # Een beeld met het einde-teken van een JPEG middenin: met de lengte gaat dat goed.
-        lastig = b"\xff\xd8half\xff\xd9rest\xff\xd9"
-        bron = [_jpeg(1), lastig, _jpeg(3, 500)]
-        self.assertEqual(list(web.beelden(_Stroom(_camerastroom(bron)))), bron)
-
-    def test_beelden_uit_de_stroom_zonder_lengte(self):
-        bron = [_jpeg(1), _jpeg(2, 300), _jpeg(3)]
-        self.assertEqual(list(web.beelden(_Stroom(_camerastroom(bron, met_lengte=False), stuk=5))), bron)
-
-    def test_geen_beeld_is_een_fout(self):
-        with mock.patch.object(web, "MAX_BEELD", 100):
-            with self.assertRaises(ValueError):
-                list(web.beelden(_Stroom(b"\xff\xd8" + b"x" * 500, stuk=50)))
-            te_groot = b"Content-Length:5000\n\n\xff\xd8" + b"x" * 50
-            with self.assertRaises(ValueError):
-                list(web.beelden(_Stroom(te_groot)))
-        self.assertEqual(list(web.beelden(_Stroom(b"<html>geen stroom</html>"))), [])
-
-    def test_hooguit_zoveel_beelden_per_seconde(self):
-        # De camera levert 30 beelden per seconde; 5 per seconde gaan door.
-        bron = [_jpeg(n) for n in range(60)]
-        tijd = iter(n / 30 for n in range(-1, 61))        # de eerste aanroep is het begin
-        uit = list(web.live_stroom(_Stroom(_camerastroom(bron), stuk=4096), 5, klok=lambda: next(tijd)))
-        nummers = [int(d.split(b"\xff\xd8beeld")[1][:3]) for d in uit]
-        # Ongeveer elk zesde beeld (afronding van de tijd kan één beeld schelen): van de
-        # 60 beelden in 2 seconden gaan er 10 of 11 door.
-        self.assertEqual(nummers[0], 0)
-        self.assertIn(len(nummers), (10, 11))
-        self.assertTrue(all(5 <= b - a <= 6 for a, b in zip(nummers, nummers[1:])), nummers)
-        # Elk doorgegeven beeld is een compleet deel van de stroom naar de browser.
-        self.assertTrue(uit[0].startswith(b"--brmsbeeld\r\nContent-Type: image/jpeg\r\nContent-Length: "))
-        self.assertTrue(uit[0].endswith(bron[0] + b"\r\n"))
-
-    def test_stopt_vanzelf(self):
-        bron = [_jpeg(n) for n in range(10)]
-        tijd = iter([0, 0, 100, 200, 700, 800])           # het vijfde beeld komt na de grens
-        uit = list(web.live_stroom(_Stroom(_camerastroom(bron), stuk=4096), 5,
-                                   klok=lambda: next(tijd), max_duur=600))
-        self.assertEqual(len(uit), 3)
-
-
 class TestLiveRoute(unittest.TestCase):
+    """Het live-beeld aanvragen: de webservice geeft het WebRTC-aanbod van de pagina door
+    aan go2rtc en het antwoord terug (§5.7 punt 18). go2rtc zelf is hier vervangen."""
     WACHTWOORD = "GEH&IM"
+    AANBOD = "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n"
+    ANTWOORD = "v=0\r\no=- 3 4 IN IP4 0.0.0.0\r\n"
 
     def setUp(self):
         cameras = {
-            "dek": config.Camera("dek", "Dek", "http://c/snap", None, "brms", self.WACHTWOORD,
-                                 live_url="http://c:89/stream?usr={gebruiker}&pwd={wachtwoord}",
-                                 live_beelden=30.0),
+            "dek": config.Camera("dek", "Dek", "http://c/snap",
+                                 "rtsp://{gebruiker}:{wachtwoord}@c:88/videoMain", "brms", self.WACHTWOORD),
             "mast": config.Camera("mast", "Mast", "http://c2/snap")}
         cfg = config.Config(config.MqttConfig(), config.OpslagConfig("x"), {}, cameras=cameras)
         self.client = web.maak_app(cfg, web.LiveBuffer()).test_client()
 
-    def test_stroom_naar_de_browser(self):
-        bron = [_jpeg(1), _jpeg(2)]
-        stroom = _Stroom(_camerastroom(bron), stuk=4096)
-        with mock.patch("urllib.request.urlopen", return_value=stroom) as u:
-            r = self.client.get("/live/dek")
-            data = r.get_data()
-        self.assertEqual((r.status_code, r.headers["Content-Type"], r.headers["Cache-Control"]),
-                         (200, "multipart/x-mixed-replace; boundary=brmsbeeld", "no-store"))
-        # De twee beelden komen hier vlak na elkaar; het tweede valt binnen dezelfde
-        # dertigste seconde en wordt overgeslagen.
-        self.assertEqual(data.count(b"--brmsbeeld"), 1)
-        self.assertIn(bron[0], data)
-        # De webservice vult het account in; de verbinding met de camera wordt gesloten.
-        self.assertEqual(u.call_args.args[0], "http://c:89/stream?usr=brms&pwd=GEH%26IM")
-        self.assertTrue(stroom.gesloten)
+    def _vraag(self, camera="dek", aanbod=None, kijkers=0, antwoord=None):
+        """Eén aanvraag, met go2rtc vervangen. Geeft (het antwoord, de nagebootste
+        webrtc-functie)."""
+        with mock.patch.object(web.go2rtc, "kijkers", return_value=kijkers), \
+                mock.patch.object(web.go2rtc, "webrtc", return_value=self.ANTWOORD,
+                                  side_effect=antwoord) as w:
+            r = self.client.post(f"/live/{camera}", data=self.AANBOD if aanbod is None else aanbod,
+                                 content_type="application/sdp")
+        return r, w
+
+    def test_aanbod_naar_go2rtc_en_antwoord_naar_de_browser(self):
+        r, w = self._vraag()
+        self.assertEqual((r.status_code, r.mimetype, r.headers["Cache-Control"]),
+                         (200, "application/sdp", "no-store"))
+        self.assertEqual(r.get_data(as_text=True), self.ANTWOORD)
+        w.assert_called_once_with("dek", self.AANBOD)
 
     def test_pagina_kent_het_live_beeld_maar_niet_het_adres(self):
         tekst = self.client.get("/opnames").get_data(as_text=True)
-        self.assertIn('"live": true', tekst)
-        self.assertIn('"live": false', tekst)
+        self.assertIn('"live": true', tekst)        # dek: heeft een videostroom
+        self.assertIn('"live": false', tekst)       # mast: alleen foto's
         self.assertIn('id="live"', tekst)
-        self.assertNotIn("stream", tekst)
+        self.assertNotIn("videoMain", tekst)
         self.assertNotIn("GEH", tekst)
 
-    def test_camera_zonder_live_beeld_of_onbekend(self):
-        for pad in ("/live/mast", "/live/boeg"):
-            self.assertEqual(self.client.get(pad).status_code, 404)
+    def test_camera_zonder_video_of_onbekend(self):
+        for camera in ("mast", "boeg"):
+            r, w = self._vraag(camera)
+            self.assertEqual(r.status_code, 404)
+            w.assert_not_called()
+        # De oude aanvraag (GET, de MJPEG-stroom van tot v0.17) bestaat niet meer.
+        self.assertEqual(self.client.get("/live/dek").status_code, 405)
 
-    def test_camera_niet_bereikbaar_zonder_wachtwoord_in_log_of_antwoord(self):
-        fout = OSError("geen verbinding met http://c:89/stream?usr=brms&pwd=GEH%26IM")
-        with mock.patch("urllib.request.urlopen", side_effect=fout), \
-                self.assertLogs("brms.web", "WARNING") as log:
-            r = self.client.get("/live/dek")
-        self.assertEqual(r.status_code, 502)
-        self.assertNotIn("GEH", log.output[0] + r.get_data(as_text=True))
-        self.assertIn("http://c:89", log.output[0])
-        # De plaats van deze kijker is weer vrij.
-        with mock.patch("urllib.request.urlopen", return_value=_Stroom(b"")):
-            self.assertEqual(self.client.get("/live/dek").status_code, 200)
-
-    def test_camera_valt_weg_tijdens_het_kijken(self):
-        stroom = _Stroom(_camerastroom([_jpeg(1)]), stuk=4096, daarna=TimeoutError("timed out"))
-        with mock.patch("urllib.request.urlopen", return_value=stroom), \
-                self.assertLogs("brms.web", "INFO") as log:
-            data = self.client.get("/live/dek").get_data()
-        self.assertEqual(data.count(b"--brmsbeeld"), 1)
-        self.assertIn("gestopt", log.output[0])
-        self.assertTrue(stroom.gesloten)
+    def test_geen_aanbod(self):
+        for aanbod in ("", "hallo", "v=0" + "x" * 70000):
+            r, w = self._vraag(aanbod=aanbod)
+            self.assertEqual(r.status_code, 400, aanbod[:10])
+            w.assert_not_called()
 
     def test_hooguit_drie_kijkers(self):
-        stromen = [_Stroom(_camerastroom([_jpeg(1)]), stuk=4096) for _ in range(4)]
-        with mock.patch("urllib.request.urlopen", side_effect=stromen):
-            # Drie kijkers die nog niets gelezen hebben, houden elk een plaats bezet.
-            open_ = [self.client.get("/live/dek", buffered=False) for _ in range(3)]
-            vol = self.client.get("/live/dek")
-            self.assertEqual(vol.status_code, 503)
-            self.assertIn("kijken al", vol.get_json()["fout"])
-            # Eén kijker gaat weg (zonder iets gelezen te hebben): er is weer plaats.
-            open_[0].close()
-            self.assertTrue(stromen[0].gesloten)
-            r = self.client.get("/live/dek")
-            self.assertEqual(r.status_code, 200)
-            r.get_data()
-            for o in open_[1:]:
-                o.close()
+        r, w = self._vraag(kijkers=2)
+        self.assertEqual(r.status_code, 200)
+        r, w = self._vraag(kijkers=3)
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("kijken al", r.get_json()["fout"])
+        w.assert_not_called()
+
+    def test_go2rtc_niet_bereikbaar_of_geen_beeld(self):
+        fout = web.go2rtc.Go2rtcFout("go2rtc krijgt geen beeld van de camera (fout 500)")
+        with self.assertLogs("brms.web", "WARNING") as log:
+            r, _ = self._vraag(antwoord=fout)
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("geen beeld van de camera", r.get_json()["fout"])
+        self.assertIn("Dek (dek)", log.output[0])
+        # Ook als go2rtc al bij het tellen van de kijkers niet antwoordt.
+        with mock.patch.object(web.go2rtc, "kijkers", side_effect=web.go2rtc.Go2rtcFout("go2rtc antwoordt niet")), \
+                self.assertLogs("brms.web", "WARNING"):
+            r = self.client.post("/live/dek", data=self.AANBOD, content_type="application/sdp")
+        self.assertEqual(r.status_code, 502)
 
 
 if __name__ == "__main__":

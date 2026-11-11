@@ -21,8 +21,8 @@ Het systeem draait maanden **onbeheerd**: betrouwbaarheid en eenvoud gaan boven 
 | Klok | Tijd via router (RUT241, operator time + NTP), zie ARCHITECTURE.md §4.2. DS3231 RTC-module optioneel (past niet zonder meer in behuizing) | DS3231 in bezit |
 | Router | Teltonika RUT241 eSIM (4G Cat 4, 9–30 VDC, RutOS, RMS, 1 DI/1 DO, wifi 2,4 GHz) | Besteld |
 | Bluetooth | USB-BLE-dongle met antenne (ingebouwde BT Pi 4 heeft beperkt bereik) | Nog kopen |
-| Test-sensoren | 3× Xiaomi Monitor 3 (MJWSD05MMC), pvvx-firmware, advertising **BTHome v2** | Besteld |
-| Sensoren (gepland) | RuuviTag (4-in-1) kajuit + vooronder; RuuviTag Pro 3-in-1 motorruim; RuuviTag Pro 2-in-1 buiten | Gepland |
+| Sensoren Xiaomi | 3× Xiaomi Monitor 3 (MJWSD05MMC), pvvx-firmware, advertising **BTHome v2**. Eerst test-sensoren, daarna vooronder + 2 achterkajuiten | Besteld |
+| Sensoren Ruuvi | 1× RuuviTag (4-in-1) hoofdkajuit; 2× RuuviTag Pro 3-in-1: motorruim en buiten (IP66: beschut ophangen) | Gepland |
 | Accu | Victron BMV-700 + VE.Direct Bluetooth Smart dongle (Instant Readout, `victron-ble`, encryptiesleutel uit VictronConnect) | In bezit |
 | Zonnepanelen | 3 banken: 2× Victron BlueSolar MPPT 75/15 + VE.Direct Bluetooth Smart dongle, 1× SmartSolar MPPT 100/30 (ingebouwde BT). Winter: alleen 50 Wp aangesloten | In bezit |
 | Lader/omvormer, walstroom | Victron MultiPlus 12/3000/120-16 (VE.Bus) + VE.Bus Smart dongle (Instant Readout, AC-ingang = walstroom). MK3-USB alleen voor configuratie | MultiPlus/MK3 in bezit, dongle nog kopen |
@@ -59,4 +59,4 @@ Daarna: Ruuvi- en Victron-decoder, Shelly-reader (bilge), alarmlaag met Telegram
 
 ## Open punten
 - Accutype (bij LiFePO4: niet laden onder 0 °C – BMS/lader regelt dit; geen eigen accutemperatuurmeting gepland).
-- Data-abonnement / eSIM-provider kiezen; eSIM-profiel thuis installeren (RutOS-app of WAN-kabel).
+- Data-abonnement voor de router: 40 GB per maand (afgesloten november 2026). eSIM-profiel thuis installeren (RutOS-app of WAN-kabel).

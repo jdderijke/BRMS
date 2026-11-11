@@ -27,7 +27,14 @@ TS = 1794342600
 NEP_FFMPEG = """
 import sys, time
 adres, uit = sys.argv[sys.argv.index("-i") + 1], sys.argv[-1]
-if adres.endswith("/goed"):
+if adres == "rtsp://127.0.0.1:8554/stuk":
+    # De stroom van go2rtc voor de camera "stuk": go2rtc krijgt geen beeld.
+    sys.stderr.write("rtsp://127.0.0.1:8554/stuk: Server returned 404 Not Found\\n")
+    sys.exit(1)
+elif adres.startswith("rtsp://127.0.0.1:8554/"):
+    # De stroom van go2rtc: een video van een andere grootte dan rechtstreeks.
+    open(uit, "wb").write(b"g2r" * 500)
+elif adres.endswith("/goed"):
     open(uit, "wb").write(b"mp4" * 1000)
 elif adres.endswith("/leeg"):
     open(uit, "wb").close()
@@ -255,10 +262,11 @@ class TestVideo(unittest.TestCase):
     def tearDown(self):
         self._map.cleanup()
 
-    def _opnemer(self, cam, ffmpeg=None):
+    def _opnemer(self, cam, ffmpeg=None, go2rtc_draait=False):
         return Opnemer(cam, self.map, self.bus, haal=lambda adres, timeout: JPEG,
                        klok_ok=lambda: True, tijd=lambda: self.t,
-                       ffmpeg=ffmpeg or (sys.executable, self.script))
+                       ffmpeg=ffmpeg or (sys.executable, self.script),
+                       via_go2rtc=lambda: go2rtc_draait)
 
     def _bestanden(self):
         return sorted(b for _, _, bestanden in os.walk(self.map) for b in bestanden)
@@ -281,6 +289,45 @@ class TestVideo(unittest.TestCase):
             "ts": TS, "camera_id": "dek", "type": "video", "duur": 5,
             "bestand": "dek/2026/11/10/203000.mp4", "bytes": 3000,
             "aanleiding": "alarm:beweging"}, 1)])
+
+    def test_via_go2rtc_als_dat_draait(self):
+        # Draait go2rtc, dan komt de stroom daarvandaan (§5.7 punt 18): één verbinding met
+        # de camera voor kijken en opnemen samen. In het adres staat dan geen wachtwoord.
+        with self.assertLogs("brms.readers.camera", "INFO") as log:
+            bestand = asyncio.run(self._opnemer(_camera("goed"), go2rtc_draait=True).video())
+        self.assertEqual(bestand, "dek/2026/11/10/203000.mp4")
+        self.assertEqual(self.bus.berichten[0][1]["bytes"], 1500)        # de stroom van go2rtc
+        self.assertIn("via go2rtc", log.output[0])
+
+    def test_zonder_go2rtc_rechtstreeks(self):
+        with self.assertLogs("brms.readers.camera", "INFO") as log:
+            asyncio.run(self._opnemer(_camera("goed")).video())
+        self.assertEqual(self.bus.berichten[0][1]["bytes"], 3000)        # de camera zelf
+        self.assertIn("rechtstreeks van de camera", log.output[0])
+
+    def test_mislukt_via_go2rtc_dan_rechtstreeks(self):
+        # go2rtc draait, maar geeft geen beeld: de opname begint opnieuw, rechtstreeks van
+        # de camera. Een video bij een alarm mag niet afhangen van go2rtc.
+        stuk = Camera("stuk", "Dek", ADRES, "rtsp://{gebruiker}:{wachtwoord}@192.168.1.20:89/goed",
+                      "brms", WACHTWOORD, 180.0, 5.0)
+        with self.assertLogs("brms.readers.camera", "INFO") as log:
+            bestand = asyncio.run(self._opnemer(stuk, go2rtc_draait=True).video("alarm:beweging"))
+        tekst = "\n".join(log.output)
+        self.assertIn("via go2rtc mislukt (alarm:beweging): ffmpeg gaf fout 1", tekst)
+        self.assertIn("de opname begint opnieuw, rechtstreeks van de camera", tekst)
+        self.assertEqual(bestand, "stuk/2026/11/10/203000.mp4")
+        self.assertEqual(self._bestanden(), ["203000.mp4"])               # geen rest van de eerste poging
+        self.assertEqual([b[1]["bytes"] for b in self.bus.berichten], [3000])
+        self.assertNotIn("GEH", tekst)
+
+    def test_mislukt_via_go2rtc_en_rechtstreeks(self):
+        stuk = Camera("stuk", "Dek", ADRES, "rtsp://{gebruiker}:{wachtwoord}@192.168.1.20:89/fout",
+                      "brms", WACHTWOORD, 180.0, 5.0)
+        with self.assertLogs("brms.readers.camera", "WARNING") as log:
+            self.assertIsNone(asyncio.run(self._opnemer(stuk, go2rtc_draait=True).video()))
+        self.assertEqual(len(log.output), 2)                              # beide pogingen gemeld
+        self.assertIn("op rtsp://192.168.1.20:89 mislukt", log.output[1])
+        self.assertEqual((self._bestanden(), self.bus.berichten), ([], []))
 
     def test_bericht_past_bij_de_opslag(self):
         from brms import storage

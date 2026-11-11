@@ -13,6 +13,7 @@ Opdrachten:
   alarm               de alarmlaag starten (§5.5)
   camera              de camera-reader-service starten (§5.7)
   web                 de webservice starten (§5.6)
+  go2rtc              go2rtc starten: het live-beeld van de camera's (§5.7 punt 18)
   monitor [sensor..]  monitor in tmux: busverkeer, of met sensor(en) de trace (§10.2)
   monitor stop        het monitorvak sluiten; de shell blijft
   grootheden [type]   alle grootheden, of wat een sensortype levert (§5.4.2)
@@ -56,6 +57,16 @@ def _check_config(cfg_pad: str) -> int:
     if any(c.video_url for c in cfg.cameras.values()) and shutil.which("ffmpeg") is None:
         print("Let op: er is een camera met 'video_url', maar ffmpeg is niet geïnstalleerd;\n"
               "video's mislukken tot ffmpeg er is (sudo apt install ffmpeg, of: brms update).")
+    # Het live-beeld loopt via go2rtc (§5.7 punt 18). Alleen op de Pi: op de pc staat het
+    # programma er nooit.
+    if os.name == "posix" and any(c.video_url for c in cfg.cameras.values()):
+        from brms import go2rtc
+        if not os.path.isfile(go2rtc.PROGRAMMA):
+            print("Let op: go2rtc is niet geïnstalleerd; er is geen live-beeld tot het er is\n"
+                  "(brms update, of: bash deploy/go2rtc.sh). Opnames werken wel.")
+    # Opmerkingen die geen fout zijn, bijvoorbeeld een veld dat niet meer bestaat.
+    for w in cfg.waarschuwingen:
+        print(f"Let op: {w}")
     return 0
 
 
@@ -246,6 +257,7 @@ services (worden door systemd gestart – niet met de hand; gebruik brms herstar
   alarm                  alarmlaag       (systemd-unit brms-alarm)
   camera                 camera-reader   (systemd-unit brms-camera)
   web                    webinterface    (systemd-unit brms-web)
+  go2rtc                 live-beeld      (systemd-unit brms-go2rtc)
 """
 
 
@@ -279,7 +291,7 @@ def main(argv=None) -> int:
                    choices=("check-config", "grootheden", "start", "stop", "herstart", "update",
                             "monitor", "sim", "simuleer", "ble-reader", "shelly-reader", "opslag", "alarm",
                             "camera",
-                            "web",
+                            "web", "go2rtc",
                             "monitor-vak"))
     p.add_argument("sensoren", nargs="*",
                    help="bij monitor: naam of ID van sensor(en) voor trace; "
@@ -332,7 +344,15 @@ def main(argv=None) -> int:
         return 1
 
     log.info("BRMS %s, %s", VERSION, args.opdracht)
+    # Vervallen velden en dergelijke ook in het log van de service (§5.4.1).
+    for w in cfg.waarschuwingen:
+        log.warning("configuratie: %s", w)
     try:
+        if args.opdracht == "go2rtc":
+            # go2rtc is een los programma: BRMS schrijft zijn instellingen en start het dan
+            # in plaats van zichzelf (§5.7 punt 18). Komt alleen terug bij een fout.
+            from brms import go2rtc
+            return go2rtc.start(cfg)
         if args.opdracht == "web":
             # Het web is Flask (geen asyncio, §3.2) en heeft zijn eigen hoofdlus.
             from brms import web

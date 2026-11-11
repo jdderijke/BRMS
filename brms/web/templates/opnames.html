@@ -13,16 +13,20 @@
   opdracht op de MQTT-bus zet; de opslag-service verwijdert bestand en databaserij (§3.1:
   één schrijver). Daarom wordt de lijst kort na een opdracht opnieuw opgehaald.
 
-  "Live camera" toont het live-beeld van de camera (§5.7 punt 18): de webservice geeft de
-  MJPEG-stroom van de camera door, een paar beelden per seconde. Zolang het live-beeld
-  loopt, zijn er de knoppen "Foto" en "Video": die geven de camera-reader een opdracht
-  (poll-nu, §5.7 punt 12) om een opname te maken en op te slaan, in de volle kwaliteit van
-  de camera. Het live-beeld loopt intussen door; het wordt zelf niet opgeslagen.
+  "Live camera" toont het live-beeld van de camera (§5.7 punt 18), als WebRTC: de techniek
+  van videobellen in de browser. Het programma go2rtc op de Pi geeft de video van de camera
+  ongewijzigd door, dus het volle beeld op volle snelheid. De pagina vraagt het beeld aan
+  bij de webservice (die het doorgeeft aan go2rtc); daarna loopt de video rechtstreeks
+  tussen de browser en go2rtc. Zolang het live-beeld loopt, zijn er de knoppen "Foto" en
+  "Video": die geven de camera-reader een opdracht (poll-nu, §5.7 punt 12) om een opname te
+  maken en op te slaan. Het live-beeld loopt intussen door; het wordt zelf niet opgeslagen.
 
   Dagoverzicht (tweede weergave): de opnames van de dag worden van oud naar nieuw
   afgespeeld als een versnelde film. Een intervalfoto staat 0,5 s in beeld, een foto bij
   een gebeurtenis (alarm, op verzoek) 5 s, en een video wordt helemaal afgespeeld (met
-  "verder" over te slaan). Dat gebeurt in de browser: de Pi maakt er geen videobestand van.
+  "verder" over te slaan). Een foto die tijdens een video van dezelfde camera is gemaakt,
+  doet niet mee: de video laat dat stuk van de dag al zien. Dat gebeurt allemaal in de
+  browser: de Pi maakt er geen videobestand van.
 -->
 <head>
 <meta charset="utf-8">
@@ -371,6 +375,21 @@ let dagBegin = 0;                // middernacht van de gekozen dag (Unix-seconde
 let voorraad = [];               // de alvast opgehaalde foto's (vasthouden, anders stopt het ophalen)
 
 const gebeurtenis = o => o.aanleiding !== "interval";
+
+// Een foto die samenvalt met een video van dezelfde camera doet in het dagoverzicht niet
+// mee (§5.6 punt 2): de video laat dat stuk van de dag al zien, en de tijdlijn hoort niet
+// dubbel te lopen. "Samenvallen" is: gemaakt tijdens de video. Een foto bij een gebeurtenis
+// valt ook weg als hij vlak vóór de video is gemaakt: een alarm maakt eerst de foto en
+// start dan de video. In de lijst blijven al deze foto's gewoon staan.
+const MARGE_VOOR_VIDEO = 5;      // s
+function zonderDubbel(lijst) {
+  const videos = lijst.filter(o => o.type === "video");
+  if (!videos.length) return lijst;
+  return lijst.filter(o => o.type !== "foto" || !videos.some(v =>
+    v.camera_id === o.camera_id
+    && o.ts <= v.ts + (v.duur || 0)
+    && o.ts >= v.ts - (gebeurtenis(o) ? MARGE_VOOR_VIDEO : 0)));
+}
 // De plaats van een tijdstip op de tijdbalk, in procenten van de dag.
 const opBalk = ts => Math.min(100, Math.max(0, (ts - dagBegin) / 864)) + "%";
 
@@ -389,7 +408,9 @@ async function laadFilm() {
     if (!a.ok) throw new Error("fout " + a.status);
     const d = await a.json();
     if (mijn !== aanvraag) return;
-    film = d.opnames.reverse();          // het antwoord is van nieuw naar oud
+    const alles = d.opnames.reverse();   // het antwoord is van nieuw naar oud
+    film = zonderDubbel(alles);
+    const weg = alles.length - film.length;
     toonTotalen(d.totalen);
     plek = 0;
     tekenBalk();
@@ -397,6 +418,9 @@ async function laadFilm() {
     // Vooraf zeggen wat afspelen kost: over de mobiele verbinding van de boot telt dat.
     const bytes = film.reduce((som, o) => som + o.bytes, 0);
     meld(film.length ? "Dagoverzicht: " + film.length + " opnames, samen " + grootte(bytes) + "."
+                       + (weg ? " " + weg + (weg === 1 ? " foto valt" : " foto's vallen")
+                                + " samen met een video en " + (weg === 1 ? "is" : "zijn")
+                                + " weggelaten." : "")
                      : "");
     if (d.vol) meld("Deze dag heeft meer opnames dan het dagoverzicht aankan; alleen de laatste "
                     + film.length + " worden afgespeeld.");
@@ -617,8 +641,12 @@ async function wachtOpNieuwe(camera, type, bekend, seconden) {
 let live = null;          // de camera waarvan het live-beeld loopt, of null
 let liveWekker = null;    // de timer die het live-beeld na MAX_LIVE stopt
 let liveTik = null;       // elke seconde: het bijschrift bijwerken
-let liveStop = null;      // om de aanvraag van de stroom af te breken (AbortController)
-let laatsteBeeld = 0;     // wanneer het laatste live-beeld binnenkwam (ms)
+let livePc = null;        // de WebRTC-verbinding met go2rtc (RTCPeerConnection)
+let liveBegin = 0;        // wanneer het live-beeld gestart is (ms)
+let laatsteBeeld = 0;     // wanneer het laatste live-beeld binnenkwam (ms); 0 = nog geen
+let beeldenGeteld = 0;    // hoeveel beelden de browser tot nu toe heeft getoond
+const LIVE_WACHT = 10;    // s: zo lang wachten op het eerste beeld
+const LIVE_STIL = 15;     // s: zo lang zonder nieuw beeld, dan stopt het live-beeld
 let videoTot = 0;         // tot wanneer de video-opname loopt (ms), of 0
 const bezig = {foto: false, video: false};   // loopt er een opname op verzoek?
 
@@ -630,7 +658,7 @@ function zetLiveKnop() {
   el("live").textContent = live ? "■ Stop live" : "Live camera";
   el("live").disabled = !live && !(camera && camera.live);
   el("live").title = el("live").disabled
-    ? "Deze camera heeft geen live-beeld (geen live_url in brms.toml)"
+    ? "Deze camera heeft geen live-beeld (geen video_url in brms.toml)"
     : "Het live-beeld van de camera";
   el("live-knoppen").hidden = !live;
   el("live-foto").disabled = bezig.foto;
@@ -647,90 +675,125 @@ function liveBijschrift() {
   const stil = laatsteBeeld ? Math.round((Date.now() - laatsteBeeld) / 1000) : 0;
   el("bij").querySelector(".tijd").textContent = "Live";
   el("bij").querySelector(".rest").textContent = live.naam
-    + (!laatsteBeeld ? " · wacht op het eerste beeld …"
+    + (!laatsteBeeld ? " · verbinden, wacht op het eerste beeld …"
        : stil >= 4 ? " · geen nieuw beeld sinds " + stil + " s" : "")
     + (rest > 0 ? " · ● video-opname loopt, nog " + rest + " s" : "");
 }
 
-// Zoekt in een reeks bytes het einde van de kop van een deel (lege regel: CR LF CR LF).
-function kopEinde(bytes) {
-  const tot = Math.min(bytes.length - 3, 400);
-  for (let i = 0; i < tot; i++)
-    if (bytes[i] === 13 && bytes[i + 1] === 10 && bytes[i + 2] === 13 && bytes[i + 3] === 10) return i;
-  return -1;
+// Vraagt het live-beeld aan en koppelt het aan het videovak (§5.7 punt 18).
+//
+// WebRTC werkt met een aanbod en een antwoord: de browser beschrijft wat hij wil ontvangen
+// (alleen video), go2rtc antwoordt met hoe het de video stuurt en op welke adressen van de
+// Pi het te bereiken is. De webservice geeft beide door; daarna maakt de browser zelf de
+// verbinding met go2rtc en komt de video binnen.
+async function verbindLive(camera, video, pc) {
+  pc.addTransceiver("video", {direction: "recvonly"});     // alleen ontvangen, geen geluid
+  pc.addEventListener("track", e => {
+    video.srcObject = e.streams[0] || new MediaStream([e.track]);
+  });
+  await pc.setLocalDescription(await pc.createOffer());
+  // Even wachten tot de browser zijn eigen adressen kent; die gaan mee in het aanbod.
+  // Hooguit 2 s: go2rtc heeft ze niet nodig om bereikbaar te zijn.
+  await new Promise(klaar => {
+    if (pc.iceGatheringState === "complete") { klaar(); return; }
+    pc.addEventListener("icegatheringstatechange",
+                        () => { if (pc.iceGatheringState === "complete") klaar(); });
+    setTimeout(klaar, 2000);
+  });
+  if (pc.signalingState === "closed") return;               // intussen gestopt
+  const a = await fetch("/live/" + encodeURIComponent(camera.id),
+                        {method: "POST", headers: {"Content-Type": "application/sdp"},
+                         body: pc.localDescription.sdp, cache: "no-store"});
+  if (!a.ok) {
+    const d = await a.json().catch(() => ({}));
+    throw new Error(d.fout || "fout " + a.status);
+  }
+  const antwoord = await a.text();
+  if (pc.signalingState === "closed") return;
+  await pc.setRemoteDescription({type: "answer", sdp: antwoord});
 }
 
-// Leest de stroom van de webservice en zet elk beeld in het fotovak. De pagina leest de
-// stroom zelf (in plaats van hem aan een <img> te geven): zo weet zij wanneer er een
-// beeld binnenkomt, wanneer de stroom ophoudt en wat er misging.
-async function leesLive(camera, img, stop) {
-  const antwoord = await fetch("/live/" + encodeURIComponent(camera.id),
-                               {signal: stop.signal, cache: "no-store"});
-  if (!antwoord.ok) {
-    const d = await antwoord.json().catch(() => ({}));
-    throw new Error(d.fout || "fout " + antwoord.status);
+// Elke seconde: tellen hoeveel beelden er zijn binnengekomen. Zo weet de pagina of er
+// beeld is, en of het stilgevallen is (de camera stuurt niets meer: de verbinding met
+// go2rtc blijft dan gewoon bestaan). Daarna het bijschrift bijwerken.
+async function liveKijk() {
+  const pc = livePc, camera = live;
+  if (!pc || !camera) return;
+  try {
+    let n = 0;
+    (await pc.getStats()).forEach(s => {
+      if (s.type === "inbound-rtp" && s.kind === "video") n = s.framesDecoded || 0;
+    });
+    if (pc !== livePc) return;                              // intussen gestopt
+    if (n > beeldenGeteld) { beeldenGeteld = n; laatsteBeeld = Date.now(); }
+  } catch (e) { /* de verbinding is net gesloten */ }
+  const nu = Date.now();
+  if (!laatsteBeeld && nu - liveBegin > LIVE_WACHT * 1000) {
+    stopLive();
+    meld("Het live-beeld van " + camera.naam + " komt niet door: er is na " + LIVE_WACHT
+         + " s nog geen beeld. Is poort 8555 van de Pi bereikbaar (thuisnetwerk of Tailscale)?", true);
+    return;
   }
-  const lezer = antwoord.body.getReader();
-  let buffer = new Uint8Array(0);
-  let vorig = null;       // het adres van het vorige beeld, om het geheugen vrij te geven
-  for (;;) {
-    const {value, done} = await lezer.read();
-    if (done) return;                     // de webservice of de camera is gestopt
-    const samen = new Uint8Array(buffer.length + value.length);
-    samen.set(buffer); samen.set(value, buffer.length);
-    buffer = samen;
-    // Elk deel: een kop met de lengte, een lege regel, het beeld, en een regeleinde.
-    for (;;) {
-      const einde = kopEinde(buffer);
-      if (einde < 0) break;
-      const kop = new TextDecoder().decode(buffer.subarray(0, einde));
-      const lengte = /Content-Length: (\d+)/.exec(kop);
-      if (!lengte) throw new Error("onverwacht antwoord van de webservice");
-      const begin = einde + 4, n = Number(lengte[1]);
-      if (buffer.length < begin + n + 2) break;        // de rest van het beeld komt nog
-      const adres = URL.createObjectURL(new Blob([buffer.slice(begin, begin + n)], {type: "image/jpeg"}));
-      img.src = adres;
-      if (vorig) URL.revokeObjectURL(vorig);
-      vorig = adres;
-      laatsteBeeld = Date.now();
-      buffer = buffer.subarray(begin + n + 2);
-    }
+  if (laatsteBeeld && nu - laatsteBeeld > LIVE_STIL * 1000) {
+    stopLive();
+    meld("Het live-beeld van " + camera.naam + " is gestopt: de camera stuurt geen beeld meer. "
+         + "Start het opnieuw om verder te kijken.", true);
+    return;
   }
+  liveBijschrift();
 }
 
 function startLive() {
   const camera = liveCamera();
   if (!camera || !camera.live) return;
+  if (!window.RTCPeerConnection) {
+    meld("Deze browser kan geen live-beeld tonen (geen WebRTC).", true);
+    return;
+  }
   pauze();                      // een lopend dagoverzicht staat stil zolang er live gekeken wordt
   live = camera;
   gekozen = null;
+  liveBegin = Date.now();
   laatsteBeeld = 0;
+  beeldenGeteld = 0;
   for (const tr of el("rijen").rows) tr.classList.remove("gekozen");
-  const img = document.createElement("img");
-  img.alt = "Live-beeld van " + camera.naam;
-  el("beeld").replaceChildren(img);
+  const video = document.createElement("video");
+  // Vanzelf afspelen mag in elke browser alleen zonder geluid, en op een iPhone alleen
+  // "in de pagina" (niet schermvullend). Er is geen geluid, dus dat kost niets.
+  video.muted = true;
+  video.autoplay = true;
+  video.playsInline = true;
+  video.setAttribute("aria-label", "Live-beeld van " + camera.naam);
+  // Het vak krijgt de vorm van het camerabeeld zodra die bekend is.
+  video.addEventListener("resize", () => {
+    if (video.videoWidth && video.videoHeight)
+      el("beeld").style.aspectRatio = video.videoWidth + " / " + video.videoHeight;
+  });
+  el("beeld").replaceChildren(video);
   el("bij").hidden = false;
   liveBijschrift();
-  liveTik = setInterval(liveBijschrift, 1000);
-  const stop = liveStop = new AbortController();
-  leesLive(camera, img, stop).then(() => {
-    // De stroom is opgehouden zonder dat de gebruiker stopte.
-    if (stop.signal.aborted) return;
+  liveTik = setInterval(liveKijk, 1000);
+  // Geen hulp van een server op internet (iceServers leeg): de browser bereikt de Pi
+  // rechtstreeks, via het netwerk of via Tailscale.
+  const pc = livePc = new RTCPeerConnection({iceServers: []});
+  pc.addEventListener("connectionstatechange", () => {
+    if (pc !== livePc || pc.connectionState !== "failed") return;
     stopLive();
-    meld("Het live-beeld van " + camera.naam + " is gestopt: de camera stuurt geen beeld meer. "
+    meld("De verbinding voor het live-beeld van " + camera.naam + " is verbroken. "
          + "Start het opnieuw om verder te kijken.", true);
-  }).catch(e => {
-    if (stop.signal.aborted) return;      // zelf gestopt: geen fout
+  });
+  verbindLive(camera, video, pc).catch(e => {
+    if (pc !== livePc) return;            // zelf gestopt: geen fout
     stopLive();
     meld("Het live-beeld van " + camera.naam + " is niet beschikbaar: " + e.message + ".", true);
   });
   // Vanzelf stoppen: een vergeten tabblad mag de databundel van de boot niet leegtrekken.
-  // Iets eerder dan de webservice, zodat deze melding verschijnt en niet "gestopt".
+  // De pagina bewaakt dit zelf; de webservice kan de video niet afbreken.
   liveWekker = setTimeout(() => {
     stopLive();
     meld("Het live-beeld is na " + Math.round(MAX_LIVE / 60) + " minuten gestopt om data te "
          + "sparen. Start het opnieuw om verder te kijken.");
-  }, (MAX_LIVE - 3) * 1000);
+  }, MAX_LIVE * 1000);
   meld("");
   zetLiveKnop();
 }
@@ -741,7 +804,11 @@ function eindeLive() {
   if (!live) return;
   clearTimeout(liveWekker);
   clearInterval(liveTik);
-  if (liveStop) liveStop.abort();          // breekt de aanvraag van de stroom af
+  // De verbinding met go2rtc sluiten; is dit de laatste kijker, dan verbreekt go2rtc zijn
+  // verbinding met de camera.
+  if (livePc) { livePc.close(); livePc = null; }
+  const video = el("beeld").querySelector("video");
+  if (video && video.srcObject) video.srcObject = null;
   live = null;
   zetLiveKnop();
 }

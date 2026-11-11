@@ -26,6 +26,13 @@ nauwelijks) en zonder geluid. Het bestand komt naast de foto's, met dezelfde naa
 `.mp4`. Tijdens een video gaan de intervalfoto's gewoon door; een tweede opdracht voor een
 video tijdens een lopende video wordt genegeerd (§5.7 punt 3).
 
+De stroom voor een video komt bij voorkeur van go2rtc op de Pi (§5.7 punt 18, zie
+brms/go2rtc.py): go2rtc geeft de stroom van de camera door aan iedereen die live kijkt, en
+een opname die daar ook van afneemt, deelt die ene verbinding met de camera. Met een
+tweede, eigen verbinding levert de testcamera minder beelden per seconde, aan de opname
+en aan de kijker. Draait go2rtc niet, of mislukt de opname langs die weg, dan neemt de
+reader rechtstreeks van de camera op: een video bij een alarm mag niet afhangen van go2rtc.
+
 Een mislukte opname (camera onbereikbaar, antwoord is geen JPEG, ffmpeg geeft een fout)
 geeft een waarschuwing in het log en geen bericht op de bus; er blijft geen bestand
 achter. De volgende intervalfoto komt vanzelf. Zolang de klok
@@ -51,6 +58,7 @@ import time
 import urllib.parse
 import urllib.request
 
+from brms import go2rtc
 from brms.config import PLAATS_GEBRUIKER, PLAATS_WACHTWOORD, Camera, Config
 
 log = logging.getLogger(__name__)
@@ -203,10 +211,11 @@ class Opnemer:
     """
 
     def __init__(self, camera: Camera, map_: str, bus, haal=haal_foto, klok_ok=_klok_ok,
-                 tijd=time.time, ffmpeg=FFMPEG):
-        """haal, klok_ok, tijd en ffmpeg (het programma, als lijst) zijn te vervangen in
-        tests."""
+                 tijd=time.time, ffmpeg=FFMPEG, via_go2rtc=go2rtc.bereikbaar):
+        """haal, klok_ok, tijd, ffmpeg (het programma, als lijst) en via_go2rtc (een
+        functie die zegt of go2rtc draait) zijn te vervangen in tests."""
         self._ffmpeg = tuple(ffmpeg)
+        self._via_go2rtc = via_go2rtc
         # De taak van de lopende video, of None.
         self._videotaak: asyncio.Task | None = None
         self.camera = camera
@@ -281,16 +290,53 @@ class Opnemer:
         if not await self._klok_goed():
             return None
 
+        duur = int(round(camera.video_duur))
+        # Waar de stroom vandaan komt (§5.7 punt 18): eerst go2rtc op de Pi als dat draait
+        # (één verbinding met de camera voor kijken en opnemen samen), en anders, of als
+        # dat mislukt, de camera zelf. De controle opent een poort en blokkeert kort;
+        # daarom in een thread.
+        bronnen = []
+        if await asyncio.to_thread(self._via_go2rtc):
+            bronnen.append((go2rtc.rtsp_adres(camera.id), "via go2rtc"))
+        bronnen.append((vul_in(camera.video_url, camera), "rechtstreeks van de camera"))
+
+        for nr, (adres, hoe) in enumerate(bronnen):
+            log.info("video van %s (%s) gestart: %d s, %s (%s)", camera.naam, camera.id, duur,
+                     hoe, aanleiding)
+            try:
+                ts, bestand, grootte = await self._neem_op(adres, duur)
+                break
+            except (CameraFout, OSError) as e:
+                reden = schoon(str(e), camera)
+                if nr < len(bronnen) - 1:
+                    # Mislukt via go2rtc: opnieuw, nu rechtstreeks. De opname begint dan
+                    # later, maar een video die iets later begint is beter dan geen video.
+                    log.warning("video van %s (%s) %s mislukt (%s): %s; de opname begint "
+                                "opnieuw, rechtstreeks van de camera", camera.naam, camera.id,
+                                hoe, aanleiding, reden)
+                    continue
+                log.warning("video van %s (%s) op %s mislukt (%s): %s", camera.naam, camera.id,
+                            toon(camera.video_url), aanleiding, reden)
+                return None
+
+        bericht = opnamebericht(ts, camera.id, VIDEO, duur, bestand, grootte, aanleiding)
+        if not self._bus.publiceer(f"{TOPIC_OPNAME}/{camera.id}", bericht, qos=1):
+            log.warning("broker niet bereikbaar: video %s niet gemeld aan de opslag", bestand)
+        log.info("video %s klaar (%.1f MB)", bestand, grootte / 1e6)
+        return bestand
+
+    async def _neem_op(self, adres: str, duur: int) -> tuple[int, str, int]:
+        """Eén poging om een video op te nemen van `adres` (de camera zelf of go2rtc).
+        Geeft (tijd, pad binnen de opnamemap, grootte in bytes). CameraFout of OSError als
+        het niet lukt; er blijft dan geen bestand achter."""
+        camera = self.camera
         # De tijd van een video is het begin van de opname (§5.3.1).
         ts = int(self._tijd())
-        duur = int(round(camera.video_duur))
         bestand = bestandsnaam(camera.id, ts, "mp4")
         pad = os.path.join(self._map, *bestand.split("/"))
         # ffmpeg schrijft onder een tijdelijke naam; pas een geslaagde video krijgt de
         # echte naam.
         tijdelijk = pad + ".tmp"
-        adres = vul_in(camera.video_url, camera)
-        log.info("video van %s (%s) gestart: %d s (%s)", camera.naam, camera.id, duur, aanleiding)
         proces = None
         try:
             os.makedirs(os.path.dirname(pad), exist_ok=True)
@@ -316,10 +362,7 @@ class Opnemer:
             if grootte == 0:
                 raise CameraFout("ffmpeg heeft geen beeld weggeschreven")
             os.replace(tijdelijk, pad)
-        except (CameraFout, OSError) as e:
-            log.warning("video van %s (%s) op %s mislukt (%s): %s", camera.naam, camera.id,
-                        toon(camera.video_url), aanleiding, schoon(str(e), camera))
-            return None
+            return ts, bestand, grootte
         finally:
             # Ook als de service stopt terwijl de video loopt (de taak wordt dan
             # afgebroken): ffmpeg stoppen en geen half bestand achterlaten (§5.7 punt 11).
@@ -330,12 +373,6 @@ class Opnemer:
                 os.remove(tijdelijk)
             except OSError:
                 pass
-
-        bericht = opnamebericht(ts, camera.id, VIDEO, duur, bestand, grootte, aanleiding)
-        if not self._bus.publiceer(f"{TOPIC_OPNAME}/{camera.id}", bericht, qos=1):
-            log.warning("broker niet bereikbaar: video %s niet gemeld aan de opslag", bestand)
-        log.info("video %s klaar (%.1f MB)", bestand, grootte / 1e6)
-        return bestand
 
     def _start_video(self, aanleiding: str) -> None:
         """Start een video als eigen taak, zodat de intervalfoto's doorgaan. Loopt er al

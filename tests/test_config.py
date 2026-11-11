@@ -377,7 +377,7 @@ class TestConfig(unittest.TestCase):
         """)
         dek, kajuit = cfg.cameras["dek"], cfg.cameras["kajuit-cam"]
         self.assertEqual((dek.naam, dek.gebruiker, dek.wachtwoord, dek.foto_interval, dek.video_duur),
-                         ("Dek", "brms", "geheim", 60.0, 120.0))
+                         ("Dek", "brms", "geheim", 60.0, 60.0))     # video: standaard 1 minuut
         self.assertTrue(dek.video_url.startswith("rtsp://"))
         # Zonder naam geldt het ID; zonder account en zonder video mag ook.
         self.assertEqual((kajuit.naam, kajuit.gebruiker, kajuit.video_url, kajuit.foto_interval),
@@ -453,7 +453,11 @@ class TestConfig(unittest.TestCase):
                 _toml(self._MET_CAMERA + 'id = "vorst"\n' + regel)
             self.assertIn(verwacht, "\n".join(ctx.exception.fouten))
 
-    def test_live_beeld(self):
+    def test_vervallen_velden_van_het_live_beeld(self):
+        # Tot code v0.17 kwam het live-beeld van de MJPEG-stroom van de camera ('live_url',
+        # 'live_beelden'). Die velden bestaan niet meer (§5.7 punt 18). Staan ze nog in
+        # brms.toml, dan is dat geen fout (een update mag er niet op stuklopen) maar een
+        # waarschuwing, wat er ook in staat.
         cfg = _toml("""
             [[camera]]
             id = "dek"
@@ -466,28 +470,26 @@ class TestConfig(unittest.TestCase):
             [[camera]]
             id = "mast"
             foto_url = "http://camera2/snap.jpg"
-            live_url = "http://camera2/stream"
+            live_beelden = "onzin"
 
             [[camera]]
             id = "kajuit-cam"
             foto_url = "http://camera3/snap.jpg"
         """)
-        dek, mast, kajuit = cfg.cameras.values()
-        self.assertEqual((dek.live_url.startswith("http://camera/stream"), dek.live_beelden), (True, 2.0))
-        self.assertEqual((mast.live_url, mast.live_beelden), ("http://camera2/stream", 5.0))
-        self.assertIsNone(kajuit.live_url)
-        self.assertNotIn("stream", repr(dek))          # ook dit adres niet in de repr
+        self.assertEqual(list(cfg.cameras), ["dek", "mast", "kajuit-cam"])
+        self.assertFalse(hasattr(cfg.cameras["dek"], "live_url"))
+        self.assertEqual(len(cfg.waarschuwingen), 2)
+        dek, mast = cfg.waarschuwingen
+        self.assertIn("(dek): 'live_url' en 'live_beelden' bestaan niet meer en worden genegeerd", dek)
+        self.assertIn("(mast): 'live_beelden' bestaat niet meer en wordt genegeerd", mast)
+        # Het adres (er kan een wachtwoord in staan) komt niet in de waarschuwing.
+        self.assertNotIn("stream", dek)
 
-    def test_fouten_in_live_beeld(self):
-        for regels, verwacht in [
-                ('live_url = "rtsp://camera/video"', "'live_url' moet een adres zijn dat begint met http://"),
-                ('live_url = "http://camera/stream"\nlive_beelden = 0', "'live_beelden' moet een getal tussen"),
-                ('live_url = "http://camera/stream"\nlive_beelden = "5"', "'live_beelden' moet een getal tussen"),
-                ('live_beelden = 5', "'live_beelden' zonder 'live_url' doet niets"),
-                ('live_url = "http://camera/stream?pwd={wachtwoord}"', "maar 'gebruiker' en 'wachtwoord' ontbreken")]:
-            with self.assertRaises(config.ConfigFout, msg=regels) as ctx:
-                _toml('[[camera]]\nid = "dek"\nfoto_url = "http://camera/snap.jpg"\n' + regels)
-            self.assertIn(verwacht, "\n".join(ctx.exception.fouten))
+    def test_zonder_vervallen_velden_geen_waarschuwing(self):
+        cfg = _toml('[[camera]]\nid = "dek"\nfoto_url = "http://camera/snap.jpg"\n')
+        self.assertEqual(cfg.waarschuwingen, ())
+        # De standaardlengte van een video is één minuut (v0.47).
+        self.assertEqual(cfg.cameras["dek"].video_duur, 60.0)
 
     def test_zonder_camera(self):
         cfg = _toml("")

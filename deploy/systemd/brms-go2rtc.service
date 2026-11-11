@@ -1,0 +1,41 @@
+# systemd-service voor go2rtc: het live-beeld van de camera's (ARCHITECTURE.md §5.7 punt 18).
+#
+# go2rtc is een los programma (niet van BRMS) dat de videostroom van een camera doorgeeft
+# aan de browser (WebRTC) en aan de camera-reader (video-opnames). 'brms go2rtc' schrijft
+# eerst de instellingen van go2rtc uit config/brms.toml naar data/go2rtc.yaml en start dan
+# go2rtc in plaats van zichzelf. Na een wijziging van een camera in brms.toml moet deze
+# service dus herstart worden (brms herstart doet dat).
+#
+# Dit is een sjabloon: deploy/install.sh en deploy/update.sh vullen @BRMS@ (de projectmap,
+# bijv. /home/jandirk/BRMS) en @GEBRUIKER@ (bijv. jandirk) in en zetten het resultaat in
+# /etc/systemd/system/.
+
+[Unit]
+Description=BRMS go2rtc (live-beeld van de camera's)
+# Het netwerk eerst: go2rtc biedt de browser de adressen van de Pi aan (het netwerk aan
+# boord en Tailscale) en leest die bij het starten.
+Wants=network-online.target tailscaled.service
+After=network-online.target tailscaled.service
+
+[Service]
+# Draait als de beheerder van de Pi (§10.1 punt 5).
+User=@GEBRUIKER@
+Environment=PYTHONPATH=@BRMS@
+WorkingDirectory=@BRMS@
+ExecStart=@BRMS@/.venv/bin/python -m brms go2rtc
+# Altijd opnieuw starten na een crash of fout (§3.1 punt 1). Na 30 s in plaats van 5 s:
+# ontbreekt het programma go2rtc (nog niet opgehaald), dan komt er zo geen stroom van
+# dezelfde foutmelding in het log.
+Restart=always
+RestartSec=30
+
+# Beperkingen: systeem en home alleen-lezen, behalve data/ waar het instellingenbestand
+# van go2rtc komt.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@BRMS@/data
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

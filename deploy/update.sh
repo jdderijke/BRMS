@@ -14,7 +14,8 @@
 #   1. de huidige commit onthouden (om terug te kunnen)
 #   2. 'main' ophalen en uitchecken
 #   3. ontbrekende systeempakketten uit deploy/pakketten.txt installeren (apt, alleen
-#      als er iets ontbreekt), en Python-pakketten volgens requirements.txt (pip)
+#      als er iets ontbreekt), Python-pakketten volgens requirements.txt (pip), en het
+#      programma go2rtc voor het live-beeld (deploy/go2rtc.sh)
 #   4. 'brms check-config' – bij een fout stopt de update en draait de oude versie door
 #   5. systemd-units bijwerken en de services herstarten (vraagt het sudo-wachtwoord)
 #
@@ -65,6 +66,14 @@ installeer_units() {
     sudo systemctl enable -q $(services)
 }
 
+# Haalt het programma go2rtc op als het ontbreekt of de versie niet klopt (deploy/go2rtc.sh).
+# Lukt dat niet (geen verbinding met GitHub, verkeerd controlegetal), dan gaat de update
+# gewoon door: alleen het live-beeld ontbreekt dan, de rest van BRMS werkt. Een volgende
+# 'brms update' probeert het opnieuw.
+haal_go2rtc() {
+    bash deploy/go2rtc.sh || echo "LET OP: go2rtc is niet geïnstalleerd; er is geen live-beeld. Probeer later opnieuw: brms update" >&2
+}
+
 # --- 1. Huidige commit en doel bepalen ---------------------------------------
 huidig=$(git rev-parse HEAD)
 if [ "${1:-}" = "--terug" ]; then
@@ -80,6 +89,7 @@ if [ "$doel" = "$huidig" ]; then
     echo "Al op $(git log -1 --format='%h %s' "$huidig")."
     # Toch controleren of er systeempakketten ontbreken (bijv. na een handmatige wijziging).
     bash deploy/pakketten.sh
+    haal_go2rtc
     # En of elke service aanstaat en draait. Dat is niet zo als een service nieuw is en de
     # update nog door een oudere versie van dit script is uitgevoerd, die hem niet kende.
     # Dan volstaat nog een keer 'brms update'; een los systemctl-commando is niet nodig.
@@ -120,6 +130,8 @@ git checkout -q -B main "$doel"
 bash deploy/pakketten.sh
 # Python-pakketten in de venv, exact volgens requirements.txt.
 .venv/bin/pip install -q -r requirements.txt
+# go2rtc (het live-beeld, §5.7 punt 18): ophalen als het ontbreekt of de versie niet klopt.
+haal_go2rtc
 
 # --- 4. Configuratie controleren tegen de nieuwe code --------------------------
 brms check-config

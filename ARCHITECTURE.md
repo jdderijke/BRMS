@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.45 – concept** · 10 november 2026
+**Versie 0.49 – concept** · 11 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -183,7 +183,9 @@ Architectuurrelevante keuzes:
 ### 4.1 Bluetooth: USB-dongle met antenne
 
 **Redenering.** De ingebouwde Bluetooth van de Pi 4 heeft beperkt bereik; sensoren
-zitten verspreid over kajuit, vooronder, motorruim en buiten.
+zitten verspreid over hoofdkajuit, vooronder, twee achterkajuiten, motorruim en buiten
+(v0.46: RuuviTag 4-in-1 in de hoofdkajuit, RuuviTag Pro 3-in-1 in het motorruim en buiten,
+Xiaomi Monitor 3 in het vooronder en de twee achterkajuiten).
 **Verworpen.** Ingebouwde Bluetooth – bereik te beperkt (wel bruikbaar voor tests thuis).
 **Specificatie.** BLE via een USB-dongle met externe antenne. **[OPEN-2]** Welke dongle.
 
@@ -1293,16 +1295,17 @@ schrijvers op dezelfde database en map.
      bevestiging. De opdracht is `brms/opdracht/opslag/verwijder` met
      `{"opnames": [[camera_id, ts], ...]}` (hooguit 500 per keer); de pagina haalt de
      lijst kort daarna opnieuw op.
-   - **"Live camera"** (v0.44; gebouwd in v0.45) toont het live-beeld van
+   - **"Live camera"** (v0.44; gebouwd in v0.45; de techniek is herzien in v0.48 en
+     zo gebouwd in v0.49) toont het live-beeld van
      de camera in het fotovak (§5.7 punt 18). Zolang het live-beeld loopt, zijn er twee
      knoppen: **"Foto"** maakt direct een foto en slaat hem op, **"Video"** neemt een
-     video op (standaard 120 s) en slaat hem op. Beide geven de camera-reader een poll-nu
+     video op (standaard 60 s) en slaat hem op. Beide geven de camera-reader een poll-nu
      met aanleiding `handmatig` (§5.7 punt 12); het live-beeld loopt intussen door en de
      pagina meldt wanneer de opname is opgeslagen. Deze knoppen vervangen "Foto nu" en
      "Video nu": een opname op verzoek maak je terwijl je kijkt.
      Na het stoppen van het live-beeld staat de laatste opname in de lijst. Een camera
-     zonder `live_url` heeft geen live-knop, en dus ook geen opname op verzoek vanuit de
-     pagina.
+     zonder live-beeld (tot v0.48: zonder `live_url`; daarna: zonder `video_url`) heeft
+     geen live-knop, en dus ook geen opname op verzoek vanuit de pagina.
    - Onderaan staan de totalen: aantal en omvang van de foto's en video's, de
      bewaartermijn en de maximale ruimte.
    - De bestanden zelf levert de webservice uit op `/opname/<pad>`, alleen voor een pad
@@ -1320,6 +1323,13 @@ schrijvers op dezelfde database en map.
      **5 s** in beeld.
    - Een **video** wordt op zijn plaats in de tijd **volledig afgespeeld**; daarna gaat
      het overzicht verder. Met de knop **"verder"** is de video over te slaan.
+   - Een **foto die samenvalt met een video** van dezelfde camera doet in het
+     dagoverzicht niet mee (v0.47; gebouwd in v0.49): de video laat dat stuk van de dag
+     al zien, en de tijdlijn hoort niet dubbel te lopen. Dit geldt voor elke foto, ook
+     een intervalfoto. "Samenvallen" is: de foto is gemaakt tijdens de video. Een foto
+     bij een gebeurtenis valt ook weg als hij hooguit 5 s voor het begin van de video is
+     gemaakt (een alarm maakt eerst de foto en start dan de video). In de lijst blijven
+     de foto's gewoon staan.
    - **Bediening:** afspelen en pauze, en een tijdbalk van de dag waarop de gebeurtenissen
      gemarkeerd staan; een klik op de balk springt naar dat moment. Bij het beeld staan
      het tijdstip en de aanleiding.
@@ -1328,7 +1338,7 @@ schrijvers op dezelfde database en map.
    - Het dagoverzicht gebruikt alle opnames van de dag; de grens van 500 van de lijst
      geldt hier niet (een dag heeft 480 intervalfoto's plus de gebeurtenissen).
    - **Dataverbruik:** een dagoverzicht haalt alle foto's van die dag op: bij 480 foto's
-     van bijna 300 kB ongeveer 140 MB, plus ongeveer 27 MB per video. Vanaf de boot gaat
+     van bijna 300 kB ongeveer 140 MB, plus ongeveer 14 MB per video van een minuut. Vanaf de boot gaat
      dat van de databundel en vraagt het ruim 4 Mbit/s om bij te blijven.
 
    Invulling bij het bouwen (v0.43):
@@ -1451,7 +1461,7 @@ komt dan te laat. Met 450 Ah accucapaciteit is er bij walstroomuitval ruim tijd 
 grijpen, dus de camera kan altijd aan staan.
 
 Foto's: één per 3 minuten ≈ 480 per dag × ~300 KB ≈ 150 MB/dag, ≈ 2 GB per twee weken.
-Video's: ~30–60 MB per clip van 120 s. Video's worden bewust bewaard en verdwijnen niet
+Video's: ongeveer 14 MB per clip van 60 s (testcamera, 1,8 Mbit/s). Video's worden bewust bewaard en verdwijnen niet
 vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf vult.
 
 **Verworpen alternatieven.**
@@ -1475,8 +1485,9 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
   het wachtwoord van de camera in de pagina en is het aantal beelden niet te beperken.
 - *Live-beeld alleen tijdens een opname* (v0.44). Kijken en opnemen zijn twee dingen: de
   gebruiker wil kunnen kijken zonder op te nemen, en opnemen terwijl hij kijkt.
-- *Een aparte streamingdienst (bijv. go2rtc, MediaMTX)* (v0.44). Een extra programma om te
-  installeren en bij te houden (P3).
+- ~~*Een aparte streamingdienst (bijv. go2rtc, MediaMTX)* (v0.44). Een extra programma om
+  te installeren en bij te houden (P3).~~ **Herzien in v0.48:** go2rtc is alsnog gekozen,
+  nadat de MJPEG-stroom in de praktijk niet voldeed (punt 18).
 
 **Specificatie.**
 1. IP-camera (wifi 2,4 GHz, RTSP/ONVIF, 12V), **altijd aan**.
@@ -1485,7 +1496,7 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
    | | Foto | Video |
    |---|---|---|
    | Wanneer | elke **3 min**, plus poll-nu | alleen **poll-nu** (gebruiker, of alarmlaag bij beweging) |
-   | Duur | — | vast, **120 s** |
+   | Duur | — | vast, **60 s** (v0.47) |
    | Bewaren | **2 weken**, daarna automatisch verwijderd; eerder handmatig mogelijk | tot de gebruiker hem verwijdert |
 
    Alle waarden instelbaar in de configuratie (§5.4). Een foto bij een alarm (§5.5.3
@@ -1511,7 +1522,7 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
    | `video_url` | het adres van de RTSP-stroom (`rtsp://`); zonder dit veld maakt de camera geen video's |
    | `gebruiker`, `wachtwoord` | het account op de camera |
    | `foto_interval` | standaard `"3m"` |
-   | `video_duur` | standaard `"120s"` |
+   | `video_duur` | standaard `"60s"` (v0.47; was `"120s"`) |
 
    | Veld van `[opnames]` | Betekenis |
    |---|---|
@@ -1547,7 +1558,8 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
     laat geen bestand achter. Tijdens een video gaan de intervalfoto's gewoon door.
     De tijd van een video (bestandsnaam en tabel) is het begin van de opname. Stopt de
     service tijdens een video, dan wordt de opname afgebroken en verdwijnt het halve
-    bestand (v0.39).
+    bestand (v0.39). Vanaf v0.48 (gebouwd in v0.49) komt de stroom van go2rtc op de Pi,
+    met de camera zelf als terugval (punt 18).
 12. **Poll-nu** (§5.2.1 punt 6): opdracht `brms/opdracht/camera/poll-nu` met
     `{"camera_id": ..., "type": "foto"|"video", "aanleiding": ...}`. Zonder `camera_id`:
     alle camera's.
@@ -1599,64 +1611,137 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
     en het opruimen van foto's; (b) video en de maximale ruimte; (c) foto en video bij
     een alarm (alarmlaag en meldingskanalen); (d) bekijken en verwijderen in het web
     (§5.6); (e) het live-beeld (punt 18).
-18. **Live-beeld** (v0.44; gebouwd in v0.45). Kijken en opnemen zijn los van
+18. **Live-beeld** (herzien in v0.48; zo gebouwd in v0.49, code v0.18.0. De versie van
+    v0.44/v0.45 met de MJPEG-stroom van de camera is vervallen). Kijken en opnemen zijn los van
     elkaar: "Live camera" toont wat de camera nu ziet; "Foto" en "Video" leggen iets vast
     terwijl het live-beeld doorloopt (§5.6 punt 2).
-    - **De MJPEG-stroom van de camera.** Veel camera's leveren naast RTSP een tweede
-      stroom over gewoon HTTP: een reeks losse JPEG-beelden (MJPEG). Die kan een browser
-      rechtstreeks tonen, zonder `ffmpeg`, zonder extra bibliotheek en met minder dan een
-      seconde vertraging.
-    - **Configuratie:** een nieuw veld `live_url` in `[[camera]]`, met `{gebruiker}` en
-      `{wachtwoord}` zoals de andere adressen (punt 7). Zonder dit veld heeft de camera
-      geen live-beeld.
-    - **Via de webservice.** De browser vraagt het beeld op `/live/<camera_id>`; de
-      webservice haalt de stroom bij de camera en geeft de beelden ongewijzigd door. Het
-      wachtwoord blijft zo op de Pi (punt 8). Hiermee praat, naast de camera-reader, ook
-      de webservice met de camera; dat is een bewuste uitzondering.
-    - **Aantal beelden.** De camera levert meer dan nodig is (de testcamera 30 beelden per
-      seconde, ongeveer 1 MB per seconde). De webservice geeft er daarom hooguit
-      `live_beelden` per seconde door (veld in `[[camera]]`, standaard **5**) en slaat de
-      rest over.
-    - **Dataverbruik:** bij de testcamera ongeveer 35 kB per beeld; met 5 beelden per
-      seconde ongeveer 175 kB per seconde, ruim 10 MB per minuut.
+
+    **Aanleiding voor de herziening** (gemeten op 2026-11-11 met de testcamera). Het
+    live-beeld via de MJPEG-stroom was in de praktijk onbruikbaar:
+    - de **achterstand liep op**: ongeveer 1 s na 5 s kijken, ongeveer 3 s na 25 s. De
+      camera maakt 30 beelden per seconde maar krijgt er ongeveer 27 verstuurd; de rest
+      stapelt zich op. Dat de webservice er maar 5 doorgaf, hielp daar niet tegen;
+    - het **eerste beeld** kwam na 3 tot 6 s, en bij 1 op de 10 pogingen helemaal niet;
+    - 5 beelden per seconde op 640×480.
+
+    **Redenering.** De camera levert zijn beeld als H.264 over RTSP. Een browser kan geen
+    RTSP openen; er moet dus iets tussen. **go2rtc** pakt de H.264-video alleen opnieuw in
+    voor de browser (WebRTC), zonder omrekenen: het volle beeld op volle snelheid, met
+    weinig vertraging en vrijwel geen rekenwerk op de Pi. Het houdt één verbinding met de
+    camera voor alle afnemers, en alleen zolang er een afnemer is. RTSP heeft vrijwel
+    elke IP-camera (ONVIF schrijft het voor); een MJPEG-stroom niet. De prijs is een extra
+    programma van een ander op de Pi (P3); dat weegt hier op tegen een live-beeld dat
+    werkt. De databundel is 40 GB per maand, dus het volle beeld is betaalbaar.
+
+    **Gemeten met de proef** (go2rtc 1.9.15 op de test-Pi, 2026-11-11):
+
+    | | MJPEG van de camera | go2rtc (WebRTC) |
+    |---|---|---|
+    | Eerste beeld | 3 tot 6 s; 1 op de 10 keer niet | 1,4 s |
+    | Beelden per seconde | 5 | 30 |
+    | Resolutie | 640×480 | 1280×720 |
+    | Vertraging | loopt op (ongeveer 3 s na 25 s) | minder dan 2 s, loopt niet op |
+    | Data | ongeveer 180 kB/s | ongeveer 230 kB/s (1,8 Mbit/s, ongeveer 14 MB per minuut) |
+    | Processor Pi | vrijwel niets | ongeveer 5% van één kern |
+
+    - Getest in Chrome op de pc (thuisnetwerk) en in Safari op een iPhone via het mobiele
+      netwerk en Tailscale: vloeiend beeld, met een rechtstreekse Tailscale-verbinding.
+    - **Kijken en opnemen tegelijk:** een opname via go2rtc tijdens het kijken hield 30
+      beelden per seconde. Een opname met een tweede, eigen verbinding naar de camera
+      zakte naar 17 beelden per seconde, en het live-beeld naar ongeveer 24.
+    - Na de laatste afnemer verbreekt go2rtc de verbinding met de camera vanzelf.
+    - **Niet getest:** de 4G-verbinding van de router op de boot (de stroom vraagt
+      1,8 Mbit/s omhoog); dat kan pas met de RUT241.
+
+    **Specificatie.**
+    - **go2rtc is een eigen service, `brms-go2rtc`**, op een **vaste versie** (1.9.15).
+      `install.sh` en `update.sh` halen het programma op als het ontbreekt of de versie
+      niet klopt, en controleren het met een controlegetal (SHA-256) dat in de repo
+      staat (§10.1 punt 6). Het wordt niet vanzelf bijgewerkt.
+    - **De instellingen van go2rtc komen uit `brms.toml`.** Bij het starten van de service
+      schrijft BRMS het instellingenbestand van go2rtc in `data/`, alleen leesbaar voor de
+      eigenaar (het bevat het wachtwoord van de camera, punt 8). Elke camera met een
+      `video_url` wordt een stroom met het `id` van de camera als naam. Er zijn geen
+      nieuwe velden in `brms.toml`; een wijziging van een camera vraagt een herstart van
+      `brms-go2rtc`.
+    - **go2rtc is alleen op de Pi zelf te bereiken** voor beheer en voor RTSP
+      (`127.0.0.1`, poort 1984 en 8554): zijn beheerpagina heeft geen aanmelding en toont
+      het wachtwoord van de camera. Alleen de poort voor de video zelf (**8555**, TCP en
+      UDP) staat open voor het thuisnetwerk en Tailscale.
+    - **Via de webservice.** De pagina vraagt het live-beeld aan op `/live/<camera_id>`:
+      zij stuurt haar WebRTC-aanbod, de webservice geeft dat door aan go2rtc en stuurt het
+      antwoord terug. Daarna loopt de video rechtstreeks tussen de browser en go2rtc. Het
+      wachtwoord van de camera blijft zo op de Pi. De webservice praat niet meer zelf met
+      de camera; de uitzondering van v0.44 vervalt.
+    - **Adressen.** go2rtc biedt de browser de adressen van de Pi aan: dat van het
+      (boord)netwerk en dat van Tailscale. In de proef zijn ze met de hand ingesteld; bij
+      het bouwen wordt nagegaan of go2rtc ze zelf vindt. Zo niet, dan schrijft BRMS ze bij
+      het starten in het instellingenbestand.
+    - **Elke camera met een `video_url` heeft live-beeld.** De velden `live_url` en
+      `live_beelden` vervallen. Staan ze nog in `brms.toml`, dan geeft `check-config` een
+      waarschuwing en geen fout, zodat een update er niet op stukloopt.
+    - **Video-opnames lopen via go2rtc** (wijzigt punt 11): de camera-reader neemt op van
+      de stroom die go2rtc op de Pi doorgeeft, zodat er één verbinding met de camera is.
+      Is go2rtc niet bereikbaar, dan neemt de reader rechtstreeks van de camera op, zoals
+      tot nu toe: een video bij een alarm mag niet afhangen van go2rtc. Foto's blijven van
+      het snapshot-adres komen.
     - **Vanzelf stoppen.** Het live-beeld stopt als de gebruiker het stopt of de pagina
-      verlaat, en anders na **10 minuten**: een vergeten tabblad mag de databundel niet
-      leegtrekken. De pagina meldt dat; opnieuw starten kan direct. Er kunnen hooguit 3
-      kijkers tegelijk zijn.
-    - **Foto en video tijdens het kijken** zijn gewone opnames van de camera-reader
-      (punt 10 en 11): de foto van het snapshot-adres, de video van de RTSP-stroom, in de
-      volle kwaliteit van de camera. Het live-beeld zelf wordt niet opgeslagen.
+      verlaat, en anders na **10 minuten**: een vergeten tabblad kost anders ongeveer
+      20 GB per dag. De pagina meldt dat; opnieuw starten kan direct. De pagina bewaakt
+      deze tijd zelf.
+    - **Hooguit 3 kijkers** tegelijk; de webservice vraagt het aantal bij go2rtc op en
+      weigert een vierde.
+    - **De pagina meldt** wat er gebeurt: "verbinden", en als er na 10 s geen beeld is,
+      waarom niet (go2rtc of de camera onbereikbaar, te veel kijkers).
     - **Geen geluid.**
-    - **Testcamera** (Foscam, beproefd op 2026-11-10): het adres
-      `http://192.168.178.202:89/cgi-bin/CGIStream.cgi?cmd=GetMJStream&usr={gebruiker}&pwd={wachtwoord}`
-      levert zonder verdere instelling een MJPEG-stroom van 640×480, 30 beelden per
-      seconde.
+    - **Eis aan de camera:** H.264 over RTSP. H.265 spelen browsers op deze manier niet
+      af; een camera die beide kan, wordt op H.264 gezet.
+    - De code voor de MJPEG-stroom verdwijnt uit de webservice en de pagina.
 
-    Invulling bij het bouwen (v0.45):
-    - **De pagina leest de stroom zelf** en zet elk beeld in het fotovak, in plaats van
-      de stroom aan de browser over te laten. Zo weet de pagina wanneer er een beeld
-      binnenkomt: zij meldt "wacht op het eerste beeld", "geen nieuw beeld sinds N s" als
-      de camera stilvalt, en waarom het live-beeld niet start (camera onbereikbaar, te
-      veel kijkers).
-    - De webservice wacht hooguit 10 s op de camera; stuurt die zo lang niets, dan eindigt
-      het live-beeld met een melding.
-    - Elke kijker heeft een **eigen verbinding** met de camera. Eén gedeelde verbinding
-      voor alle kijkers is beter voor de camera (zie hieronder) maar nog niet gebouwd.
-    - `live_beelden` mag van 0,2 tot 30 zijn.
+    **Verworpen bij de herziening** (v0.48):
+    - *De MJPEG-stroom van de camera houden.* Zie de aanleiding; bovendien heeft niet
+      elke camera zo'n stroom.
+    - *`ffmpeg` zet de RTSP-stroom om in losse JPEG-beelden.* In een proef goed bruikbaar
+      (10 beelden per seconde op 640 breed, ongeveer 100 kB/s, vertraging ongeveer 1 s),
+      maar het kost ongeveer 35% van een processorkern en geeft een kleiner en trager
+      beeld dan de camera levert.
+    - *De camera-reader leest de stroom doorlopend en verdeelt de beelden over de
+      MQTT-bus.* Doorlopend decoderen belast de Pi en de camera maandenlang voor niets,
+      en video hoort niet op de bus waar de metingen overheen gaan.
+    - *MSE in plaats van WebRTC.* Eenvoudiger (alles over de gewone webverbinding), maar
+      het gaf met de testcamera geen beeld in Chrome; de oorzaak is niet gevonden.
+    - *HLS.* Loopt seconden achter (zie hierboven, v0.44).
+    - *Een zuinige tweede stroom voor mobiel kijken.* Niet nodig met 40 GB per maand; bij
+      de testcamera is de tweede stroom bovendien gelijk aan de eerste.
 
-    **Grenzen van de testcamera** (gemeten op 2026-11-10; een andere camera kan anders
-    zijn):
-    - Zonder opname komen er via de webservice 5 beelden per seconde door. Het eerste
-      beeld komt na 0,2 tot ruim 5 seconden.
-    - **Tijdens een video-opname** (RTSP) zakt het live-beeld naar ongeveer 2 beelden per
-      seconde: de camera kan beide stromen niet op volle snelheid leveren.
-    - Bij **twee kijkers** verdeelt de camera zijn beelden (ongeveer 13 per seconde elk);
-      dat is ruim genoeg.
-    - Na veel verbindingen kort na elkaar, samen met een video-opname, gaf de camera
-      ongeveer een minuut **geen MJPEG-stroom** (time-out); foto's en de camera zelf
-      bleven werken en het herstelde vanzelf. De camera hield gesloten verbindingen nog
-      even vast.
-    - Een foto en het live-beeld tegelijk gaat goed (foto opgeslagen binnen 4 tot 10 s).
+    **Invulling bij het bouwen** (v0.49):
+    - **Adressen:** go2rtc vindt de adressen van de Pi zelf (het netwerk en Tailscale);
+      BRMS hoeft ze niet in te stellen. go2rtc leest ze alleen bij het starten. Daarom
+      wacht `brms go2rtc` bij het starten hooguit 30 s tot Tailscale een adres heeft
+      (alleen als Tailscale op de Pi staat): na het opstarten van de Pi kan Tailscale
+      iets later klaar zijn dan deze service.
+    - **Geen hulp van een server op internet (STUN)**, niet bij go2rtc en niet in de
+      pagina: de browser bereikt de Pi rechtstreeks via het netwerk of Tailscale. Met de
+      standaardinstelling van go2rtc (een STUN-server van Google) duurde het aanvragen
+      van het live-beeld 9 s; zonder een halve seconde.
+    - **`brms go2rtc`** is de opdracht van de service: hij schrijft `data/go2rtc.yaml` en
+      start dan go2rtc in plaats van zichzelf. Het programma staat in `bin/go2rtc`.
+    - **Ontbreekt go2rtc** (ophalen mislukt, verkeerd controlegetal), dan gaat een update
+      of installatie gewoon door met een waarschuwing: alleen het live-beeld ontbreekt.
+      `check-config` meldt het; de service probeert het elke 30 s opnieuw.
+    - **Terugval bij een video:** de camera-reader neemt ook rechtstreeks van de camera
+      op als de opname via go2rtc mislukt (niet alleen als go2rtc niet draait). De opname
+      begint dan opnieuw.
+    - **De pagina** stopt het live-beeld met een melding als er na 10 s nog geen beeld is,
+      als er 15 s geen nieuw beeld komt, of als de verbinding wegvalt.
+    - **Waarschuwingen in de configuratie:** `check-config` en het log van elke service
+      tonen een waarschuwing voor `live_url` en `live_beelden`; de waarde wordt niet
+      gecontroleerd.
+    - **Gemeten met de gebouwde pagina** (test-Pi, Chrome op de pc): eerste beeld na
+      2,1 s, 1280×720, 30 beelden per seconde. Een video van 10 s via go2rtc: 271 beelden.
+    - **Eerste update naar deze versie:** de update wordt nog uitgevoerd door het oude
+      `update.sh`, dat go2rtc niet kent. Daarna is één keer extra `brms update` nodig: die
+      haalt go2rtc op en start de service.
 
 ---
 
@@ -1839,6 +1924,15 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
    ontbreekt, zodat een nieuw pakket bij de eerstvolgende update vanzelf meekomt. Een
    eenmalig **`deploy/install.sh`** richt de Pi in:
    pakketten, deploy key, clone, venv, configuratie, Mosquitto en systemd-units.
+   Twee programma's komen niet uit apt (v0.48; gebouwd in v0.49):
+   - **go2rtc** (§5.7 punt 18): één los programma in `~/BRMS/bin/` (in `.gitignore`),
+     op een vaste versie. `install.sh` en `update.sh` halen het op bij GitHub als het
+     ontbreekt of de versie niet klopt, en controleren het met het SHA-256-controlegetal
+     dat in de repo staat. Klopt dat niet, dan wordt het niet geïnstalleerd.
+   - **Tailscale:** `install.sh` installeert het met het script van Tailscale en toont
+     de aanmeldlink; de gebruiker meldt de Pi één keer aan in de browser. Het script
+     herinnert eraan om daarna "key expiry" voor de Pi uit te zetten (§9). Een
+     aanmeldsleutel in `brms.toml` is verworpen: hij is één keer nodig en verloopt.
 7. **Geen automatische OS-updates.** OS, Tailscale en router-firmware worden met de hand
    bijgewerkt: eerst de test-Pi, daarna de boot-Pi.
 8. **Opdracht `brms`** (v0.18): de beheeropdrachten (`check-config`, `grootheden`,
@@ -2109,7 +2203,11 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.45** | 2026-11-10 | Claude Code, Fable 5.2 | Live-beeld gebouwd (§5.6 punt 2, §5.7 punt 18): `live_url` en `live_beelden` per camera, de webservice geeft de MJPEG-stroom door, knop "Live camera" met "Foto" en "Video". Grenzen van de testcamera vastgelegd. |
+| **0.49** | 2026-11-11 | Claude Code, Fable 5.2 | Gebouwd (code v0.18.0): live-beeld via go2rtc en WebRTC (§5.7 punt 18, met de invulling bij het bouwen), service `brms-go2rtc`, `deploy/go2rtc.sh`, go2rtc en Tailscale in `install.sh` (§10.1 punt 6); video-opnames via go2rtc met de camera als terugval (punt 11); standaard `video_duur` 60 s; foto's die samenvallen met een video doen niet mee in het dagoverzicht (§5.6 punt 2). De MJPEG-code, `live_url` en `live_beelden` zijn vervallen. |
+| 0.48 | 2026-11-11 | Claude Code, Fable 5.2 | Ontwerp, nog niet gebouwd: live-beeld via go2rtc en WebRTC in plaats van de MJPEG-stroom van de camera (§5.7 punt 18), na metingen en een proef op de test-Pi; go2rtc als service `brms-go2rtc` op een vaste versie; video-opnames via go2rtc met de camera als terugval (punt 11); `live_url` en `live_beelden` vervallen; go2rtc en Tailscale in `install.sh` (§10.1 punt 6). |
+| 0.47 | 2026-11-11 | Claude Code, Fable 5.2 | Ontwerp, nog niet gebouwd: standaard `video_duur` van 120 s naar 60 s (§5.7); in het dagoverzicht doet een foto (ook een intervalfoto) die samenvalt met een video van dezelfde camera niet mee (§5.6 punt 2). |
+| 0.46 | 2026-11-11 | Claude Code, Fable 5.2 | Sensorindeling herzien (§4.1, `CLAUDE.md`): 1× RuuviTag 4-in-1 in de hoofdkajuit, 2× RuuviTag Pro 3-in-1 (motorruim en buiten, in plaats van een Pro 2-in-1 buiten), de 3 Xiaomi Monitor 3's in het vooronder en de twee achterkajuiten. Geen gevolgen voor de software. |
+| 0.45 | 2026-11-10 | Claude Code, Fable 5.2 | Live-beeld gebouwd (§5.6 punt 2, §5.7 punt 18): `live_url` en `live_beelden` per camera, de webservice geeft de MJPEG-stroom door, knop "Live camera" met "Foto" en "Video". Grenzen van de testcamera vastgelegd. |
 | 0.44 | 2026-11-10 | Claude Code, Fable 5.2 | "Foto nu" toont de nieuwe foto direct (gebouwd, §5.6 punt 2). Ontwerp: live-beeld via de MJPEG-stroom van de camera, doorgegeven door de webservice (`live_url`, hooguit 5 beelden per seconde, stopt na 10 minuten); knop "Live camera" met daarbinnen "Foto" en "Video" (§5.6 punt 2, §5.7 punt 18). HLS overwogen en verworpen. Nog niet gebouwd. |
 | 0.43 | 2026-11-10 | Claude Code, Fable 5.2 | Dagoverzicht gebouwd (§5.6 punt 2): tweede weergave van de opnamepagina, met afspelen, pauze, "verder" bij een video en een tijdbalk van de dag. |
 | 0.42 | 2026-11-10 | Claude Code, Fable 5.2 | Ontwerp: dagoverzicht op de opnamepagina (§5.6 punt 2): de opnames van een dag afspelen van oud naar nieuw, intervalfoto 0,5 s, foto bij een gebeurtenis 5 s, video volledig met een knop "verder". Nog niet gebouwd. |
