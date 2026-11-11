@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.49 – concept** · 11 november 2026
+**Versie 0.50 – concept** · 11 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1303,7 +1303,8 @@ schrijvers op dezelfde database en map.
      met aanleiding `handmatig` (§5.7 punt 12); het live-beeld loopt intussen door en de
      pagina meldt wanneer de opname is opgeslagen. Deze knoppen vervangen "Foto nu" en
      "Video nu": een opname op verzoek maak je terwijl je kijkt.
-     Na het stoppen van het live-beeld staat de laatste opname in de lijst. Een camera
+     Een opname staat in de lijst zodra hij is opgeslagen, terwijl het live-beeld
+     doorloopt (v0.50; eerder pas na het stoppen van het live-beeld). Een camera
      zonder live-beeld (tot v0.48: zonder `live_url`; daarna: zonder `video_url`) heeft
      geen live-knop, en dus ook geen opname op verzoek vanuit de pagina.
    - Onderaan staan de totalen: aantal en omvang van de foto's en video's, de
@@ -2203,7 +2204,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.49** | 2026-11-11 | Claude Code, Fable 5.2 | Gebouwd (code v0.18.0): live-beeld via go2rtc en WebRTC (§5.7 punt 18, met de invulling bij het bouwen), service `brms-go2rtc`, `deploy/go2rtc.sh`, go2rtc en Tailscale in `install.sh` (§10.1 punt 6); video-opnames via go2rtc met de camera als terugval (punt 11); standaard `video_duur` 60 s; foto's die samenvallen met een video doen niet mee in het dagoverzicht (§5.6 punt 2). De MJPEG-code, `live_url` en `live_beelden` zijn vervallen. |
+| **0.50** | 2026-11-11 | Claude Code, Fable 5.2 | Opnamepagina (§5.6 punt 2, code v0.18.1): een foto of video die tijdens het live kijken is gemaakt, staat in de lijst zodra hij is opgeslagen; het live-beeld loopt door. |
+| 0.49 | 2026-11-11 | Claude Code, Fable 5.2 | Gebouwd (code v0.18.0): live-beeld via go2rtc en WebRTC (§5.7 punt 18, met de invulling bij het bouwen), service `brms-go2rtc`, `deploy/go2rtc.sh`, go2rtc en Tailscale in `install.sh` (§10.1 punt 6); video-opnames via go2rtc met de camera als terugval (punt 11); standaard `video_duur` 60 s; foto's die samenvallen met een video doen niet mee in het dagoverzicht (§5.6 punt 2). De MJPEG-code, `live_url` en `live_beelden` zijn vervallen. |
 | 0.48 | 2026-11-11 | Claude Code, Fable 5.2 | Ontwerp, nog niet gebouwd: live-beeld via go2rtc en WebRTC in plaats van de MJPEG-stroom van de camera (§5.7 punt 18), na metingen en een proef op de test-Pi; go2rtc als service `brms-go2rtc` op een vaste versie; video-opnames via go2rtc met de camera als terugval (punt 11); `live_url` en `live_beelden` vervallen; go2rtc en Tailscale in `install.sh` (§10.1 punt 6). |
 | 0.47 | 2026-11-11 | Claude Code, Fable 5.2 | Ontwerp, nog niet gebouwd: standaard `video_duur` van 120 s naar 60 s (§5.7); in het dagoverzicht doet een foto (ook een intervalfoto) die samenvalt met een video van dezelfde camera niet mee (§5.6 punt 2). |
 | 0.46 | 2026-11-11 | Claude Code, Fable 5.2 | Sensorindeling herzien (§4.1, `CLAUDE.md`): 1× RuuviTag 4-in-1 in de hoofdkajuit, 2× RuuviTag Pro 3-in-1 (motorruim en buiten, in plaats van een Pro 2-in-1 buiten), de 3 Xiaomi Monitor 3's in het vooronder en de twee achterkajuiten. Geen gevolgen voor de software. |

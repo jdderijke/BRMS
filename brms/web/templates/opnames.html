@@ -250,7 +250,9 @@ async function laadLijst() {
     for (const s of [...geselecteerd]) if (!er.has(s)) geselecteerd.delete(s);
     if (gekozen !== null && !er.has(gekozen)) gekozen = null;
     toonLijst();
-    if (gekozen === null) toon(opnames.length ? opnames[0] : null);
+    // Zolang het live-beeld loopt, blijft dat in het fotovak staan: alleen de lijst wordt
+    // bijgewerkt (toon() zou het live-beeld stoppen).
+    if (gekozen === null && !live) toon(opnames.length ? opnames[0] : null);
     if (d.vol) meld("Alleen de nieuwste " + opnames.length + " opnames van deze dag staan in de lijst. "
                     + "Zet de intervalfoto's uit of kies een soort om de rest te zien.");
   } catch (e) {
@@ -846,7 +848,14 @@ async function liveOpname(type) {
       await new Promise(r => setTimeout(r, Math.max(0, duur - 2) * 1000));
       nieuw = await wachtOpNieuwe(camera, type, bekend, 45);
     }
-    if (nieuw) meld(naam + " opgeslagen (" + tijd(nieuw.ts) + ", " + grootte(nieuw.bytes) + ").");
+    if (nieuw) {
+      // De nieuwe opname meteen in de lijst zetten; het live-beeld loopt door. Ook als het
+      // live-beeld intussen gestopt is (een video is pas na afloop klaar). Het dagoverzicht
+      // heeft geen lijst; dat wordt bijgewerkt als het live-beeld stopt.
+      // Eerst de lijst, dan de melding: bij een volle lijst zet laadLijst zelf een melding.
+      if (weergave === "lijst") await laadLijst();
+      meld(naam + " opgeslagen (" + tijd(nieuw.ts) + ", " + grootte(nieuw.bytes) + ").");
+    }
     else meld("De " + type + " is niet binnengekomen"
               + (type === "video" ? " (liep er al een video-opname, bijvoorbeeld door een alarm? "
                                     + "Dan wordt een tweede genegeerd)" : "")
