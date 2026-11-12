@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.52 – concept** · 12 november 2026
+**Versie 0.53 – concept** · 12 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -2075,6 +2075,15 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
    script of elke service aanstaat en draait, en herstelt dat zo nodig. De gebruiker
    hoeft voor een update nooit zelf een `systemctl`-opdracht te geven.
 
+   **Verder met het nieuwe script (v0.53; gebouwd in code v0.19.1).** Na het uitchecken
+   (stap 2) neemt het `update.sh` uit de nieuwe code het over en doet de stappen 3 tot en
+   met 5. Zonder dat voert het oude script de hele update uit, en dat kent een stap die
+   met de update nieuw is niet (een nieuwe service, de polkit-regel van v0.52); er was dan
+   een tweede `brms update` nodig. Nu volstaat één keer. Terugdraaien bij een fout werkt
+   hetzelfde: het nieuwe script krijgt de oude commit mee. Bij `--terug` naar een versie
+   van vóór v0.19.1 maakt het huidige script de update zelf af. Dit werkt vanaf de update
+   ná v0.19.1: de update naar v0.19.1 zelf wordt nog door het oude script uitgevoerd.
+
    De gebruiker start dit met **`brms update`** en **`brms update --terug`** (v0.21). De
    opdracht doet zelf niets anders dan het script uitvoeren, en vervangt daarbij zijn eigen
    proces door het script: tijdens de update verandert de code van BRMS, en zo draait er
@@ -2381,7 +2390,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.52** | 2026-11-12 | Claude Code, Fable 5.2 | Gebouwd in code v0.19.0, samen met v0.51 (nog niet getest op de Pi). Web (§5.6): vier pagina's (Grafieken, Opnames, Alarmen, Systeem) met een gedeelde bovenbalk, een zijbalk als menu, statusstip, thema licht/donker/automatisch en lijn-iconen; geschikt voor de telefoon. Systeempagina: knoppen "Herstart BRMS" en "Herstart de Pi" met bevestiging, via een polkit-regel. Foutmeldingen van de kernel in het logboek en als melding (§5.5.5). |
+| **0.53** | 2026-11-12 | Claude Code, Fable 5.2 | `update.sh` (§10.1 punt 3): na het uitchecken neemt het script uit de nieuwe code het over, zodat één keer `brms update` volstaat. Gebouwd in code v0.19.1. Herstartknoppen van v0.52 werken op de test-Pi. |
+| 0.52 | 2026-11-12 | Claude Code, Fable 5.2 | Gebouwd in code v0.19.0, samen met v0.51 (nog niet getest op de Pi). Web (§5.6): vier pagina's (Grafieken, Opnames, Alarmen, Systeem) met een gedeelde bovenbalk, een zijbalk als menu, statusstip, thema licht/donker/automatisch en lijn-iconen; geschikt voor de telefoon. Systeempagina: knoppen "Herstart BRMS" en "Herstart de Pi" met bevestiging, via een polkit-regel. Foutmeldingen van de kernel in het logboek en als melding (§5.5.5). |
 | 0.51 | 2026-11-12 | Claude Code, Fable 5.2 | Ontwerp (gebouwd met v0.52). Systeempagina in het web (§5.6): alarmregels met schakelaar, status van de services, logboek, schijfruimte (SMART getest en verworpen: de schijf geeft via USB geen bruikbare gegevens). Systeemmeldingen (§5.5.5): logboek uit journald; een fout (ERROR) geeft een melding, hooguit één per service per uur. Camera in een `stil`-regel, met elke geslaagde opname als levensteken (§5.5.3 punt 2); `bereikbaar` verworpen. |
 | 0.50 | 2026-11-11 | Claude Code, Fable 5.2 | Opnamepagina (§5.6 punt 2, code v0.18.1): een foto of video die tijdens het live kijken is gemaakt, staat in de lijst zodra hij is opgeslagen; het live-beeld loopt door. |
 | 0.49 | 2026-11-11 | Claude Code, Fable 5.2 | Gebouwd (code v0.18.0): live-beeld via go2rtc en WebRTC (§5.7 punt 18, met de invulling bij het bouwen), service `brms-go2rtc`, `deploy/go2rtc.sh`, go2rtc en Tailscale in `install.sh` (§10.1 punt 6); video-opnames via go2rtc met de camera als terugval (punt 11); standaard `video_duur` 60 s; foto's die samenvallen met een video doen niet mee in het dagoverzicht (§5.6 punt 2). De MJPEG-code, `live_url` en `live_beelden` zijn vervallen. |

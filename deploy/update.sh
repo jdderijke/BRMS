@@ -12,7 +12,8 @@
 #
 # Stappen (§10.1 punt 3):
 #   1. de huidige commit onthouden (om terug te kunnen)
-#   2. 'main' ophalen en uitchecken
+#   2. 'main' ophalen en uitchecken; daarna gaat de update verder met het update.sh uit
+#      de nieuwe code (zie "Verder met het nieuwe script" hieronder)
 #   3. ontbrekende systeempakketten uit deploy/pakketten.txt installeren (apt, alleen
 #      als er iets ontbreekt), Python-pakketten volgens requirements.txt (pip), en het
 #      programma go2rtc voor het live-beeld (deploy/go2rtc.sh)
@@ -78,17 +79,26 @@ haal_go2rtc() {
 }
 
 # --- 1. Huidige commit en doel bepalen ---------------------------------------
-huidig=$(git rev-parse HEAD)
-if [ "${1:-}" = "--terug" ]; then
+# '--vervolg <commit>' is geen opdracht voor de gebruiker: zo roept dit script na het
+# uitchecken (stap 2) zijn eigen nieuwe versie aan. De nieuwe code staat er dan al;
+# <commit> is de commit van vóór de update, om bij een fout naar terug te gaan.
+vervolg=""
+if [ "${1:-}" = "--vervolg" ]; then
+    vervolg=ja
+    huidig=$(git rev-parse --verify -q "${2:-}^{commit}")         || { echo "update.sh --vervolg: geen geldige commit opgegeven." >&2; exit 1; }
+    doel=$(git rev-parse HEAD)
+elif [ "${1:-}" = "--terug" ]; then
+    huidig=$(git rev-parse HEAD)
     [ -s "$VORIGE" ] || { echo "Geen vorige commit bekend." >&2; exit 1; }
     doel=$(cat "$VORIGE")
 else
+    huidig=$(git rev-parse HEAD)
     # Nieuwste 'main' van GitHub ophalen (nog niet uitchecken).
     git fetch -q origin main
     doel=$(git rev-parse origin/main)
 fi
 
-if [ "$doel" = "$huidig" ]; then
+if [ -z "$vervolg" ] && [ "$doel" = "$huidig" ]; then
     echo "Al op $(git log -1 --format='%h %s' "$huidig")."
     # Toch controleren of er systeempakketten ontbreken (bijv. na een handmatige wijziging).
     bash deploy/pakketten.sh
@@ -125,10 +135,25 @@ terug() {
 trap terug ERR
 
 # --- 2. Uitchecken -----------------------------------------------------------
-echo "$(git log -1 --format='%h %s' "$huidig")"
-echo "  ->  $(git log -1 --format='%h %s' "$doel")"
-# -B: lokale branch 'main' wijst daarna naar het doel (ook bij teruggaan).
-git checkout -q -B main "$doel"
+if [ -z "$vervolg" ]; then
+    echo "$(git log -1 --format='%h %s' "$huidig")"
+    echo "  ->  $(git log -1 --format='%h %s' "$doel")"
+    # -B: lokale branch 'main' wijst daarna naar het doel (ook bij teruggaan).
+    git checkout -q -B main "$doel"
+
+    # Verder met het nieuwe script (ARCHITECTURE.md §10.1 punt 3). Wat nu draait is het
+    # update.sh van vóór de update: bash heeft het al helemaal ingelezen. Een stap die
+    # met deze update nieuw is (een nieuwe service, een nieuw recht) kent het niet, en
+    # dan zou een tweede 'brms update' nodig zijn. Daarom neemt het update.sh uit de
+    # nieuwe code het hier over ('exec': dit proces wordt het nieuwe script) en doet de
+    # stappen 3 tot en met 5.
+    # Kent het uitgecheckte script '--vervolg' niet (bij --terug naar een versie van
+    # vóór v0.19.1), dan zou het een gewone update beginnen; in dat geval maakt dit
+    # script de update zelf af.
+    if grep -q -- '--vervolg' deploy/update.sh; then
+        exec bash deploy/update.sh --vervolg "$huidig"
+    fi
+fi
 
 # --- 3. Pakketten ------------------------------------------------------------
 # Systeempakketten (apt) uit de nieuwe deploy/pakketten.txt; vraagt alleen om het
