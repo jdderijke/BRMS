@@ -1,0 +1,161 @@
+{#
+  Gedeeld sjabloon van alle pagina's van BRMS (ARCHITECTURE.md §5.6, "Indeling, menu en
+  thema"): de bovenbalk, de zijbalk met het menu, de statusstip en de themakeuze.
+
+  Een pagina vult drie blokken:
+    stijl    eigen stijlregels (in een <style>), naast static/brms.css
+    inhoud   de pagina zelf
+    script   het script van de pagina
+
+  De webservice geeft mee: `pagina` (grafieken, opnames, alarmen of systeem; bepaalt
+  welke regel in het menu gemarkeerd is), `titel` (in de bovenbalk) en `versie`.
+
+  De iconen zijn getekende lijnen (SVG in de pagina, geen lettertype of extern bestand):
+  ze zien er op elk toestel hetzelfde uit en kleuren mee met het thema.
+#}
+{% macro icoon(naam) -%}
+<svg class="icoon" viewBox="0 0 24 24" aria-hidden="true">
+  {%- if naam == "menu" %}<path d="M4 7h16M4 12h16M4 17h16"/>
+  {%- elif naam == "grafieken" %}<path d="M4 4v16h16"/><path d="M7 15l4-5 3 3 5-7"/>
+  {%- elif naam == "opnames" %}<path d="M4 8h3.5l1.8-2.5h5.4L16.5 8H20v11H4z"/><circle cx="12" cy="13.2" r="3.4"/>
+  {%- elif naam == "alarmen" %}<path d="M6 17v-6a6 6 0 0 1 12 0v6l1.6 2H4.4z"/><path d="M10 21.5h4"/>
+  {%- elif naam == "systeem" %}<rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 3.5V7M14 3.5V7M10 17v3.5M14 17v3.5M3.5 10H7M3.5 14H7M17 10h3.5M17 14h3.5"/>
+  {%- endif %}
+</svg>
+{%- endmacro %}
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>BRMS – {{ titel }}</title>
+<script>
+// Het gekozen thema zetten vóórdat de pagina getekend wordt (anders flitst de pagina eerst
+// in het andere thema). "licht" of "donker" staat als data-thema op <html>; bij
+// "automatisch" staat er niets en volgt de stijl het toestel (zie static/brms.css).
+try {
+  const thema = localStorage.getItem("brms-thema");
+  if (thema === "licht" || thema === "donker") document.documentElement.dataset.thema = thema;
+} catch (e) { /* geen opslag (privévenster): automatisch */ }
+</script>
+<link rel="stylesheet" href="{{ url_for('static', filename='brms.css') }}?v={{ versie }}">
+{% block stijl %}{% endblock %}
+</head>
+<body>
+<header class="balk">
+  <button id="menuknop" aria-label="Menu" aria-controls="zijbalk" aria-expanded="false">{{ icoon("menu") }}</button>
+  <span class="titel">{{ titel }}</span>
+  <!-- De statusstip: op elke pagina te zien of er iets mis is; een klik gaat erheen. -->
+  <a id="stip" href="/systeem" title="Status wordt opgehaald"><span id="stiptekst"></span><i></i></a>
+</header>
+
+<div id="sluier" hidden></div>
+<aside id="zijbalk">
+  <div class="merk">BRMS <small>boot op afstand</small></div>
+  <nav aria-label="Pagina's">
+    <a href="/" {% if pagina == "grafieken" %}class="hier" aria-current="page"{% endif %}>{{ icoon("grafieken") }}<span class="naam">Grafieken</span></a>
+    <a href="/opnames" {% if pagina == "opnames" %}class="hier" aria-current="page"{% endif %}>{{ icoon("opnames") }}<span class="naam">Opnames</span></a>
+    <a href="/alarmen" {% if pagina == "alarmen" %}class="hier" aria-current="page"{% endif %}>{{ icoon("alarmen") }}<span class="naam">Alarmen</span><span class="teller" id="teller-alarmen" hidden></span></a>
+    <a href="/systeem" {% if pagina == "systeem" %}class="hier" aria-current="page"{% endif %}>{{ icoon("systeem") }}<span class="naam">Systeem</span></a>
+  </nav>
+  <div class="onder">
+    <div class="kop">Thema</div>
+    <div class="keuze" id="thema" role="group" aria-label="Thema">
+      <button data-thema="auto" title="Volgt de instelling van dit toestel">Auto</button>
+      <button data-thema="licht">Licht</button>
+      <button data-thema="donker">Donker</button>
+    </div>
+    <div class="versie">BRMS versie {{ versie }}</div>
+  </div>
+</aside>
+
+<main>
+{% block inhoud %}{% endblock %}
+</main>
+
+<script>
+// --- menu -----------------------------------------------------------------------------
+// Op een smal scherm schuift de zijbalk over de pagina; hij sluit na een keuze, een tik
+// ernaast of Escape. Op een breed scherm staat hij vast in beeld (zie static/brms.css) en
+// doet dit niets.
+(() => {
+  const knop = document.getElementById("menuknop"), sluier = document.getElementById("sluier");
+  function menu(open) {
+    document.body.classList.toggle("menu-open", open);
+    sluier.hidden = !open;
+    knop.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  knop.addEventListener("click", () => menu(!document.body.classList.contains("menu-open")));
+  sluier.addEventListener("click", () => menu(false));
+  document.addEventListener("keydown", e => { if (e.key === "Escape") menu(false); });
+  document.querySelectorAll("#zijbalk nav a").forEach(a => a.addEventListener("click", () => menu(false)));
+})();
+
+// --- thema ------------------------------------------------------------------------------
+// De keuze (automatisch, licht of donker) wordt in deze browser onthouden. Een pagina die
+// kleuren in een tekening gebruikt (de grafieken) luistert naar "brms-thema" en tekent
+// opnieuw.
+(() => {
+  const knoppen = document.querySelectorAll("#thema button");
+  function toon() {
+    const nu = document.documentElement.dataset.thema || "auto";
+    knoppen.forEach(k => k.setAttribute("aria-pressed", k.dataset.thema === nu ? "true" : "false"));
+  }
+  knoppen.forEach(k => k.addEventListener("click", () => {
+    const thema = k.dataset.thema;
+    if (thema === "auto") delete document.documentElement.dataset.thema;
+    else document.documentElement.dataset.thema = thema;
+    try { localStorage.setItem("brms-thema", thema); } catch (e) { /* mag mislukken */ }
+    toon();
+    document.dispatchEvent(new Event("brms-thema"));
+  }));
+  toon();
+})();
+
+// --- status ------------------------------------------------------------------------------
+// Elke 30 s: hoeveel alarmen er actief zijn, of alle services draaien en of de broker
+// bereikbaar is (/api/status). Dat bepaalt de stip rechtsboven en de teller bij "Alarmen".
+const BRMS = {
+  STATUS_INTERVAL: 30000,
+  async status() {
+    const stip = document.getElementById("stip"), tekst = document.getElementById("stiptekst");
+    const teller = document.getElementById("teller-alarmen");
+    let soort = "", uitleg = "Alles in orde", kort = "";
+    try {
+      const a = await fetch("/api/status");
+      if (!a.ok) throw new Error("fout " + a.status);
+      const s = await a.json();
+      const n = s.alarmen || 0;
+      teller.textContent = n;
+      teller.hidden = n === 0;
+      if (s.services === false || s.broker === false) {
+        soort = "fout";
+        kort = s.services === false ? "service gestopt" : "broker weg";
+        uitleg = s.services === false ? "Een service draait niet; zie Systeem"
+                                      : "De MQTT-broker is niet bereikbaar; zie Systeem";
+        stip.href = "/systeem";
+      } else if (n > 0) {
+        soort = "alarm";
+        kort = n + (n === 1 ? " alarm" : " alarmen");
+        uitleg = n === 1 ? "Er is 1 alarm actief" : "Er zijn " + n + " alarmen actief";
+        stip.href = "/alarmen";
+      } else {
+        soort = "goed";
+        stip.href = "/systeem";
+      }
+    } catch (e) {
+      soort = "fout"; kort = "geen verbinding";
+      uitleg = "Geen verbinding met de BRMS-webservice";
+    }
+    stip.className = soort;
+    stip.title = uitleg;
+    tekst.textContent = kort;
+  },
+};
+BRMS.status();
+setInterval(BRMS.status, BRMS.STATUS_INTERVAL);
+</script>
+{% block script %}{% endblock %}
+</body>
+</html>

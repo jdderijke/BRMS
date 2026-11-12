@@ -35,7 +35,7 @@ import signal
 import subprocess
 import sys
 
-from brms import VERSION, config
+from brms import VERSION, config, systeem
 
 
 def _check_config(cfg_pad: str) -> int:
@@ -70,17 +70,6 @@ def _check_config(cfg_pad: str) -> int:
     return 0
 
 
-def _services() -> list[str]:
-    """Alle BRMS-services: de namen van de units in deploy/systemd/ (bijv. brms-opslag).
-
-    Zo doet een nieuwe service (Shelly-reader, alarmlaag) vanzelf mee met start/stop/herstart
-    zodra zijn unit in deploy/systemd/ staat.
-    """
-    map_ = os.path.join(config.PROJECTMAP, "deploy", "systemd")
-    return sorted(f[:-len(".service")] for f in os.listdir(map_)
-                  if f.startswith("brms-") and f.endswith(".service"))
-
-
 def _beheer(actie: str, cfg_pad: str) -> int:
     """brms start | stop | herstart: alle BRMS-services via systemd (§10.1 punt 9).
 
@@ -91,7 +80,8 @@ def _beheer(actie: str, cfg_pad: str) -> int:
     - sudo vraagt zo nodig om het wachtwoord.
     Na afloop wordt per service de status getoond.
     """
-    services = _services()
+    # Alle BRMS-services: de units in deploy/systemd/. Een nieuwe service doet zo vanzelf mee.
+    services = systeem.brms_services()
     if actie in ("start", "herstart"):
         if _check_config(cfg_pad) != 0:
             print("Niets gedaan; de services draaien (zo nodig) door met de oude configuratie.",
@@ -328,10 +318,9 @@ def main(argv=None) -> int:
         print("(Toch starten, alleen voor testen: --toch)", file=sys.stderr)
         return 1
 
-    # Logging naar stderr; onder systemd komt dat in journald, dat zelf tijd en
-    # servicenaam toevoegt. Daarom hier alleen niveau, module en bericht.
-    logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO,
-                        format="%(levelname)s %(name)s: %(message)s")
+    # Logging naar stderr; onder systemd komt dat in journald, met het niveau erbij zodat
+    # het logboek in het web erop kan filteren (§5.5.5 punt 2; zie brms/systeem.py).
+    systeem.stel_logging_in(args.debug)
     log = logging.getLogger("brms")
 
     # Configuratie controleren vóór het starten (§5.4.1 punt 5). Bij een fout stopt de
@@ -356,11 +345,17 @@ def main(argv=None) -> int:
         if args.opdracht == "web":
             # Het web is Flask (geen asyncio, §3.2) en heeft zijn eigen hoofdlus.
             from brms import web
-            web.draai(cfg)
+            web.draai(cfg, args.config)
         else:
             asyncio.run(_service(args.opdracht, cfg))
     except KeyboardInterrupt:
         pass
+    except Exception:
+        # Een onverwachte fout waardoor de service stopt: eerst als fout loggen, zodat hij
+        # in het logboek staat en een melding geeft (§5.5.5 punt 2). systemd start de
+        # service daarna opnieuw (§3.1 punt 1).
+        log.critical("onverwachte fout; de service %s stopt", args.opdracht, exc_info=True)
+        return 1
     return 0
 
 

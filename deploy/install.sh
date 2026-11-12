@@ -184,6 +184,9 @@ for unit in "$BRMS"/deploy/systemd/brms-*.service; do
         | sudo tee "/etc/systemd/system/$(basename "$unit")" >/dev/null
 done
 sudo systemctl daemon-reload
+# De polkit-regel voor de herstartknoppen in het web, en het recht om journald te lezen
+# voor het logboek (§5.5.5, §5.6 systeempagina).
+bash "$BRMS/deploy/rechten.sh"
 # Eerst de configuratie controleren; bij een fout stopt het script hier (set -e).
 brms check-config
 # Alle BRMS-services: de units in deploy/systemd/ (zoals in update.sh), zodat een nieuwe

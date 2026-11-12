@@ -143,6 +143,14 @@ naam = "motorruim"
 # Een melding gaat naar elk kanaal dat hier is ingesteld. Zonder kanaal worden alarmen wel
 # vastgelegd, maar gaat er geen melding uit. Haal het # weg en vul je eigen gegevens in.
 #
+# Systeemfouten (§5.5.5): een fout van een BRMS-service of van de kernel (bijv. schrijven
+# naar de database mislukt, een service die crasht, een leesfout van de schijf) geeft ook
+# een melding, hooguit één per service per uur. Alles staat in het logboek op de pagina
+# Systeem. Staat standaard aan; uitzetten kan hier (dit blok moet vóór [melding.telegram]
+# en [melding.email] staan):
+# [melding]
+# systeemfouten = false
+#
 # Telegram: maak in de Telegram-app een bot aan via @BotFather (/newbot); je krijgt een
 # token. Stuur de bot één bericht en open daarna
 #   https://api.telegram.org/bot<token>/getUpdates
@@ -307,3 +315,15 @@ herhaling = "7d"
 # herstelmelding = false
 # foto = "begin"
 # actie = [{ type = "video" }]
+#
+# Camera stil (§5.5.3 punt 2): een camera is geen sensor, maar mag wel in een regel van
+# soort "stil" staan. Elke geslaagde opname telt als levensteken: valt de camera uit (of
+# de camera-service), dan komen er geen intervalfoto's meer en gaat dit alarm af. De duur
+# moet langer zijn dan het foto-interval van de camera.
+# [[alarm]]
+# id = "camera-stil"
+# naam = "Camera stil"
+# sensoren = ["dek"]
+# soort = "stil"
+# duur = "15m"
+# herhaling = "24u"

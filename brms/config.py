@@ -178,6 +178,8 @@ class EmailConfig:
 class MeldingConfig:
     telegram: TelegramConfig | None = None
     email: EmailConfig | None = None
+    # Een fout in het logboek (journald) ook als melding versturen (§5.5.5 punt 5).
+    systeemfouten: bool = True
 
     @property
     def ingesteld(self) -> bool:
@@ -203,7 +205,9 @@ class Alarmregel:
     """Eén blok [[alarm]] uit de configuratie (§5.5.3 punt 1). Tijden in seconden."""
     id: str                      # vaste naam; staat in de database
     naam: str                    # tekst voor meldingen
-    sensoren: tuple[str, ...]    # sensor-ID's waarvoor de regel geldt
+    # De ID's van de sensoren waarvoor de regel geldt. Bij soort 'stil' kan er ook het ID
+    # van een camera tussen staan (§5.5.3 punt 2): een geslaagde opname is dan het levensteken.
+    sensoren: tuple[str, ...]
     soort: str                   # grens, aantal of stil
     grootheid: str | None = None  # None bij 'stil'
     # --- soort grens: precies één van boven/onder ---
@@ -441,7 +445,11 @@ def _tekst(fouten, plek, d: dict, sleutel: str) -> str | None:
 def _melding(fouten, data: dict) -> MeldingConfig:
     """Controleert [melding.telegram] en [melding.email] (§5.5.4)."""
     m = _tabel(fouten, data, "melding")
-    _onbekend(fouten, "[melding]", m, ("telegram", "email"))
+    _onbekend(fouten, "[melding]", m, ("telegram", "email", "systeemfouten"))
+    systeemfouten = m.get("systeemfouten", MeldingConfig.systeemfouten)
+    if not isinstance(systeemfouten, bool):
+        fouten.append("[melding]: 'systeemfouten' moet true of false zijn")
+        systeemfouten = MeldingConfig.systeemfouten
 
     telegram = None
     t = m.get("telegram")
@@ -492,7 +500,7 @@ def _melding(fouten, data: dict) -> MeldingConfig:
                 van = None
             if server and gebruiker and wachtwoord and poort and aan and van:
                 email = EmailConfig(server, poort, gebruiker, wachtwoord, van, tuple(aan))
-    return MeldingConfig(telegram, email)
+    return MeldingConfig(telegram, email, systeemfouten)
 
 
 def _tijd(fouten, plek, d: dict, sleutel: str, standaard: float, laagste: float,
@@ -711,8 +719,10 @@ def _alarmen(fouten, data: dict, sensoren: dict[str, Sensor],
                           f"niet {soort!r}")
             continue
 
-        # --- sensoren: op naam of ID; elke sensor wordt apart beoordeeld ---
-        gekozen: list[Sensor] = []
+        # --- sensoren: op naam of ID; elke sensor wordt apart beoordeeld. In een regel van
+        # soort 'stil' mag ook een camera staan (§5.5.3 punt 2, v0.51): een camera levert
+        # geen metingen, maar elke geslaagde opname telt als levensteken. ---
+        gekozen: list[Sensor | Camera] = []
         namen = a.get("sensoren")
         if not isinstance(namen, list) or not namen or not all(isinstance(s, str) for s in namen):
             fouten.append(f"{plek}: 'sensoren' moet een niet-lege lijst van sensornamen zijn")
@@ -720,6 +730,14 @@ def _alarmen(fouten, data: dict, sensoren: dict[str, Sensor],
             for s in namen:
                 sensor = (sensoren.get(s) or sensoren.get(s.upper())
                           or next((x for x in sensoren.values() if x.naam.lower() == s.lower()), None))
+                if sensor is None:
+                    # Geen sensor met die naam: is het een camera?
+                    sensor = cameras.get(s) or next(
+                        (c for c in cameras.values() if c.naam.lower() == s.lower()), None)
+                    if sensor is not None and soort != STIL:
+                        fouten.append(f"{plek}: '{s}' is een camera; een camera kan alleen in "
+                                      f"een regel van soort 'stil' staan")
+                        continue
                 if sensor is None:
                     fouten.append(f"{plek}: onbekende sensor '{s}'")
                 elif sensor in gekozen:
@@ -789,6 +807,12 @@ def _alarmen(fouten, data: dict, sensoren: dict[str, Sensor],
         regel_duur = tijd("duur", 0.0, verplicht=(soort == STIL))
         if soort == STIL and regel_duur <= 0 and "duur" in a:
             fouten.append(f"{plek}: 'duur' moet langer dan 0 zijn")
+        # Een camera meldt zich met elke intervalfoto. Is de duur niet langer dan dat
+        # interval, dan gaat het alarm tussen twee foto's af.
+        for bron in gekozen:
+            if isinstance(bron, Camera) and 0 < regel_duur <= bron.foto_interval:
+                fouten.append(f"{plek}: 'duur' moet langer zijn dan het foto-interval van "
+                              f"camera {bron.id} ({bron.foto_interval:g} s)")
         herstelduur = tijd("herstelduur")
 
         # --- notificatie ---

@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.50 – concept** · 11 november 2026
+**Versie 0.52 – concept** · 12 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1076,8 +1076,9 @@ buitensensor mag geen vorstalarm geven.
 
 *Gebouwd: stap (a) van punt 11 (v0.33): regels, notificaties, de tabel `alarm` en de
 grenzen in de grafieken; en met de camera (v0.40) de foto bij een notificatie (punt 5) en
-de acties `video` en `foto` (punt 6). Nog niet gebouwd: de schakelaar (punt 7) en de actie
-`relais`; `check-config` weigert die actie tot hij er is.*
+de acties `video` en `foto` (punt 6); en de schakelaar (punt 7) en "camera stil" (punt 2)
+in code v0.19.0. Nog niet gebouwd: de actie `relais`; `check-config` weigert die actie tot
+hij er is.*
 
 **Aanleiding.** Vastgelegd moest worden hoe een alarm wordt ingesteld, wat het teweegbrengt
 (een notificatie, een actie, of geen van beide), hoe opgetreden alarmen bewaard en getoond
@@ -1162,6 +1163,33 @@ betreffende reader uitvoert. Zo blijft er per apparaat één component die ermee
    - `aantal`: binnen het tijdvenster is het aantal bereikt. Bij een toename (`beweging`)
      telt de som; bij een toestand (`bilgepomp`) het aantal overgangen 0 → 1.
    - `stil`: de sensor levert de ingestelde duur geen enkele waarde.
+
+   **Camera stil** (v0.51; gebouwd in code v0.19.0). Een camera is geen sensor en levert geen
+   metingen; uitval van de camera gaf daardoor alleen een regel in het log (§5.7 punt
+   13). In `sensoren` van een regel met `soort = "stil"` mag daarom ook het ID van een
+   **camera** staan. Voor een camera telt elke **geslaagde opname** (het bericht op
+   `brms/opname/<camera_id>`, §5.7 punt 13) als ontvangen waarde. De regel gaat dus af
+   als de camera onbereikbaar is, en ook als de camera-service zelf niet meer werkt.
+   Verder is het een gewone regel: melding, herstelmelding, tabel `alarm`, schakelaar.
+   `check-config` weigert een camera in een regel van een andere soort, en een `duur`
+   die niet langer is dan het foto-interval van die camera.
+
+   ```toml
+   [[alarm]]
+   id = "camera_stil"
+   naam = "Camera stil"
+   sensoren = ["camera1"]
+   soort = "stil"
+   duur = "15m"
+   melding = "herhaald"
+   herhaling = "24u"
+   ```
+   Voor de Shelly is niets extra nodig: dat is een sensor, en een onbereikbare Shelly
+   levert geen waarden meer (gewone `stil`-regel).
+
+   *Verworpen (v0.51):* een eigen grootheid `bereikbaar` (0/1) voor camera en Shelly.
+   Een nieuwe grootheid naast een afspraak die er al is; en zonder waarden (reader
+   vastgelopen) gaat een `grens`-regel niet af.
 3. De **werking** per regel en per sensor is die van §5.5.2: duur, herstel, geen data is
    geen herstel, en geen toestand over een herstart. Een grens wordt alleen bij een nieuwe
    waarde beoordeeld (v0.33): zonder data gaat een alarm niet af en herstelt het niet. Een
@@ -1197,6 +1225,11 @@ betreffende reader uitvoert. Zo blijft er per apparaat één component die ermee
      aan staat, gaat uit.
    - De stand staat in de database (tabel `alarm_uit`, §5.3.1) en overleeft een herstart.
      Het is de enige instelling buiten `brms.toml`.
+   - Een alarm dat door het uitzetten wordt afgesloten, krijgt in de tabel `alarm` de
+     reden `uitgezet`; er volgt geen herstelmelding (er is niets hersteld). Gaat de regel
+     weer aan, dan begint de beoordeling opnieuw, zoals na een herstart.
+   - De alarmlaag leest de tabel daarna elke minuut opnieuw (v0.52): is een opdracht de
+     alarmlaag of de opslag ontgaan, dan volgt de alarmlaag alsnog de database.
    - Het web geeft de opdracht `brms/opdracht/alarm/schakel` met
      `{"alarm_id": ..., "aan": false}`. De opslag-service schrijft de stand weg (§3.1); de
      alarmlaag voert de opdracht direct uit en leest bij zijn start de tabel
@@ -1264,6 +1297,66 @@ versturen.
    werkgeheugen. Zonder internet vanaf de boot komt er geen melding aan (§8).
 7. Is er geen enkel kanaal ingesteld, dan worden alarmen wel vastgelegd en acties
    uitgevoerd, maar gaat er geen melding uit; `check-config` waarschuwt daarvoor.
+
+#### 5.5.5 Systeemmeldingen: logboek en melding bij een fout (v0.51)
+
+*Gebouwd in code v0.19.0 (`brms/systeem.py`). Getest op de pc met nagemaakte uitvoer van
+`journalctl` en `systemctl`; nog niet getest op de Pi.*
+
+**Aanleiding.** Een storing in BRMS zelf (camera onbereikbaar, schrijven naar de database
+mislukt, een service die steeds herstart) stond alleen in journald en was alleen via SSH
+te zien. Er ging geen melding uit.
+
+**Redenering.** Alle services schrijven hun waarschuwingen en fouten al naar journald
+(§10.1 punt 4). Dat is daarmee de ene bron voor systeemmeldingen: het kost geen extra
+schrijfwerk (P7), het bevat ook Mosquitto, go2rtc en de meldingen van systemd over een
+herstart, en het werkt ook als de database of de broker de storing is. Een fout in de
+database kan niet in de database worden vastgelegd. Een logboek waar je naar moet gaan
+kijken is niet genoeg voor een systeem dat maanden onbeheerd draait; een echte fout moet
+zich daarom ook melden.
+
+**Verworpen alternatieven.**
+- *Een eigen tabel voor systeemmeldingen, gevuld via de bus.* Extra schrijfwerk, een
+  tweede log naast journald, en hij mist precies de storingen van database en broker.
+- *Elke waarschuwing als melding.* Te veel: een waarschuwing is iets dat vanzelf overgaat
+  of waarvoor al een alarmregel bestaat (sensor stil, camera stil).
+
+**Specificatie.**
+1. **Niveaus.** Een *waarschuwing* (WARNING) is een storing die BRMS zelf opvangt (een
+   mislukte poll of opname, een melding die nog niet verstuurd kon worden). Een *fout*
+   (ERROR en hoger) betekent dat er iets stuk is en aandacht vraagt (schrijven naar de
+   database mislukt, een onverwachte uitzondering, go2rtc start niet). Bij het bouwen
+   worden de bestaande logregels hierop nagelopen.
+2. **Niveau in journald.** De services zetten het niveau voor elke regel in de vorm die
+   systemd herkent (`<3>` fout, `<4>` waarschuwing, ...), zodat journald op niveau kan
+   filteren. Een onverwachte uitzondering waardoor een service stopt, wordt eerst als
+   fout gelogd. Bij een fout met een uitzondering staat de soort en de tekst daarvan
+   achter de eerste regel; de regels van de traceback krijgen niveau "gewoon" (wel in
+   journald, niet in het logboek). Meldt systemd dat een BRMS-service is gestopt met een
+   fout ("Failed with result ..."), dan telt dat als fout.
+3. **Logboek in het web** (§5.6, systeempagina): de webservice leest journald met
+   `journalctl` (uitvoer als JSON), voor de eenheden `brms-*` en `mosquitto` en voor de
+   **kernel** (v0.52), vanaf niveau waarschuwing. De webservice schrijft zelf niets weg.
+   Een herstart of een omgezette schakelaar via het web staat er ook in (als
+   waarschuwing), zodat terug te vinden is wie wat deed. De kernel meldt lees- en schrijffouten van de schijf, fouten in het bestandssysteem
+   en onderspanning van de Pi: dat zegt meer over de gezondheid van de schijf dan SMART,
+   dat deze schijf niet doorgeeft (§5.6).
+4. **Bewaartermijn:** het logboek gaat zo ver terug als journald bewaart. Op de Pi staat
+   journald nu op `Storage=volatile` (de standaard van Raspberry Pi OS): het log staat
+   in het werkgeheugen en is **na een herstart van de Pi leeg**. Wat er vlak voor een
+   stroomuitval of een vastloper gebeurde, is dan niet meer te zien. Of het log op de
+   schijf moet komen, hoort bij **[OPEN-21]**.
+5. **Melding bij een fout:** de alarmlaag volgt journald (`journalctl --follow`, dezelfde
+   eenheden en de kernel, vanaf niveau fout) en verstuurt bij een fout een melding via de kanalen van
+   §5.5.4, met de service en de foutregel, prioriteit *hoog*.
+   - Hooguit **één melding per service per uur** (de kernel telt als één service); de melding na dat uur noemt hoeveel
+     fouten er intussen bij zijn gekomen. Alles staat in het logboek.
+   - Mislukt versturen van een melding is een waarschuwing (§5.5.4 punt 6), geen fout:
+     anders zou een melding over een fout zelf weer een melding geven.
+   - Stopt het volgen van journald, dan start de alarmlaag het opnieuw.
+   - In `brms.toml`: `[melding] systeemfouten = true` (standaard aan).
+6. Niet afgedekt: uitval van de alarmlaag zelf, van de Pi of van het internet (§8,
+   OPEN-18).
 
 ### 5.6 Webinterface
 
@@ -1435,13 +1528,96 @@ schrijvers op dezelfde database en map.
 
 **Alarmen in het web (v0.31; §5.5.3).**
 - Een overzicht van de alarmregels met per regel een **aan/uit-schakelaar**, de alarmen
-  die nu actief zijn, en de opgetreden alarmen uit de tabel `alarm`. *Nog niet gebouwd.*
+  die nu actief zijn, en de opgetreden alarmen uit de tabel `alarm`: de alarmenpagina
+  hieronder (v0.52).
 - In de grafieken de grens (streeplijn) en herstelgrens (stippellijn) in de kleur van de
   reeks, en de alarmperioden gearceerd in de strook van die reeks. *Gebouwd (v0.33).* Een
   grens buiten het bereik van de as wordt niet getekend: de as volgt de metingen. De
   perioden komen van `/api/alarmen`; een live-grafiek ververst ze elke 30 s.
 - Het web leest de regels uit `brms.toml` en de alarmen uit de database; de schakelaar
   gaat als opdracht over MQTT (punt 3).
+
+**Indeling, menu en thema (v0.52; gebouwd in code v0.19.0).** Het web heeft vier pagina's: **Grafieken** (`/`),
+**Opnames** (`/opnames`), **Alarmen** (`/alarmen`) en **Systeem** (`/systeem`). Het wordt
+ook op een telefoon gebruikt.
+1. Elke pagina heeft dezelfde **bovenbalk**: links de menuknop (drie streepjes), daarnaast
+   de titel van de pagina, rechts een **statusstip**.
+2. De menuknop schuift een **zijbalk** in beeld met de vier pagina's. Op een smal scherm
+   ligt hij over de pagina en sluit hij na een keuze, een tik ernaast of Escape; op een
+   breed scherm (vanaf 1000 px) staat hij vast in beeld en is er geen menuknop.
+3. De **statusstip** en het menu laten op elke pagina zien of er iets mis is: bij
+   "Alarmen" staat het aantal actieve alarmen; de stip is rood als een service niet
+   draait of de broker onbereikbaar is, oranje bij een actief alarm, anders groen. De
+   pagina vraagt dit elke 30 s op (`/api/status`).
+4. **Thema:** onderin de zijbalk de keuze *Automatisch* (volgt het toestel), *Licht* of
+   *Donker*. De keuze wordt in de browser onthouden (`localStorage`), per apparaat. Een
+   aparte instellingenpagina is er niet: dit is de enige instelling van de weergave.
+5. De iconen in het menu zijn **getekende lijn-iconen** (SVG in de pagina, geen
+   lettertype of extern bestand, P3); ze kleuren mee met het thema.
+6. Eén **gedeeld stijlbestand** (`static/brms.css`) en één gedeeld sjabloon voor
+   bovenbalk en zijbalk. Op een smal scherm worden tabellen (opnames, alarmen, logboek)
+   kaartjes onder elkaar; knoppen zijn groot genoeg voor een vinger.
+7. De werking van de grafieken en van de opnamepagina verandert niet.
+
+*Verworpen:* een CSS- of JavaScript-raamwerk (Bootstrap e.d.): een afhankelijkheid en
+honderden kB voor vier pagina's (P3). *Emoji als iconen:* zien er op elk toestel anders
+uit en volgen het thema niet.
+
+**Alarmenpagina (v0.52; gebouwd in code v0.19.0).** Van boven naar beneden:
+1. De alarmen die **nu actief** zijn (regel, sensor, sinds wanneer, waarde).
+2. De **alarmregels**, met per regel de voorwaarde in woorden, de sensoren, de melding en
+   de **aan/uit-schakelaar** (§5.5.3 punt 7). De pagina toont de nieuwe stand zodra de
+   opslag hem heeft vastgelegd.
+3. De **opgetreden alarmen** uit de tabel `alarm`, de nieuwste bovenaan (hooguit 200),
+   met begin, einde, duur en de reden van het einde.
+
+**Systeempagina (v0.51; herzien in v0.52; gebouwd in code v0.19.0, de herstartknoppen en
+het logboek nog niet getest op de Pi).** Van boven naar beneden:
+1. **Services:** per service (`brms-*`, `mosquitto`) of hij draait, sinds wanneer, en
+   hoe vaak systemd hem sinds het opstarten van de Pi opnieuw heeft gestart. De
+   webservice vraagt dit op met `systemctl show`. Een service die niet draait, valt op
+   door kleur.
+2. **Herstarten (v0.52):** twee knoppen.
+   - **"Herstart BRMS"** herstart alle BRMS-services (`systemctl restart`). Eerst wordt
+     de configuratie gecontroleerd, zoals bij `brms herstart` (§10.1 punt 9): bij een
+     fout gebeurt er niets en toont de pagina de fouten.
+   - **"Herstart de Pi"** start de Pi opnieuw op (`systemctl reboot`).
+   - Beide vragen eerst om **bevestiging** in een eigen venster ("Weet je het zeker?"),
+     bij de Pi met de waarschuwing dat BRMS ongeveer een minuut onbereikbaar is en dat
+     het logboek daarna leeg is (§5.5.5 punt 4). Daarna wacht de pagina tot de
+     webservice weer antwoordt en laadt zichzelf opnieuw.
+   - **Rechten:** de services draaien als gewone gebruiker en zonder nieuwe rechten
+     (§10.1 punt 5). Een **polkit-regel** (`deploy/polkit/50-brms.rules`, door
+     `install.sh` en `update.sh` in `/etc/polkit-1/rules.d/` gezet) staat alleen die
+     gebruiker toe de eenheden `brms-*` te starten, stoppen en herstarten en de Pi te
+     herstarten. De webservice wordt geen root; systemd voert alleen die handeling uit.
+     Het plaatsen van de regel en het recht om journald te lezen regelt
+     `deploy/rechten.sh`.
+   - De webservice herstart eerst de andere services en een seconde na zijn antwoord
+     zichzelf, zodat de pagina het antwoord nog krijgt.
+   - *Verworpen:* `sudo` zonder wachtwoord voor deze opdrachten (de webservice zou dan
+     `NoNewPrivileges` kwijt moeten); een eigen root-service die op een opdracht over de
+     bus herstart (een extra onderdeel, en het werkt niet als de broker de storing is).
+   - Wie de pagina kan openen, kan herstarten (OPEN-15).
+3. **Logboek** (§5.5.5): de laatste 200 waarschuwingen en fouten, de nieuwste bovenaan,
+   met tijd, service, niveau en tekst. Te kiezen: de service, en alleen fouten of ook
+   waarschuwingen; "ouder" bladert terug. Zolang de pagina open staat, ververst hij
+   elke 30 s.
+4. **Opslag:**
+   - *Schijfruimte:* grootte, gebruikt en vrij van de schijf waarop `data/` staat, en
+     daarvan de omvang van de database en van de opnames. De webservice vraagt dit zelf
+     op (standaardbibliotheek).
+   - *Verworpen: gezondheid van de schijf via SMART.* Getest op 12 november 2026 met
+     `smartctl` 7.4 op de Raspberry Pi Flash Drive 256 GB: de schijf geeft via USB geen
+     SMART-gegevens door (`-d sat` en de NVMe-varianten: "unsupported scsi opcode").
+     Alleen `-d scsi` antwoordt, met niet meer dan "Health Status: OK" en een
+     temperatuur van 0 °C; geen slijtage, geen bedrijfsuren. Daarvoor een eigen eenheid
+     met root-rechten en een extra pakket is het niet waard. In plaats daarvan staan de
+     foutmeldingen van de kernel in het logboek (§5.5.5 punt 3).
+
+De gebruiker waaronder de services draaien moet journald mogen lezen (groep `adm` of
+`systemd-journal`); `install.sh` en `update.sh` controleren dat (`deploy/rechten.sh`). Op
+de Pi is `jandirk` al lid van `adm`.
 
 **[OPEN-15]** Is authenticatie nodig naast Tailscale? Met de schakelaar (v0.31) kan iemand
 met toegang tot het web een alarmregel uitzetten.
@@ -1569,7 +1745,8 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
     fout) geeft één waarschuwing in het log en geen bericht; de reader probeert het niet
     opnieuw, de volgende intervalfoto komt vanzelf. Mislukken de intervalfoto's keer op
     keer, dan komt alleen de eerste keer een waarschuwing en één regel bij herstel
-    (v0.38, zoals bij de Shelly); een mislukte foto op verzoek wordt altijd gemeld. Zolang de klok niet gesynchroniseerd
+    (v0.38, zoals bij de Shelly); een mislukte foto op verzoek wordt altijd gemeld. Uitval van de camera
+    is te bewaken met een alarmregel "camera stil" (§5.5.3 punt 2, v0.51). Zolang de klok niet gesynchroniseerd
     is, maakt de reader geen opnames (§4.2).
 14. De **opslag-service** legt de metadata vast in de tabel `opname` en ruimt op: foto's
     ouder dan de bewaartermijn eenmaal per uur, en de oudste video's zodra de maximale
@@ -2204,7 +2381,9 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.50** | 2026-11-11 | Claude Code, Fable 5.2 | Opnamepagina (§5.6 punt 2, code v0.18.1): een foto of video die tijdens het live kijken is gemaakt, staat in de lijst zodra hij is opgeslagen; het live-beeld loopt door. |
+| **0.52** | 2026-11-12 | Claude Code, Fable 5.2 | Gebouwd in code v0.19.0, samen met v0.51 (nog niet getest op de Pi). Web (§5.6): vier pagina's (Grafieken, Opnames, Alarmen, Systeem) met een gedeelde bovenbalk, een zijbalk als menu, statusstip, thema licht/donker/automatisch en lijn-iconen; geschikt voor de telefoon. Systeempagina: knoppen "Herstart BRMS" en "Herstart de Pi" met bevestiging, via een polkit-regel. Foutmeldingen van de kernel in het logboek en als melding (§5.5.5). |
+| 0.51 | 2026-11-12 | Claude Code, Fable 5.2 | Ontwerp (gebouwd met v0.52). Systeempagina in het web (§5.6): alarmregels met schakelaar, status van de services, logboek, schijfruimte (SMART getest en verworpen: de schijf geeft via USB geen bruikbare gegevens). Systeemmeldingen (§5.5.5): logboek uit journald; een fout (ERROR) geeft een melding, hooguit één per service per uur. Camera in een `stil`-regel, met elke geslaagde opname als levensteken (§5.5.3 punt 2); `bereikbaar` verworpen. |
+| 0.50 | 2026-11-11 | Claude Code, Fable 5.2 | Opnamepagina (§5.6 punt 2, code v0.18.1): een foto of video die tijdens het live kijken is gemaakt, staat in de lijst zodra hij is opgeslagen; het live-beeld loopt door. |
 | 0.49 | 2026-11-11 | Claude Code, Fable 5.2 | Gebouwd (code v0.18.0): live-beeld via go2rtc en WebRTC (§5.7 punt 18, met de invulling bij het bouwen), service `brms-go2rtc`, `deploy/go2rtc.sh`, go2rtc en Tailscale in `install.sh` (§10.1 punt 6); video-opnames via go2rtc met de camera als terugval (punt 11); standaard `video_duur` 60 s; foto's die samenvallen met een video doen niet mee in het dagoverzicht (§5.6 punt 2). De MJPEG-code, `live_url` en `live_beelden` zijn vervallen. |
 | 0.48 | 2026-11-11 | Claude Code, Fable 5.2 | Ontwerp, nog niet gebouwd: live-beeld via go2rtc en WebRTC in plaats van de MJPEG-stroom van de camera (§5.7 punt 18), na metingen en een proef op de test-Pi; go2rtc als service `brms-go2rtc` op een vaste versie; video-opnames via go2rtc met de camera als terugval (punt 11); `live_url` en `live_beelden` vervallen; go2rtc en Tailscale in `install.sh` (§10.1 punt 6). |
 | 0.47 | 2026-11-11 | Claude Code, Fable 5.2 | Ontwerp, nog niet gebouwd: standaard `video_duur` van 120 s naar 60 s (§5.7); in het dagoverzicht doet een foto (ook een intervalfoto) die samenvalt met een video van dezelfde camera niet mee (§5.6 punt 2). |

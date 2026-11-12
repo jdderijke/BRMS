@@ -4,3 +4,4 @@
 *.conf text eol=lf
 deploy/brms text eol=lf
 deploy/*.txt text eol=lf
+*.rules text eol=lf

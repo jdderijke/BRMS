@@ -64,6 +64,9 @@ installeer_units() {
     done
     sudo systemctl daemon-reload
     sudo systemctl enable -q $(services)
+    # De polkit-regel voor de herstartknoppen in het web, en het recht om journald te
+    # lezen voor het logboek (deploy/rechten.sh). Doet niets als het al in orde is.
+    bash deploy/rechten.sh
 }
 
 # Haalt het programma go2rtc op als het ontbreekt of de versie niet klopt (deploy/go2rtc.sh).
@@ -105,6 +108,9 @@ if [ "$doel" = "$huidig" ]; then
         installeer_units
         sudo systemctl start $ontbreekt
         echo "Gestart:$ontbreekt"
+    else
+        # Ook zonder nieuwe code: de rechten voor het web controleren (zie rechten.sh).
+        bash deploy/rechten.sh
     fi
     exit 0
 fi

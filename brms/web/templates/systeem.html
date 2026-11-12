@@ -1,0 +1,338 @@
+{#
+  Systeempagina van BRMS (ARCHITECTURE.md §5.6 "Systeempagina", §5.5.5).
+
+  Van boven naar beneden:
+    1. Services    of elke BRMS-service en Mosquitto draait, sinds wanneer, en hoe vaak
+                   systemd hem opnieuw heeft gestart (/api/systeem);
+    2. Herstarten  alle BRMS-services, of de hele Pi – na een bevestiging;
+    3. Logboek     de waarschuwingen en fouten van de services en de kernel, uit journald
+                   (/api/logboek);
+    4. Opslag      de schijfruimte.
+
+  Herstarten: de webservice vraagt het aan systemd; een polkit-regel staat dat toe
+  (deploy/polkit/50-brms.rules). "Herstart BRMS" controleert eerst brms.toml; staat daar
+  een fout in, dan gebeurt er niets en toont de pagina de fouten. Na een herstart wacht de
+  pagina tot de webservice weer antwoordt (hij heeft dan een ander starttijdstip) en laadt
+  zichzelf opnieuw.
+
+  Het logboek staat in journald, op de Pi in het werkgeheugen: na een herstart van de Pi
+  is het leeg (§5.5.5 punt 4).
+#}
+{% extends "basis.html" %}
+
+{% block stijl %}
+<style>
+  /* De services: een raster van tegels; op een telefoon één of twee naast elkaar. */
+  #services { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; }
+  /* Een uitleg in plaats van tegels (bijv. "wordt opgehaald") over de volle breedte. */
+  #services p { grid-column: 1 / -1; margin: 0; }
+  /* Zonder melding neemt de statusregel geen ruimte in. */
+  #status:empty { display: none; }
+  .service { border: 1px solid var(--rand); border-radius: 10px; padding: 8px 10px;
+             border-left: 4px solid var(--goed); }
+  .service.gestopt { border-left-color: var(--fout); }
+  .service .naam { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .service .naam span { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+  .service .bij { color: var(--zacht); font-size: 13px; }
+  /* Het logboek. */
+  #logboek td.tekst { word-break: break-word; }
+  #logboek tr.fout td.tekst { color: var(--fout); }
+  .log { max-height: 70vh; overflow: auto; }
+  /* De schijfruimte: een balk met het gebruikte deel ingekleurd. */
+  .meter { height: 12px; border-radius: 6px; background: var(--raster); overflow: hidden; margin: 6px 0; }
+  .meter i { display: block; height: 100%; background: var(--accent); }
+  .meter.vol i { background: var(--fout); }
+  dialog ul { margin: 0 0 14px; padding-left: 20px; color: var(--fout); }
+  @media (max-width: 640px) {
+    #logboek td.tekst { padding-top: 3px; }
+    .herstart button { flex: 1 1 100%; }
+  }
+</style>
+{% endblock %}
+
+{% block inhoud %}
+  <p id="status"></p>
+
+  <section class="blok">
+    <h2>Services</h2>
+    <div id="services"><p class="zacht">Wordt opgehaald…</p></div>
+  </section>
+
+  <section class="blok">
+    <h2>Herstarten</h2>
+    <div class="rij herstart">
+      <button id="herstart-brms" title="Alle BRMS-services opnieuw starten, bijvoorbeeld na een wijziging van brms.toml">Herstart BRMS</button>
+      <button id="herstart-pi" class="gevaar" title="De hele Pi opnieuw opstarten">Herstart de Pi</button>
+    </div>
+    <p class="zacht klein" style="margin: 0">“Herstart BRMS” controleert eerst de configuratie en start dan alle
+      services opnieuw; dat duurt enkele seconden. “Herstart de Pi” start het hele systeem opnieuw op.</p>
+  </section>
+
+  <section class="blok">
+    <h2>Logboek</h2>
+    <div class="rij">
+      <label>Service <select id="log-service"><option value="">alle</option></select></label>
+      <label>Niveau <select id="log-niveau">
+        <option value="">waarschuwingen en fouten</option>
+        <option value="1">alleen fouten</option>
+      </select></label>
+      <span class="ruimte"></span>
+      <button id="log-nieuwste" hidden>◀ nieuwste</button>
+      <button id="log-ouder" disabled>ouder ▶</button>
+    </div>
+    <p id="log-uitleg" class="zacht" hidden></p>
+    <div class="log">
+      <table class="kaartjes" id="logboek">
+        <thead><tr><th>Tijd</th><th>Service</th><th>Niveau</th><th>Melding</th></tr></thead>
+        <tbody id="logregels"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="blok">
+    <h2>Opslag</h2>
+    <div id="schijf"><p class="zacht">Wordt opgehaald…</p></div>
+  </section>
+
+  <!-- De bevestiging vóór een herstart. -->
+  <dialog id="zeker">
+    <h2 id="zeker-kop">Weet je het zeker?</h2>
+    <p id="zeker-tekst"></p>
+    <div class="rij">
+      <button id="zeker-nee">Annuleer</button>
+      <button id="zeker-ja" class="gevaar">Ja, herstart</button>
+    </div>
+  </dialog>
+  <!-- Een fout bij het herstarten (bijv. een fout in brms.toml). -->
+  <dialog id="mislukt">
+    <h2>Niet herstart</h2>
+    <p id="mislukt-tekst"></p>
+    <ul id="mislukt-lijst" hidden></ul>
+    <div class="rij"><button id="mislukt-ok">Sluiten</button></div>
+  </dialog>
+{% endblock %}
+
+{% block script %}
+<script>
+const el = id => document.getElementById(id);
+// Het starttijdstip van de webservice waar deze pagina vandaan komt; na een herstart is
+// het anders, en daaraan ziet de pagina dat de herstart klaar is.
+const GESTART = {{ gestart | tojson }};
+const KOP_GESTART = {{ kop_gestart | tojson }};
+const INTERVAL = 30000;        // ms tussen twee keer verversen van de pagina (§5.6)
+const WACHT_STAP = 3000;       // ms tussen twee pogingen na een herstart
+const WACHT_MAX = 5 * 60000;   // ms; daarna geeft de pagina het wachten op
+
+// --- tekst -----------------------------------------------------------------------------
+const twee = n => String(n).padStart(2, "0");
+function moment(ts, metSeconden) {
+  const d = new Date(ts * 1000);
+  return d.getDate() + "-" + (d.getMonth() + 1) + " " + twee(d.getHours()) + ":" + twee(d.getMinutes())
+       + (metSeconden ? ":" + twee(d.getSeconds()) : "");
+}
+function duur(s) {
+  if (s < 60) return s + " s";
+  if (s < 3600) return Math.floor(s / 60) + " min";
+  if (s < 86400) return Math.floor(s / 3600) + " u " + Math.floor(s % 3600 / 60) + " min";
+  return Math.floor(s / 86400) + " d " + Math.floor(s % 86400 / 3600) + " u";
+}
+const grootte = b => b === null || b === undefined ? "onbekend"
+                   : b >= 1e9 ? (b / 1e9).toFixed(1).replace(".", ",") + " GB"
+                   : b >= 1e6 ? (b / 1e6).toFixed(1).replace(".", ",") + " MB"
+                   : Math.round(b / 1e3) + " kB";
+function meld(tekst, fout) {
+  el("status").textContent = tekst || "";
+  el("status").classList.toggle("fout", !!fout);
+}
+// Een element met tekst (nooit innerHTML: de teksten komen uit het logboek).
+function maak(soort, klasse, tekst) {
+  const e = document.createElement(soort);
+  if (klasse) e.className = klasse;
+  if (tekst !== undefined) e.textContent = tekst;
+  return e;
+}
+
+// --- services en schijfruimte -----------------------------------------------------------
+async function laadSysteem() {
+  try {
+    const a = await fetch("/api/systeem");
+    if (!a.ok) throw new Error("fout " + a.status);
+    const d = await a.json();
+    const vak = el("services");
+    vak.replaceChildren();
+    if (d.uitleg) vak.append(maak("p", "zacht", d.uitleg));
+    for (const s of d.services) {
+      const tegel = maak("div", "service" + (s.actief ? "" : " gestopt"));
+      const naam = maak("div", "naam");
+      naam.append(maak("span", "", s.naam),
+                  maak("span", "etiket " + (s.actief ? "goed" : "fout"), s.actief ? "draait" : "gestopt"));
+      naam.lastChild.style.flex = "none";
+      tegel.append(naam);
+      tegel.append(maak("div", "bij", s.actief && s.sinds !== null
+        ? "sinds " + moment(s.sinds) + " (" + duur(Math.max(0, d.nu - s.sinds)) + ")" : s.toestand));
+      // Een herstart door systemd betekent dat de service zelf gestopt was (een crash).
+      if (s.herstarts) tegel.append(maak("div", "bij", s.herstarts + " keer opnieuw gestart door systemd"));
+      vak.append(tegel);
+    }
+    toonSchijf(d.schijf);
+    meld("");
+  } catch (e) {
+    meld("De status kon niet worden opgehaald (" + e.message + ").", true);
+  }
+}
+
+function toonSchijf(s) {
+  const vak = el("schijf");
+  vak.replaceChildren();
+  if (s.totaal) {
+    const deel = s.gebruikt / s.totaal;
+    vak.append(maak("div", "", grootte(s.gebruikt) + " van " + grootte(s.totaal) + " gebruikt ("
+      + Math.round(deel * 100) + " %), " + grootte(s.vrij) + " vrij"));
+    const meter = maak("div", "meter" + (deel > 0.9 ? " vol" : ""));
+    const balk = document.createElement("i");
+    balk.style.width = Math.max(1, Math.round(deel * 100)) + "%";
+    meter.append(balk);
+    vak.append(meter);
+  } else {
+    vak.append(maak("p", "zacht", "De schijfruimte kon niet worden bepaald."));
+  }
+  vak.append(maak("div", "zacht klein", "Daarvan: database " + grootte(s.database)
+    + " · opnames " + grootte(s.opnames)));
+}
+
+// --- logboek -------------------------------------------------------------------------------
+// `voor`: alleen regels van vóór dit tijdstip (microseconden); null = de nieuwste. Zolang er
+// teruggebladerd is, ververst het logboek niet vanzelf (de lijst zou onder je vingers
+// verschuiven).
+let voor = null;
+let oudste = null;          // het tijdstip van de oudste getoonde regel
+let servicesGevuld = false;
+
+async function laadLogboek() {
+  const vraag = new URLSearchParams();
+  if (el("log-service").value) vraag.set("service", el("log-service").value);
+  if (el("log-niveau").value) vraag.set("fouten", "1");
+  if (voor !== null) vraag.set("voor", voor);
+  try {
+    const a = await fetch("/api/logboek?" + vraag);
+    if (!a.ok) throw new Error("fout " + a.status);
+    const d = await a.json();
+    if (!servicesGevuld) {
+      for (const naam of d.services) el("log-service").add(new Option(naam, naam));
+      servicesGevuld = true;
+    }
+    el("log-uitleg").hidden = !d.uitleg;
+    el("log-uitleg").textContent = d.uitleg || "";
+    const tbody = el("logregels");
+    tbody.replaceChildren();
+    // Zonder regels en met een uitleg (bijv. geen journald) is een lege tabel overbodig.
+    el("logboek").hidden = !!d.uitleg && !d.regels.length;
+    if (!d.regels.length && !d.uitleg) {
+      const td = tbody.insertRow().insertCell();
+      td.colSpan = 4; td.className = "zacht";
+      td.textContent = voor === null ? "Geen waarschuwingen of fouten (met deze keuze)." : "Geen oudere regels.";
+    }
+    for (const r of d.regels) {
+      const tr = tbody.insertRow();
+      tr.className = r.niveau === "fout" ? "fout" : "";
+      const tijd = tr.insertCell(); tijd.className = "tijd"; tijd.textContent = moment(r.ts, true);
+      const service = tr.insertCell(); service.className = "hoofd"; service.textContent = r.service;
+      tr.insertCell().append(maak("span", "etiket " + (r.niveau === "fout" ? "fout" : "let-op"), r.niveau));
+      const tekst = tr.insertCell(); tekst.className = "tekst"; tekst.textContent = r.tekst;
+    }
+    oudste = d.regels.length ? d.regels[d.regels.length - 1].us : null;
+    el("log-ouder").disabled = !d.meer || oudste === null;
+    el("log-nieuwste").hidden = voor === null;
+  } catch (e) {
+    el("log-uitleg").hidden = false;
+    el("log-uitleg").textContent = "Het logboek kon niet worden opgehaald (" + e.message + ").";
+  }
+}
+el("log-ouder").addEventListener("click", () => { voor = oudste; laadLogboek(); });
+el("log-nieuwste").addEventListener("click", () => { voor = null; laadLogboek(); });
+for (const id of ["log-service", "log-niveau"])
+  el(id).addEventListener("change", () => { voor = null; laadLogboek(); });
+
+// --- herstarten ------------------------------------------------------------------------------
+const HERSTART = {
+  brms: {kop: "BRMS herstarten?",
+         tekst: "Alle BRMS-services worden opnieuw gestart. De metingen, de alarmen en deze pagina "
+              + "zijn enkele seconden weg. Lopende alarmen worden daarna opnieuw beoordeeld.",
+         bezig: "BRMS wordt herstart…"},
+  pi: {kop: "De Pi herstarten?",
+       tekst: "De hele Pi wordt opnieuw opgestart. BRMS is ongeveer een minuut onbereikbaar: er wordt "
+            + "niets gemeten, er gaat geen alarm af en er is geen live-beeld. Het logboek is daarna leeg.",
+       bezig: "De Pi wordt herstart…"},
+};
+let gekozen = null;
+
+function vraagHerstart(wat) {
+  gekozen = wat;
+  el("zeker-kop").textContent = HERSTART[wat].kop;
+  el("zeker-tekst").textContent = HERSTART[wat].tekst + " Weet je het zeker?";
+  el("zeker").showModal();
+}
+el("herstart-brms").addEventListener("click", () => vraagHerstart("brms"));
+el("herstart-pi").addEventListener("click", () => vraagHerstart("pi"));
+el("zeker-nee").addEventListener("click", () => el("zeker").close());
+el("mislukt-ok").addEventListener("click", () => el("mislukt").close());
+
+el("zeker-ja").addEventListener("click", async () => {
+  el("zeker").close();
+  const wat = gekozen;
+  for (const id of ["herstart-brms", "herstart-pi"]) el(id).disabled = true;
+  meld(HERSTART[wat].bezig);
+  try {
+    const a = await fetch("/api/systeem/herstart", {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify({wat})});
+    const d = await a.json().catch(() => ({}));
+    if (!a.ok) {
+      // Niets herstart: de reden tonen (bij een fout in brms.toml de lijst van fouten).
+      el("mislukt-tekst").textContent = d.fout || "fout " + a.status;
+      const lijst = el("mislukt-lijst");
+      lijst.replaceChildren();
+      for (const f of d.fouten || []) lijst.append(maak("li", "", f));
+      lijst.hidden = !(d.fouten || []).length;
+      el("mislukt").showModal();
+      meld("");
+      for (const id of ["herstart-brms", "herstart-pi"]) el(id).disabled = false;
+      return;
+    }
+  } catch (e) {
+    // De verbinding kan al weg zijn doordat de herstart begonnen is: gewoon wachten.
+  }
+  wachtOpHerstart(wat);
+});
+
+// Wacht tot de webservice weer antwoordt met een ander starttijdstip, en laadt dan de
+// pagina opnieuw. Zolang hij weg is, mislukt de vraag; dat is hier geen fout.
+function wachtOpHerstart(wat) {
+  const begin = Date.now();
+  clearInterval(verversen);
+  const poging = async () => {
+    try {
+      const a = await fetch("/api/status", {cache: "no-store"});
+      const kenmerk = a.headers.get(KOP_GESTART);
+      if (a.ok && kenmerk !== null && kenmerk !== GESTART) { location.reload(); return; }
+    } catch (e) { /* nog niet terug */ }
+    const s = Math.round((Date.now() - begin) / 1000);
+    if (Date.now() - begin > WACHT_MAX) {
+      meld("Na " + Math.round(WACHT_MAX / 60000) + " minuten is BRMS nog niet terug. Laad de pagina "
+           + "later opnieuw; komt hij niet terug, gebruik dan de noodingang (router, RMS).", true);
+      return;
+    }
+    meld(HERSTART[wat].bezig + " (" + s + " s) De pagina laadt vanzelf opnieuw.");
+    setTimeout(poging, WACHT_STAP);
+  };
+  setTimeout(poging, WACHT_STAP);
+}
+
+// --- begin ---------------------------------------------------------------------------------
+laadSysteem();
+laadLogboek();
+const verversen = setInterval(() => {
+  laadSysteem();
+  if (voor === null) laadLogboek();
+}, INTERVAL);
+</script>
+{% endblock %}

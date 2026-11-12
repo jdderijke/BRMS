@@ -1,0 +1,212 @@
+{#
+  Alarmenpagina van BRMS (ARCHITECTURE.md §5.6 "Alarmenpagina", §5.5.3 punt 7 en 8).
+
+  Van boven naar beneden:
+    1. de alarmen die nu actief zijn;
+    2. de alarmregels uit brms.toml, elk met een aan/uit-schakelaar;
+    3. de opgetreden alarmen (de historie), de nieuwste bovenaan.
+
+  De schakelaar: uit geldt voor de hele regel (geen beoordeling, geen melding, geen
+  actie). De pagina zet de stand niet zelf: ze vraagt het aan de webservice, die een
+  opdracht op de MQTT-bus zet. De opslag-service legt de stand vast in de database en de
+  alarmlaag voert hem uit (§3.1: één schrijver). De pagina toont daarom de stand zoals
+  hij in de database staat, en haalt het overzicht kort na een klik opnieuw op.
+
+  De waarden van een regel (grens, duur) zijn hier niet te wijzigen: die staan in
+  brms.toml (§5.5.3).
+#}
+{% extends "basis.html" %}
+
+{% block stijl %}
+<style>
+  /* Zonder melding neemt de statusregel geen ruimte in. */
+  #status:empty { display: none; }
+  /* Een alarmregel: links naam en uitleg, rechts de schakelaar. */
+  .regel { display: flex; align-items: center; gap: 14px; padding: 10px 0;
+           border-bottom: 1px solid var(--raster); }
+  .regel:last-child { border-bottom: none; padding-bottom: 2px; }
+  .regel:first-child { padding-top: 2px; }
+  .regel .tekst { flex: 1 1 auto; min-width: 0; }
+  .regel .naam { font-weight: 600; }
+  .regel.uit .tekst { opacity: .55; }
+  .regel .bij { color: var(--zacht); font-size: 13px; }
+  /* Een actief alarm valt op door een gekleurde rand links. */
+  .actief { border-left: 4px solid var(--let-op); padding: 6px 0 6px 12px; margin-bottom: 10px; }
+  .actief:last-child { margin-bottom: 0; }
+  .actief .naam { font-weight: 600; }
+</style>
+{% endblock %}
+
+{% block inhoud %}
+  <p id="status"></p>
+
+  <section class="blok">
+    <h2>Nu actief</h2>
+    <div id="actief"><p class="zacht">Wordt opgehaald…</p></div>
+  </section>
+
+  <section class="blok">
+    <h2>Alarmregels</h2>
+    <div id="regels"></div>
+    <p class="zacht klein" style="margin: 10px 0 0">Uit geldt voor de hele regel: er wordt niets beoordeeld,
+      gemeld of uitgevoerd. De grenzen en tijden van een regel staan in <code>brms.toml</code>.</p>
+  </section>
+
+  <section class="blok">
+    <h2>Opgetreden alarmen</h2>
+    <table class="kaartjes">
+      <thead><tr><th>Begin</th><th>Alarm</th><th>Sensor</th><th>Waarde</th><th>Duur</th><th>Einde</th></tr></thead>
+      <tbody id="historie"></tbody>
+    </table>
+    <p id="vol" class="zacht klein" hidden>Alleen de nieuwste alarmen staan hier; oudere staan in de database.</p>
+  </section>
+{% endblock %}
+
+{% block script %}
+<script>
+const el = id => document.getElementById(id);
+const INTERVAL = 15000;      // ms tussen twee keer ophalen van het overzicht
+// Zo lang na een klik op een schakelaar wordt het overzicht opnieuw opgehaald (ms): de
+// opdracht gaat via de bus naar de opslag, die de stand in de database zet.
+const NA_KLIK = [700, 2500];
+
+// --- tekst -----------------------------------------------------------------------------
+const twee = n => String(n).padStart(2, "0");
+// Tijdstempels zijn Unix-seconden UTC; de browser toont ze in de lokale tijd.
+function moment(ts) {
+  const d = new Date(ts * 1000);
+  return d.getDate() + "-" + (d.getMonth() + 1) + " " + twee(d.getHours()) + ":" + twee(d.getMinutes());
+}
+function duur(s) {
+  if (s < 60) return s + " s";
+  if (s < 3600) return Math.floor(s / 60) + " min";
+  if (s < 86400) return Math.floor(s / 3600) + " u " + Math.floor(s % 3600 / 60) + " min";
+  return Math.floor(s / 86400) + " d " + Math.floor(s % 86400 / 3600) + " u";
+}
+// Waarom een alarm eindigde, zoals het in de tabel `alarm` staat.
+const REDEN = {herstel: "hersteld", herstart: "herstart van de alarmlaag", uitgezet: "regel uitgezet"};
+
+function meld(tekst, fout) {
+  el("status").textContent = tekst || "";
+  el("status").classList.toggle("fout", !!fout);
+}
+// Een element met tekst (nooit innerHTML: namen komen uit de configuratie).
+function maak(soort, klasse, tekst) {
+  const e = document.createElement(soort);
+  if (klasse) e.className = klasse;
+  if (tekst !== undefined) e.textContent = tekst;
+  return e;
+}
+
+// --- tonen -----------------------------------------------------------------------------
+function toonActief(alarmen, nu) {
+  const vak = el("actief");
+  vak.replaceChildren();
+  const actief = alarmen.filter(a => a.einde === null);
+  if (!actief.length) { vak.append(maak("p", "zacht", "Er is geen alarm actief.")); return; }
+  for (const a of actief) {
+    const d = maak("div", "actief");
+    d.append(maak("div", "naam", a.naam + " – " + a.sensor));
+    d.append(maak("div", "zacht klein",
+      "sinds " + moment(a.begin) + " (" + duur(Math.max(0, nu - a.begin)) + ")"
+      + (a.waardetekst ? " · " + a.grootheid + " " + a.waardetekst : "")));
+    vak.append(d);
+  }
+}
+
+function toonRegels(regels, broker) {
+  const vak = el("regels");
+  vak.replaceChildren();
+  if (!regels.length) {
+    vak.append(maak("p", "zacht", "Er staan geen alarmregels in brms.toml; er wordt niets bewaakt."));
+    return;
+  }
+  for (const r of regels) {
+    const rij = maak("div", "regel" + (r.aan ? "" : " uit"));
+    const tekst = maak("div", "tekst");
+    const kop = maak("div", "naam", r.naam + " ");
+    if (!r.aan) kop.append(maak("span", "etiket grijs", "uit"));
+    tekst.append(kop);
+    tekst.append(maak("div", "bij", r.voorwaarde));
+    tekst.append(maak("div", "bij", r.sensoren.join(", ") + " · " + r.melding
+                      + (r.prioriteit !== "normaal" ? " · " + r.prioriteit : "")));
+    // De schakelaar. Zonder broker kan de opdracht niet weg: dan staat hij vast.
+    const schakelaar = maak("label", "schakelaar");
+    schakelaar.title = r.aan ? "Regel uitzetten" : "Regel aanzetten";
+    const vink = document.createElement("input");
+    vink.type = "checkbox"; vink.checked = r.aan; vink.disabled = broker === false;
+    vink.setAttribute("aria-label", r.naam + (r.aan ? ": aan" : ": uit"));
+    vink.addEventListener("change", () => schakel(r, vink));
+    schakelaar.append(vink, document.createElement("i"));
+    rij.append(tekst, schakelaar);
+    vak.append(rij);
+  }
+}
+
+function toonHistorie(alarmen, nu, vol) {
+  const tbody = el("historie");
+  tbody.replaceChildren();
+  if (!alarmen.length) {
+    const td = tbody.insertRow().insertCell();
+    td.colSpan = 6; td.className = "zacht"; td.textContent = "Er zijn nog geen alarmen opgetreden.";
+  }
+  const cel = (tr, kop, tekst, klasse) => {
+    const td = tr.insertCell();
+    td.dataset.kop = kop; td.textContent = tekst;
+    if (klasse) td.className = klasse;
+    return td;
+  };
+  for (const a of alarmen) {
+    const tr = tbody.insertRow();
+    cel(tr, "Begin", moment(a.begin), "tijd");
+    cel(tr, "Alarm", a.naam, "hoofd");
+    cel(tr, "Sensor", a.sensor);
+    cel(tr, "Waarde", a.waardetekst ? a.grootheid + " " + a.waardetekst : "–");
+    cel(tr, "Duur", duur(Math.max(0, (a.einde === null ? nu : a.einde) - a.begin)));
+    const einde = cel(tr, "Einde", "");
+    if (a.einde === null) einde.append(maak("span", "etiket let-op", "actief"));
+    else einde.textContent = moment(a.einde) + " (" + (REDEN[a.reden] || a.reden || "?") + ")";
+  }
+  el("vol").hidden = !vol;
+}
+
+// --- ophalen en schakelen ----------------------------------------------------------------
+async function laad() {
+  try {
+    const a = await fetch("/api/alarmen/overzicht");
+    if (!a.ok) throw new Error("fout " + a.status);
+    const d = await a.json();
+    toonActief(d.alarmen, d.nu);
+    toonRegels(d.regels, d.broker);
+    toonHistorie(d.alarmen, d.nu, d.vol);
+    meld(d.broker === false ? "De MQTT-broker is niet bereikbaar: de schakelaars werken nu niet." : "",
+         d.broker === false);
+  } catch (e) {
+    meld("Het overzicht kon niet worden opgehaald (" + e.message + ").", true);
+  }
+}
+
+async function schakel(regel, vink) {
+  const aan = vink.checked;
+  vink.disabled = true;
+  try {
+    const a = await fetch("/api/alarmen/schakel", {method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({alarm_id: regel.id, aan})});
+    const d = await a.json().catch(() => ({}));
+    if (!a.ok) throw new Error(d.fout || "fout " + a.status);
+    meld("“" + regel.naam + "” wordt " + (aan ? "aan" : "uit") + "gezet…");
+    // De stand komt uit de database; kort wachten tot de opslag hem heeft vastgelegd.
+    for (const ms of NA_KLIK) setTimeout(laad, ms);
+    // De teller in het menu kan veranderen: een actief alarm van de regel is afgesloten.
+    setTimeout(BRMS.status, NA_KLIK[1]);
+  } catch (e) {
+    vink.checked = !aan; vink.disabled = false;
+    meld("De regel kon niet worden omgezet: " + e.message, true);
+  }
+}
+
+laad();
+setInterval(laad, INTERVAL);
+</script>
+{% endblock %}

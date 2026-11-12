@@ -1,0 +1,44 @@
+// polkit-regel voor BRMS (ARCHITECTURE.md §5.6, systeempagina punt 2).
+//
+// Dit is een sjabloon: deploy/install.sh en deploy/update.sh vullen @GEBRUIKER@ in (de
+// gebruiker waaronder de BRMS-services draaien, bijv. jandirk) en zetten het resultaat in
+// /etc/polkit-1/rules.d/50-brms.rules.
+//
+// Waarom: de knoppen "Herstart BRMS" en "Herstart de Pi" in het web. De webservice draait
+// als gewone gebruiker en vraagt het herstarten aan systemd; systemd vraagt aan polkit of
+// dat mag. Zonder deze regel is het antwoord "eerst het beheerderswachtwoord", en dat kan
+// een service niet intypen.
+//
+// Wat de regel toestaat, alleen voor die ene gebruiker:
+//   - de eenheden brms-*.service starten, stoppen en herstarten;
+//   - de Pi opnieuw opstarten.
+// Al het andere blijft zoals het was (NOT_HANDLED: polkit kijkt verder in zijn andere
+// regels). De webservice wordt hiermee geen root: systemd voert alleen die ene handeling
+// uit.
+
+polkit.addRule(function(action, subject) {
+    if (subject.user !== "@GEBRUIKER@") {
+        return polkit.Result.NOT_HANDLED;
+    }
+
+    // Een eenheid van systemd starten, stoppen of herstarten: alleen die van BRMS.
+    if (action.id === "org.freedesktop.systemd1.manage-units") {
+        var eenheid = action.lookup("unit");
+        var handeling = action.lookup("verb");
+        if (eenheid && /^brms-[a-z0-9-]+\.service$/.test(eenheid) &&
+                (handeling === "start" || handeling === "stop" || handeling === "restart")) {
+            return polkit.Result.YES;
+        }
+        return polkit.Result.NOT_HANDLED;
+    }
+
+    // De Pi opnieuw opstarten. De tweede vorm geldt als er nog iemand is aangemeld
+    // (bijv. een SSH-sessie); de derde is het bericht dat systemd daarbij wil tonen.
+    if (action.id === "org.freedesktop.login1.reboot" ||
+            action.id === "org.freedesktop.login1.reboot-multiple-sessions" ||
+            action.id === "org.freedesktop.login1.set-wall-message") {
+        return polkit.Result.YES;
+    }
+
+    return polkit.Result.NOT_HANDLED;
+});

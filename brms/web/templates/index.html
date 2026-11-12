@@ -1,6 +1,4 @@
-<!doctype html>
-<html lang="nl">
-<!--
+{#
   Grafiekenpagina van BRMS (ARCHITECTURE.md §5.6 punt 4).
 
   De gebruiker voegt zelf grafieken toe. Een grafiek heeft één bron:
@@ -23,46 +21,20 @@
 
   De indeling (welke grafieken, welke reeksen) wordt in de browser onthouden.
   Chart.js komt uit static/ (geen CDN): de pagina werkt ook zonder internet.
--->
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BRMS</title>
+
+  De bovenbalk, het menu en de kleuren komen uit het gedeelde sjabloon (basis.html) en
+  static/brms.css; hier staat alleen wat bij de grafieken hoort.
+#}
+{% extends "basis.html" %}
+
+{% block stijl %}
 <style>
-  /* Kleuren. De acht reekskleuren zijn een vaste, op kleurenblindheid gecontroleerde reeks;
-     een reeks houdt zijn kleur zolang hij in de grafiek staat. */
-  :root { --pagina: #f9f9f7; --vlak: #fcfcfb; --tekst: #0b0b0b; --zacht: #52514e;
-          --as: #898781; --raster: #e1e0d9; --rand: #c3c2b7; --fout: #b3261e;
-          --reeks-1: #2a78d6; --reeks-2: #eb6834; --reeks-3: #1baf7a; --reeks-4: #eda100;
-          --reeks-5: #e87ba4; --reeks-6: #008300; --reeks-7: #6250d6; --reeks-8: #e34948; }
-  @media (prefers-color-scheme: dark) {
-    :root { --pagina: #0d0d0d; --vlak: #1a1a19; --tekst: #f0efec; --zacht: #c3c2b7;
-            --as: #898781; --raster: #2c2c2a; --rand: #383835; --fout: #f2867f;
-            --reeks-1: #3987e5; --reeks-2: #d95926; --reeks-3: #199e70; --reeks-4: #c98500;
-            --reeks-5: #d55181; --reeks-6: #008300; --reeks-7: #9085e9; --reeks-8: #e66767; }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; padding: 16px; background: var(--pagina); color: var(--tekst);
-         font: 15px/1.4 system-ui, sans-serif; }
-  main { max-width: 1000px; margin: 0 auto; }
-  header { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-bottom: 8px; }
-  h1 { font-size: 20px; margin: 0; flex: 1 1 auto; }
-  h1 small { font-weight: normal; color: var(--zacht); font-size: 13px; }
-  header a { color: var(--reeks-1); }
-  select, button { font: inherit; color: var(--tekst); background: var(--pagina);
-                   border: 1px solid var(--rand); border-radius: 6px; padding: 5px 9px; }
-  button { cursor: pointer; }
-  button:disabled { opacity: .4; cursor: default; }
-  button.kaal { border: none; background: none; padding: 0 4px; color: var(--zacht); font-size: 16px; line-height: 1; }
-  button.kaal:hover { color: var(--tekst); }
-  #status { margin: 0 2px 10px; min-height: 1.4em; color: var(--fout); }
+  /* Op deze pagina is de statusregel er alleen voor fouten. */
+  #status { color: var(--fout); }
   #leeg { color: var(--zacht); padding: 24px 2px; }
-  .grafiek { background: var(--vlak); border: 1px solid var(--rand); border-radius: 8px;
-             padding: 10px 12px; margin-bottom: 14px; }
-  .rij { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
-  .rij .ruimte { flex: 1 1 auto; }
+  .grafiek { background: var(--vlak); border: 1px solid var(--rand); border-radius: 12px;
+             padding: 10px 12px; margin-bottom: 14px; box-shadow: var(--schaduw); }
   .bron { font-weight: 600; margin-right: 4px; }
-  .toevoegen label { color: var(--zacht); font-size: 13px; }
   .legenda { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 4px; min-height: 1.4em; }
   .legenda .reeks { display: inline-flex; align-items: center; gap: 6px; }
   .legenda i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
@@ -75,22 +47,26 @@
   .uitleg i.stippel { width: 16px; border-top: 1px dotted var(--zacht); }
   .uitleg span { margin-right: 14px; white-space: nowrap; }
   .doek { position: relative; height: 240px; }
-  [hidden] { display: none !important; }
+  /* Smal scherm: de keuzelijsten van een grafiek elk op de volle breedte, zodat ze met
+     een vinger te bedienen zijn. */
+  @media (max-width: 640px) {
+    .toevoegen label { flex: 1 1 100%; display: flex; align-items: center; gap: 8px; }
+    .toevoegen label select { flex: 1 1 auto; min-width: 0; }
+    .toevoegen .voegtoe { flex: 1 1 100%; }
+    .grafiek .venster, .grafiek .periode { flex: 1 1 100%; }
+  }
 </style>
-</head>
-<body>
-<main>
-  <header>
-    <h1>BRMS <small>grafieken · versie {{ versie }}</small></h1>
-    <a href="/opnames" title="Foto's en video's van de camera's">Opnames</a>
-    <button id="plus-live">+ Live-grafiek</button>
+{% endblock %}
+
+{% block inhoud %}
+  <div class="rij">
+    <button id="plus-live" class="hoofd">+ Live-grafiek</button>
     <button id="plus-database">+ Database-grafiek</button>
-  </header>
+  </div>
   <p id="status"></p>
   <p id="leeg" hidden>Nog geen grafieken. Voeg er een toe met de knoppen hierboven: “live” toont de
     metingen van de MQTT-bus, “database” de opgeslagen historie.</p>
   <div id="grafieken"></div>
-</main>
 
 <!-- Sjabloon van één grafiek; wordt voor elke grafiek gekopieerd. -->
 <template id="sjabloon">
@@ -135,7 +111,9 @@
     </div>
   </section>
 </template>
+{% endblock %}
 
+{% block script %}
 <script src="{{ url_for('static', filename='chart.umd.min.js') }}"></script>
 <script>
 // Uit de configuratie van de Pi: de sensoren met de grootheden die ze leveren, en per
@@ -748,6 +726,9 @@ setInterval(vraagLive, LIVE_INTERVAL);
 // De alarmperioden van de live-grafieken af en toe verversen: een alarm kan beginnen of
 // eindigen terwijl de pagina openstaat.
 setInterval(() => { for (const g of grafieken) if (g.bron === "live") laadAlarmen(g); }, ALARM_INTERVAL);
+// Een ander thema heeft andere kleuren voor assen, raster en reeksen; die staan in de
+// tekening van elke grafiek. Opnieuw laden is de eenvoudigste manier om alles in de nieuwe
+// kleuren te tekenen (de indeling blijft bewaard in de browser).
+document.addEventListener("brms-thema", () => location.reload());
 </script>
-</body>
-</html>
+{% endblock %}

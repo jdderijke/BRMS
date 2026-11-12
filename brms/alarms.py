@@ -38,7 +38,21 @@ bericht van die opname op de bus, leest het bestand uit de opnamemap en stuurt h
 Komt de foto niet op tijd, dan gaat de melding zonder foto: een melding is belangrijker
 dan het plaatje erbij.
 
-Nog niet gebouwd (§5.5.3 punt 11): de aan/uit-schakelaar via het web en het relais.
+De schakelaar (§5.5.3 punt 7): in het web is elke regel aan of uit te zetten. Uit geldt
+voor de hele regel: geen beoordeling, geen notificatie, geen actie; een alarm dat op dat
+moment actief is, wordt afgesloten. De stand staat in de database (tabel `alarm_uit`); de
+opslag-service schrijft hem, de alarmlaag voert de opdracht direct uit en leest de tabel
+bij zijn start en daarna elke minuut (alleen-lezen), zodat de database de waarheid blijft.
+
+Camera stil (§5.5.3 punt 2): in een regel van soort 'stil' kan ook een camera staan. Een
+camera levert geen metingen; elke geslaagde opname (brms/opname/<camera_id>) telt als
+levensteken.
+
+Fouten uit het logboek (§5.5.5 punt 5): de alarmlaag volgt journald en verstuurt bij een
+fout van een BRMS-service of de kernel een melding, hooguit één per service per uur
+(brms/systeem.py).
+
+Nog niet gebouwd (§5.5.3 punt 11): het relais.
 
 Dit module bevat:
 - Bewaker: de toestand van één regel voor één sensor (zuiver, zonder klok of netwerk);
@@ -53,13 +67,15 @@ import dataclasses
 import json
 import logging
 import os
+import pathlib
 import re
+import sqlite3
 import time
 from collections import deque
 from dataclasses import dataclass
 
 from brms import config, grootheden
-from brms.config import Alarmregel, Config, Sensor
+from brms.config import Alarmregel, Camera, Config, Sensor
 from brms.melding import Melding
 from brms.meting import TOPIC_PREFIX, Meting
 
@@ -74,6 +90,8 @@ STAND_INTERVAL = 60.0
 # van een gemaakte opname.
 TOPIC_POLL_NU = "brms/opdracht/camera/poll-nu"
 TOPIC_OPNAME = "brms/opname"
+# De schakelaar van het web (§5.5.3 punt 7): {"alarm_id": ..., "aan": true|false}.
+TOPIC_SCHAKEL = "brms/opdracht/alarm/schakel"
 # Zo lang wacht een melding hooguit op haar foto, in seconden (§5.7 punt 15).
 FOTO_WACHTTIJD = 15.0
 # Een foto groter dan dit gaat niet mee: Telegram neemt hooguit 10 MB aan.
@@ -84,6 +102,8 @@ _FOTOBESTAND = re.compile(r"^[A-Za-z0-9_-]+/\d{4}/\d{2}/\d{2}/\d{6}\.jpg$")
 
 # Wat een bewaker kan melden.
 BEGIN, HERSTEL, HERINNERING = "begin", "herstel", "herinnering"
+# Einde van een alarm doordat de regel is uitgezet (alleen op de bus en in de tabel).
+UITGEZET = "uitgezet"
 
 # Teken vóór de titel van een melding, zodat in de lijst met berichten direct te zien is
 # wat voor bericht het is.
@@ -143,8 +163,10 @@ class Bewaker:
     meting() en tik() geven BEGIN, HERSTEL of None terug.
     """
 
-    def __init__(self, regel: Alarmregel, sensor: Sensor, nu: float):
+    def __init__(self, regel: Alarmregel, sensor: Sensor | Camera, nu: float):
         self.regel = regel
+        # De sensor, of bij een regel 'stil' eventueel een camera (§5.5.3 punt 2): van
+        # beide worden hier alleen `id` en `naam` gebruikt.
         self.sensor = sensor
         self.actief = False
         # Monotone tijd waarop het alarm afging (alleen geldig als actief).
@@ -251,7 +273,7 @@ class Gebeurtenis:
     alarm_id: str
     sensor_id: str
     grootheid: str | None
-    gebeurtenis: str             # begin of herstel
+    gebeurtenis: str             # begin, herstel of uitgezet
     waarde: float | None
 
     def topic(self) -> str:
@@ -300,18 +322,75 @@ class Alarmlaag:
         self._klok = klok
         self._tijd = tijd
         nu = klok()
-        # Per sensor de bewakers die naar zijn metingen kijken.
+        # Per sensor (of camera) de bewakers die naar zijn metingen kijken.
         self._per_sensor: dict[str, list[Bewaker]] = {}
         # Per bewaker het tijdstip van de volgende herinnering (alleen bij melding 'herhaald').
         self._herinnering: dict[Bewaker, float] = {}
+        # De regels die via het web zijn uitgezet (§5.5.3 punt 7): hun bewakers doen niets.
+        self._uit: set[str] = set()
+        self._regels = [regel.id for regel in cfg.alarmen]
         for regel in cfg.alarmen:
             for sensor_id in regel.sensoren:
-                bewaker = Bewaker(regel, cfg.sensoren[sensor_id], nu)
+                # Een ID dat geen sensor is, is een camera in een regel 'stil' (zie config).
+                bron = cfg.sensoren.get(sensor_id) or cfg.cameras[sensor_id]
+                bewaker = Bewaker(regel, bron, nu)
                 self._per_sensor.setdefault(sensor_id, []).append(bewaker)
 
     @property
     def bewakers(self) -> list[Bewaker]:
         return [b for lijst in self._per_sensor.values() for b in lijst]
+
+    @property
+    def uit(self) -> set[str]:
+        """De ID's van de regels die nu uit staan."""
+        return set(self._uit)
+
+    def schakel(self, alarm_id: str, aan: bool) -> list:
+        """Zet een regel aan of uit (§5.5.3 punt 7); geeft de gebeurtenissen die eruit
+        volgen. Een onbekende regel, of een regel die al zo staat, geeft niets.
+
+        Uit: elk actief alarm van de regel wordt afgesloten (reden 'uitgezet'), zonder
+        herstelmelding – er is niets hersteld. Aan: de bewakers beginnen opnieuw, alsof
+        de alarmlaag net gestart is; een afwijking die er nog is, geeft na de ingestelde
+        duur opnieuw een alarm."""
+        if alarm_id not in self._regels or aan == (alarm_id not in self._uit):
+            return []
+        nu = self._klok()
+        uit: list = []
+        for sensor_id, lijst in self._per_sensor.items():
+            for i, bewaker in enumerate(lijst):
+                if bewaker.regel.id != alarm_id:
+                    continue
+                if not aan and bewaker.actief:
+                    uit.append(Gebeurtenis(int(self._tijd()), alarm_id, sensor_id,
+                                           bewaker.regel.grootheid, UITGEZET, bewaker.laatste))
+                self._herinnering.pop(bewaker, None)
+                # Een verse bewaker: geen oude tellingen of lopende duur.
+                lijst[i] = Bewaker(bewaker.regel, bewaker.sensor, nu)
+        if aan:
+            self._uit.discard(alarm_id)
+        else:
+            self._uit.add(alarm_id)
+        log.info("alarmregel %s is %s gezet", alarm_id, "aan" if aan else "uit")
+        return uit
+
+    def zet_uit(self, uit: set[str]) -> list:
+        """Brengt de schakelaars in de stand van de database: precies de regels in `uit`
+        staan uit. Geeft de gebeurtenissen die eruit volgen (zie schakel)."""
+        gevolg: list = []
+        for alarm_id in self._regels:
+            gevolg += self.schakel(alarm_id, alarm_id not in uit)
+        return gevolg
+
+    def bij_levensteken(self, bron_id: str) -> list:
+        """Een teken van leven van een camera: een geslaagde opname (§5.5.3 punt 2). Telt
+        voor de regels van soort 'stil' zoals een meting voor een sensor."""
+        nu = self._klok()
+        uit: list = []
+        for bewaker in self._per_sensor.get(bron_id, ()):
+            if bewaker.regel.soort == config.STIL and bewaker.regel.id not in self._uit:
+                self._verwerk(bewaker, bewaker.meting("", 0.0, nu), nu, uit)
+        return uit
 
     def actief(self) -> list[list[str]]:
         """De alarmen die nu actief zijn, als paren [alarm_id, sensor_id]. Dit gaat
@@ -323,6 +402,8 @@ class Alarmlaag:
         nu = self._klok()
         uit: list = []
         for bewaker in self._per_sensor.get(m.sensor_id, ()):
+            if bewaker.regel.id in self._uit:
+                continue                 # de regel staat uit (§5.5.3 punt 7)
             self._verwerk(bewaker, bewaker.meting(m.grootheid, m.waarde, nu), nu, uit)
         return uit
 
@@ -331,6 +412,8 @@ class Alarmlaag:
         nu = self._klok()
         uit: list = []
         for bewaker in self.bewakers:
+            if bewaker.regel.id in self._uit:
+                continue                 # de regel staat uit (§5.5.3 punt 7)
             self._verwerk(bewaker, bewaker.tik(nu), nu, uit)
             # Herinnering zolang het alarm actief is (§5.5.2 punt 4).
             volgende = self._herinnering.get(bewaker)
@@ -376,12 +459,14 @@ class Alarmlaag:
         kop = f"{regel.naam} – {sensor.naam}"
         actief = duurtekst(nu - bewaker.begin)
         if regel.soort == config.STIL:
+            # Een sensor levert waarden, een camera opnames.
+            wat_ = "opnames" if isinstance(sensor, Camera) else "waarden"
             if wat == BEGIN:
-                tekst = f"geen waarden ontvangen gedurende {duurtekst(regel.duur)}"
+                tekst = f"geen {wat_} ontvangen gedurende {duurtekst(regel.duur)}"
             elif wat == HERINNERING:
-                tekst = f"nog steeds geen waarden; stil sinds {duurtekst(nu - bewaker.begin + regel.duur)}"
+                tekst = f"nog steeds geen {wat_}; stil sinds {duurtekst(nu - bewaker.begin + regel.duur)}"
             else:
-                tekst = f"levert weer waarden (was {duurtekst(nu - bewaker.begin + regel.duur)} stil)"
+                tekst = f"levert weer {wat_} (was {duurtekst(nu - bewaker.begin + regel.duur)} stil)"
         else:
             if regel.soort == config.AANTAL:
                 waarde = f"{regel.grootheid} {getal(bewaker.laatste)} keer binnen {duurtekst(regel.venster)}"
@@ -475,14 +560,52 @@ class Fotograaf:
 
 
 # =============================================================================
+# De schakelaar: de stand uit de database
+# =============================================================================
+
+def lees_alarm_uit(pad: str) -> set[str] | None:
+    """Leest uit de database welke alarmregels uit staan (tabel `alarm_uit`, §5.5.3 punt 7),
+    met een alleen-lezen verbinding: de opslag-service blijft de enige schrijver (§3.1).
+    Geeft None als de stand niet te lezen is (de database of de tabel is er nog niet, of
+    de database is even bezet); dan blijft de stand zoals hij was."""
+    if not pathlib.Path(pad).exists():
+        return None
+    try:
+        con = sqlite3.connect(pathlib.Path(pad).resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
+        try:
+            return {rij[0] for rij in con.execute("SELECT alarm_id FROM alarm_uit")}
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        log.debug("stand van de schakelaars niet te lezen: %s", e)
+        return None
+
+
+def lees_schakel(payload: bytes) -> tuple[str, bool]:
+    """Leest een opdracht van de schakelaar: geeft (alarm_id, aan). ValueError bij een
+    ongeldig bericht. Ook gebruikt door de opslag-service."""
+    try:
+        d = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise ValueError(f"geen geldige JSON: {e}") from None
+    if not isinstance(d, dict) or not isinstance(d.get("alarm_id"), str) or not d["alarm_id"]:
+        raise ValueError("alarm_id ontbreekt")
+    if not isinstance(d.get("aan"), bool):
+        raise ValueError("'aan' moet true of false zijn")
+    return d["alarm_id"], d["aan"]
+
+
+# =============================================================================
 # De service
 # =============================================================================
 
 async def draai(cfg: Config, bus, stop: asyncio.Event) -> None:
     """Hoofdlus van de alarmlaag; loopt tot `stop` gezet wordt."""
-    from brms import melding
+    from brms import melding, systeem
 
     laag = Alarmlaag(cfg)
+    # De regels die via het web zijn uitgezet (§5.5.3 punt 7), zoals ze in de database staan.
+    laag.zet_uit(lees_alarm_uit(cfg.opslag.database) or set())
     kanalen = melding.kanalen(cfg.melding)
     verzender = melding.Verzender(kanalen)
     if not cfg.alarmen:
@@ -501,10 +624,45 @@ async def draai(cfg: Config, bus, stop: asyncio.Event) -> None:
     # een regel is die een foto wil.
     fotograaf = Fotograaf(bus, cfg.opnames.map)
     loop = asyncio.get_running_loop()
-    if any(r.foto for r in cfg.alarmen):
+
+    def bij_opname(topic: str, payload: bytes) -> None:
+        """Een opname van een camera (draait in de asyncio-loop): de foto waar een melding
+        op wacht, en het levensteken voor een regel 'camera stil' (§5.5.3 punt 2)."""
+        fotograaf.bij_opname(payload)
+        voer_uit(laag.bij_levensteken(topic.rsplit("/", 1)[-1]))
+
+    # Meeluisteren met de camera-reader, alleen als er een regel is die een foto wil of
+    # die een camera bewaakt.
+    if any(r.foto or any(s in cfg.cameras for s in r.sensoren) for r in cfg.alarmen):
         # Het bericht komt binnen in paho's netwerkthread; verwerken in de asyncio-loop.
         bus.abonneer(f"{TOPIC_OPNAME}/#", 1,
-                     lambda topic, payload: loop.call_soon_threadsafe(fotograaf.bij_opname, payload))
+                     lambda topic, payload: loop.call_soon_threadsafe(bij_opname, topic, payload))
+
+    def bij_schakel(payload: bytes) -> None:
+        """Een opdracht van de schakelaar in het web (draait in de asyncio-loop)."""
+        try:
+            alarm_id, aan = lees_schakel(payload)
+        except ValueError as e:
+            log.warning("ongeldige opdracht op %s genegeerd: %s", TOPIC_SCHAKEL, e)
+            return
+        voer_uit(laag.schakel(alarm_id, aan))
+
+    bus.abonneer(TOPIC_SCHAKEL, 1,
+                 lambda topic, payload: loop.call_soon_threadsafe(bij_schakel, payload))
+
+    # Fouten uit het logboek als melding (§5.5.5 punt 5).
+    foutmelder = systeem.Foutmelder()
+
+    def bij_logregel(regel: dict) -> None:
+        if regel["niveau"] != "fout":
+            return
+        melding_ = foutmelder.bij_fout(regel["service"], regel["tekst"])
+        if melding_ is not None:
+            verzender.voeg_toe(melding_)
+
+    volgtaak = None
+    if cfg.melding.systeemfouten and kanalen:
+        volgtaak = asyncio.create_task(systeem.volg(bij_logregel, stop))
     # De meldingen die nog op hun foto wachten.
     fototaken: set[asyncio.Task] = set()
 
@@ -553,9 +711,17 @@ async def draai(cfg: Config, bus, stop: asyncio.Event) -> None:
     # is nog niet gelijkgezet en de opslag schrijft nog niet (§4.2).
     stand_gemeld = None        # monotone tijd van de laatste geslaagde melding
     laatste_tik = 0.0
+    uit_gelezen = time.monotonic()
     try:
         while not stop.is_set():
             nu = time.monotonic()
+            # De schakelaars elke minuut opnieuw uit de database lezen: is een opdracht van
+            # het web de alarmlaag of de opslag ontgaan, dan komt het zo vanzelf goed.
+            if nu - uit_gelezen >= STAND_INTERVAL:
+                uit_gelezen = nu
+                stand = await asyncio.to_thread(lees_alarm_uit, cfg.opslag.database)
+                if stand is not None:
+                    voer_uit(laag.zet_uit(stand))
             if bus.verbonden and (stand_gemeld is None or nu - stand_gemeld >= STAND_INTERVAL):
                 if bus.publiceer(TOPIC_HERSTART, json.dumps(
                         {"ts": int(time.time()), "actief": laag.actief()}), qos=1):
@@ -582,6 +748,9 @@ async def draai(cfg: Config, bus, stop: asyncio.Event) -> None:
         for taak in list(fototaken):
             taak.cancel()
         await asyncio.gather(*fototaken, return_exceptions=True)
+        if volgtaak is not None:
+            volgtaak.cancel()
+            await asyncio.gather(volgtaak, return_exceptions=True)
         # Bij een gewoon stopverzoek stopt de verzender zelf; bij een fout hierboven niet.
         if not stop.is_set():
             verzendtaak.cancel()

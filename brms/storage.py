@@ -85,8 +85,8 @@ CREATE TABLE IF NOT EXISTS alarm (
     PRIMARY KEY (alarm_id, sensor_id, begin)
 ) WITHOUT ROWID;
 
--- Alarmregels die via het web zijn uitgezet (§5.5.3 punt 7). Nog niet in gebruik: de
--- schakelaar volgt in een latere bouwstap.
+-- Alarmregels die via het web zijn uitgezet (§5.5.3 punt 7): één rij per regel die uit
+-- staat. De enige instelling buiten brms.toml.
 CREATE TABLE IF NOT EXISTS alarm_uit (
     alarm_id   TEXT    PRIMARY KEY,
     sinds      INTEGER NOT NULL
@@ -96,6 +96,9 @@ CREATE TABLE IF NOT EXISTS alarm_uit (
 # Topics van de alarmlaag (zie brms/alarms.py).
 TOPIC_ALARM = "brms/alarm"
 TOPIC_HERSTART = "brms/alarm/herstart"
+
+# De schakelaar van het web (§5.5.3 punt 7): {"alarm_id": ..., "aan": true|false}.
+TOPIC_SCHAKEL = "brms/opdracht/alarm/schakel"
 
 # Topic van de camera-reader (zie brms/readers/camera.py).
 TOPIC_OPNAME = "brms/opname"
@@ -182,6 +185,17 @@ class Database:
                 "WHERE alarm_id = ? AND sensor_id = ? AND einde IS NULL",
                 [(ts, *paar) for paar in weg])
         return len(weg)
+
+    def alarm_schakel(self, ts: int, alarm_id: str, aan: bool) -> None:
+        """Legt de stand van de schakelaar van een alarmregel vast (§5.5.3 punt 7): een
+        regel die uit staat heeft een rij in `alarm_uit`, een regel die aan staat niet."""
+        with self._con:
+            if aan:
+                self._con.execute("DELETE FROM alarm_uit WHERE alarm_id = ?", (alarm_id,))
+            else:
+                # OR IGNORE: staat de regel al uit, dan blijft het eerste tijdstip staan.
+                self._con.execute("INSERT OR IGNORE INTO alarm_uit (alarm_id, sinds) VALUES (?, ?)",
+                                  (alarm_id, ts))
 
     # --- opnames van de camera's (§5.7 punt 14) --------------------------------------
     def opname(self, ts: int, camera_id: str, type_: str, duur: int | None, bestand: str,
@@ -622,6 +636,33 @@ async def _alarmen(db: Database, q: asyncio.Queue, stop: asyncio.Event, klok_ok)
             log.exception("vastleggen van alarm mislukt (%s)", topic)
 
 
+async def _schakelaar(db: Database, q: asyncio.Queue, stop: asyncio.Event,
+                      regels: set[str]) -> None:
+    """Legt de stand van de schakelaars vast die het web doorgeeft (§5.5.3 punt 7). Loopt
+    naast de hoofdlus in dezelfde asyncio-loop (en dus in dezelfde thread als de database).
+
+    Hier wordt niet op de klok gewacht (§4.2): de stand zelf moet bewaard worden, ook als
+    het tijdstip erbij nog niet klopt. `regels` zijn de ID's uit de configuratie; een
+    opdracht voor een onbekende regel wordt genegeerd."""
+    from brms.alarms import lees_schakel
+
+    while not stop.is_set():
+        try:
+            topic, payload = await asyncio.wait_for(q.get(), timeout=1.0)
+        except TimeoutError:
+            continue
+        try:
+            alarm_id, aan = lees_schakel(payload)
+            if alarm_id not in regels:
+                raise ValueError(f"onbekende alarmregel: {alarm_id!r}")
+            db.alarm_schakel(int(time.time()), alarm_id, aan)
+            log.info("alarmregel %s is %s gezet (via het web)", alarm_id, "aan" if aan else "uit")
+        except ValueError as e:
+            log.warning("ongeldige opdracht op %s genegeerd: %s", topic, e)
+        except sqlite3.Error:
+            log.exception("vastleggen van de schakelaar mislukt (%s)", topic)
+
+
 async def draai(config: Config, bus, stop: asyncio.Event, klok_ok=klok_gesynchroniseerd) -> None:
     """Hoofdlus van de opslag-service; loopt tot `stop` gezet wordt.
 
@@ -648,6 +689,10 @@ async def draai(config: Config, bus, stop: asyncio.Event, klok_ok=klok_gesynchro
     # Verwijderopdrachten van het web (§5.6 punt 2).
     verwijdertaak = asyncio.create_task(
         _verwijderen(db, bus.wachtrij(TOPIC_VERWIJDER, qos=1), stop, config.opnames.map))
+    # De schakelaars van de alarmregels (§5.5.3 punt 7).
+    schakeltaak = asyncio.create_task(
+        _schakelaar(db, bus.wachtrij(TOPIC_SCHAKEL, qos=1), stop,
+                    {regel.id for regel in config.alarmen}))
     moment = volgend_moment(time.time())
     log.info("opslag gestart; database %s", config.opslag.database)
     try:
@@ -706,7 +751,7 @@ async def draai(config: Config, bus, stop: asyncio.Event, klok_ok=klok_gesynchro
                      m.grootheid)
     finally:
         # Eerst de neventaken laten stoppen; die gebruiken de database nog.
-        for taak in (alarmtaak, opnametaak, verwijdertaak):
+        for taak in (alarmtaak, opnametaak, verwijdertaak, schakeltaak):
             if not stop.is_set():
                 taak.cancel()
             try:

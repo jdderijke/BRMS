@@ -1,7 +1,10 @@
 """Webinterface: Flask + Chart.js, alleen bereikbaar via Tailscale/LAN (ARCHITECTURE.md §5.6).
 
-Nu één pagina met grafieken (§5.6 punt 4). De gebruiker voegt zelf grafieken toe en kiest
-per grafiek welke reeksen (sensor + grootheid) erin staan. Een grafiek heeft één bron:
+Vier pagina's met een gedeelde bovenbalk en een zijbalk als menu (sjabloon basis.html,
+stijl static/brms.css): Grafieken, Opnames, Alarmen en Systeem (§5.6, v0.52).
+
+Grafieken (§5.6 punt 4): de gebruiker voegt zelf grafieken toe en kiest per grafiek welke
+reeksen (sensor + grootheid) erin staan. Een grafiek heeft één bron:
 
 - **live**      de waarden zoals ze nu over de MQTT-bus gaan (elke ontvangen meting);
 - **database**  wat de opslag-service heeft weggeschreven (per 5 minuten), ook historisch.
@@ -29,6 +32,14 @@ Adressen:
     /api/opnames/nu          (POST) nu een foto of video laten maken (poll-nu)
     /live/<camera_id>        (POST) het live-beeld van een camera aanvragen (WebRTC via
                              go2rtc, §5.7 punt 18)
+    /alarmen                 de pagina met de alarmregels, hun schakelaars en de historie
+    /api/alarmen/overzicht   regels (met aan/uit), actieve en opgetreden alarmen
+    /api/alarmen/schakel     (POST) een alarmregel aan- of uitzetten; opdracht over de bus
+    /systeem                 de pagina met services, herstarten, logboek en schijfruimte
+    /api/systeem             status van de services en de schijfruimte
+    /api/logboek             ?fouten=1&service=<naam>&voor=<us>  regels uit journald (§5.5.5)
+    /api/systeem/herstart    (POST) {"wat": "brms"|"pi"}: de services of de Pi herstarten
+    /api/status              kort: aantal actieve alarmen, services in orde, broker bereikbaar
 
 Er is geen aanmelding: de pagina is alleen via Tailscale of het lokale netwerk bereikbaar
 (OPEN-15).
@@ -46,7 +57,7 @@ import time
 
 from flask import Flask, Response, abort, jsonify, render_template, request, send_from_directory
 
-from brms import VERSION, config, go2rtc, grootheden
+from brms import VERSION, alarms, config, go2rtc, grootheden, systeem
 from brms.config import Config
 from brms.meting import TOPIC_PREFIX, Meting
 
@@ -56,6 +67,15 @@ log = logging.getLogger(__name__)
 # brms/readers/camera.py.
 TOPIC_VERWIJDER = "brms/opdracht/opslag/verwijder"
 TOPIC_POLL_NU = "brms/opdracht/camera/poll-nu"
+TOPIC_SCHAKEL = "brms/opdracht/alarm/schakel"
+# Zoveel opgetreden alarmen toont de alarmenpagina hooguit.
+MAX_HISTORIE = 200
+# Zo lang (seconden) geldt een opgevraagde status van de services voor /api/status: elke
+# open pagina vraagt die elke 30 s, en elke vraag aan systemd is een apart proces.
+STATUS_BEWAREN = 10.0
+# Zo lang na het antwoord op "Herstart BRMS" herstart de webservice zichzelf (seconden):
+# het antwoord moet eerst de deur uit.
+HERSTART_WACHT = 1.0
 # Zoveel opnames toont de pagina hooguit in één keer, en zoveel mag één verwijderopdracht
 # noemen.
 MAX_OPNAMES = 500
@@ -344,6 +364,75 @@ def lees_opnames(pad: str, van: int, tot: int, camera_id: str | None = None,
     return [dict(zip(sleutels, rij)) for rij in rijen], totalen
 
 
+def lees_alarmoverzicht(pad: str, limiet: int = MAX_HISTORIE) -> tuple[list, dict]:
+    """Leest voor de alarmenpagina (§5.6): de opgetreden alarmen, de nieuwste eerst
+    (hooguit `limiet`; een alarm zonder einde is nog actief), en de regels die uit staan
+    als {alarm_id: sinds}. Bestaat de database of een tabel (nog) niet, dan is dat deel leeg.
+    """
+    if not pathlib.Path(pad).exists():
+        return [], {}
+    con = sqlite3.connect(pathlib.Path(pad).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+    alarmen_, uit = [], {}
+    try:
+        try:
+            sleutels = ("alarm_id", "sensor_id", "begin", "grootheid", "waarde", "einde", "reden")
+            alarmen_ = [dict(zip(sleutels, rij)) for rij in con.execute(
+                f"SELECT {', '.join(sleutels)} FROM alarm "
+                "ORDER BY einde IS NOT NULL, begin DESC LIMIT ?", (limiet,))]
+        except sqlite3.OperationalError as e:
+            log.debug("alarmen niet leesbaar: %s", e)
+        try:
+            uit = dict(con.execute("SELECT alarm_id, sinds FROM alarm_uit"))
+        except sqlite3.OperationalError as e:
+            log.debug("schakelaars niet leesbaar: %s", e)
+    finally:
+        con.close()
+    return alarmen_, uit
+
+
+def tel_actieve_alarmen(pad: str) -> int | None:
+    """Het aantal alarmen dat nu actief is (voor de statusstip), of None als de database
+    niet te lezen is."""
+    if not pathlib.Path(pad).exists():
+        return None
+    con = sqlite3.connect(pathlib.Path(pad).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+    try:
+        return con.execute("SELECT COUNT(*) FROM alarm WHERE einde IS NULL").fetchone()[0]
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        con.close()
+
+
+def _bronnaam(cfg: Config, bron_id: str) -> str:
+    """De naam van een sensor of camera bij zijn ID (het ID zelf als hij niet meer in de
+    configuratie staat)."""
+    bron = cfg.sensoren.get(bron_id) or cfg.cameras.get(bron_id)
+    return bron.naam if bron is not None else bron_id
+
+
+def _regeloverzicht(cfg: Config, uit: dict) -> list[dict]:
+    """De alarmregels voor de alarmenpagina, in de volgorde van brms.toml: per regel de
+    voorwaarde in woorden, de sensoren bij naam, de melding en of de regel aan staat."""
+    regels = []
+    for r in cfg.alarmen:
+        voorwaarde = alarms.voorwaardetekst(r)
+        if r.grootheid is not None:
+            voorwaarde = f"{r.grootheid} {voorwaarde}"
+        elif all(s in cfg.cameras for s in r.sensoren):
+            # Een regel 'stil' met alleen camera's: een camera levert opnames, geen waarden.
+            voorwaarde = voorwaarde.replace("geen waarden", "geen opnames")
+        if r.duur and r.soort != config.STIL:
+            voorwaarde += f", {alarms.duurtekst(r.duur)} lang"
+        melding = {"uit": "geen melding", "eenmalig": "één melding"}.get(
+            r.melding, f"melding, herhaald elke {alarms.duurtekst(r.herhaling or 0)}")
+        regels.append({"id": r.id, "naam": r.naam, "voorwaarde": voorwaarde,
+                       "sensoren": [_bronnaam(cfg, s) for s in r.sensoren],
+                       "melding": melding, "prioriteit": r.prioriteit,
+                       "aan": r.id not in uit, "uit_sinds": uit.get(r.id)})
+    return regels
+
+
 def _regels(cfg: Config) -> dict:
     """De alarmregels per sensor en grootheid, voor de grafieken (§5.5.3 punt 9):
     {sensor-ID: {grootheid: [{"id", "naam", "boven"|"onder", "herstel"}, ...]}}.
@@ -377,9 +466,11 @@ def _sensor(cfg: Config, sensor_id) -> "config.Sensor | None":
     return cfg.sensoren.get(sensor_id) or cfg.sensoren.get(sensor_id.upper())
 
 
-def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
-    """Maakt de Flask-toepassing. `bus` is alleen nodig om te melden of de broker
-    bereikbaar is; in tests mag hij ontbreken. `klok` is te vervangen in tests."""
+def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
+             config_pad: str | None = None) -> Flask:
+    """Maakt de Flask-toepassing. `bus` is nodig voor opdrachten en om te melden of de
+    broker bereikbaar is; in tests mag hij ontbreken. `klok` is te vervangen in tests.
+    `config_pad` is het pad van brms.toml: "Herstart BRMS" controleert dat bestand eerst."""
     app = Flask(__name__)
     # Flask sorteert JSON standaard op sleutel (alfabetisch); de volgorde van de tabel van
     # grootheden (§5.3.3) moet blijven. Twee instellingen: één voor de antwoorden
@@ -399,6 +490,11 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
         antwoord.headers[KOP_GESTART] = gestart
         return antwoord
 
+    @app.context_processor
+    def _voor_elke_pagina():
+        # Wat het gedeelde sjabloon (basis.html) op elke pagina nodig heeft.
+        return {"versie": VERSION}
+
     def _getal(waarde, standaard=None, laagste=None, hoogste=None):
         """Zet een waarde uit een aanvraag om in een geheel getal binnen de grenzen;
         `standaard` als hij ontbreekt of geen getal is."""
@@ -415,7 +511,8 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
     @app.get("/")
     def pagina():
         return render_template(
-            "index.html", versie=VERSION, gestart=gestart, kop_gestart=KOP_GESTART,
+            "index.html", pagina="grafieken", titel="Grafieken",
+            gestart=gestart, kop_gestart=KOP_GESTART,
             sensoren=[{"id": s.id, "naam": s.naam, "type": s.type, "grootheden": _levert(s)}
                       for s in cfg.sensoren.values()],
             regels=_regels(cfg),
@@ -498,7 +595,7 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
     @app.get("/opnames")
     def pagina_opnames():
         return render_template(
-            "opnames.html", versie=VERSION,
+            "opnames.html", pagina="opnames", titel="Opnames",
             cameras=[{"id": c.id, "naam": c.naam, "video": c.video_url is not None,
                       "video_duur": c.video_duur,
                       # Live-beeld heeft elke camera met een videostroom (§5.7 punt 18).
@@ -594,10 +691,121 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time) -> Flask:
         return Response(antwoord, mimetype="application/sdp",
                         headers={"Cache-Control": "no-store"})
 
+    # --- alarmen (§5.6 alarmenpagina, §5.5.3 punt 7) -----------------------------------
+    @app.get("/alarmen")
+    def pagina_alarmen():
+        return render_template("alarmen.html", pagina="alarmen", titel="Alarmen")
+
+    @app.get("/api/alarmen/overzicht")
+    def api_alarmoverzicht():
+        """De regels (met de stand van hun schakelaar), en de opgetreden alarmen: eerst
+        die nog actief zijn, dan de rest, de nieuwste eerst."""
+        alarmen_, uit = lees_alarmoverzicht(cfg.opslag.database)
+        namen = {r.id: r.naam for r in cfg.alarmen}
+        for a in alarmen_:
+            a["naam"] = namen.get(a["alarm_id"], a["alarm_id"])
+            a["sensor"] = _bronnaam(cfg, a["sensor_id"])
+            # De waarde waarmee het alarm afging, met eenheid.
+            a["waardetekst"] = (alarms.waardetekst(a["grootheid"], a["waarde"])
+                                if a["waarde"] is not None
+                                and a["grootheid"] in grootheden.GROOTHEDEN else None)
+        return jsonify(nu=int(klok()), regels=_regeloverzicht(cfg, uit), alarmen=alarmen_,
+                       vol=len(alarmen_) >= MAX_HISTORIE,
+                       broker=bus.verbonden if bus is not None else None)
+
+    @app.post("/api/alarmen/schakel")
+    def api_schakel():
+        inhoud = request.get_json(silent=True)
+        inhoud = inhoud if isinstance(inhoud, dict) else {}
+        alarm_id, aan = inhoud.get("alarm_id"), inhoud.get("aan")
+        if alarm_id not in {r.id for r in cfg.alarmen} or not isinstance(aan, bool):
+            return jsonify(fout="onbekende alarmregel, of 'aan' is geen true/false"), 400
+        # Het web schrijft niet zelf: de opslag legt de stand vast en de alarmlaag voert
+        # hem uit (§5.5.3 punt 7).
+        log.warning("alarmregel %s %s gezet via het web", alarm_id, "aan" if aan else "uit")
+        return (_opdracht(TOPIC_SCHAKEL, {"alarm_id": alarm_id, "aan": aan})
+                or jsonify(gevraagd=alarm_id, aan=aan))
+
+    # --- systeem (§5.6 systeempagina, §5.5.5) -------------------------------------------
+    # De laatst opgevraagde status van de services, voor /api/status (zie STATUS_BEWAREN).
+    status_slot = threading.Lock()
+    status_bewaard = {"tot": 0.0, "lijst": [], "uitleg": None}
+
+    def _services(vers: bool = False):
+        with status_slot:
+            if vers or time.monotonic() >= status_bewaard["tot"]:
+                status_bewaard["lijst"], status_bewaard["uitleg"] = systeem.services()
+                status_bewaard["tot"] = time.monotonic() + STATUS_BEWAREN
+            return status_bewaard["lijst"], status_bewaard["uitleg"]
+
+    @app.get("/systeem")
+    def pagina_systeem():
+        return render_template("systeem.html", pagina="systeem", titel="Systeem",
+                               gestart=gestart, kop_gestart=KOP_GESTART)
+
+    @app.get("/api/status")
+    def api_status():
+        """Kort, voor de statusstip en de teller in het menu op elke pagina (§5.6):
+        hoeveel alarmen er actief zijn, of alle services draaien (None = onbekend, bijv.
+        op de ontwikkel-pc) en of de broker bereikbaar is."""
+        lijst, uitleg = _services()
+        return jsonify(alarmen=tel_actieve_alarmen(cfg.opslag.database),
+                       services=None if uitleg else all(s["actief"] for s in lijst),
+                       broker=bus.verbonden if bus is not None else None)
+
+    @app.get("/api/systeem")
+    def api_systeem():
+        lijst, uitleg = _services(vers=True)
+        schijf = systeem.schijf(cfg)
+        # De omvang van de opnames komt uit de tabel (de bestanden tellen is traag).
+        _, totalen = lees_opnames(cfg.opslag.database, 0, 0, limiet=0)
+        schijf["opnames"] = (totalen["foto"][1] or 0) + (totalen["video"][1] or 0)
+        return jsonify(nu=int(klok()), services=lijst, uitleg=uitleg, schijf=schijf)
+
+    @app.get("/api/logboek")
+    def api_logboek():
+        service = request.args.get("service") or None
+        regels, meer, uitleg = systeem.logboek(
+            alleen_fouten=request.args.get("fouten") == "1", service=service,
+            voor=_getal(request.args.get("voor"), None, 0))
+        # De services voor de keuzelijst: alle van BRMS, Mosquitto en de kernel.
+        namen = systeem.brms_services() + list(systeem.ANDERE_EENHEDEN) + [systeem.KERNEL]
+        return jsonify(regels=regels, meer=meer, uitleg=uitleg, services=namen)
+
+    @app.post("/api/systeem/herstart")
+    def api_herstart():
+        """Herstart alle BRMS-services, of de hele Pi (§5.6 systeempagina punt 2). De
+        pagina vraagt eerst om bevestiging; hier wordt niets meer gevraagd."""
+        inhoud = request.get_json(silent=True)
+        wat = inhoud.get("wat") if isinstance(inhoud, dict) else None
+        if wat == "brms":
+            # Eerst de configuratie controleren, zoals `brms herstart`: met een fout erin
+            # zouden de services na de herstart niet meer starten.
+            try:
+                config.lees(config_pad or config.STANDAARD_PAD)
+            except config.ConfigFout as e:
+                return jsonify(fout="De configuratie bevat fouten; er is niets herstart.",
+                               fouten=e.fouten), 409
+            # Een waarschuwing, zodat de herstart in het logboek terug te vinden is.
+            log.warning("herstart van alle BRMS-services gevraagd via het web")
+            fout = systeem.herstart_services(behalve="brms-web")
+            if fout:
+                return jsonify(fout=f"Herstarten is niet gelukt: {fout}"), 500
+            # De webservice zelf als laatste, kort na dit antwoord.
+            threading.Timer(HERSTART_WACHT, systeem.herstart_service, ("brms-web",)).start()
+            return jsonify(gevraagd="brms")
+        if wat == "pi":
+            log.warning("herstart van de Pi gevraagd via het web")
+            fout = systeem.herstart_pi()
+            if fout:
+                return jsonify(fout=f"Herstarten is niet gelukt: {fout}"), 500
+            return jsonify(gevraagd="pi")
+        return jsonify(fout="'wat' moet \"brms\" of \"pi\" zijn"), 400
+
     return app
 
 
-def draai(cfg: Config) -> None:
+def draai(cfg: Config, config_pad: str | None = None) -> None:
     """Start de webservice en loopt tot het proces gestopt wordt (door systemd of Ctrl-c)."""
     from werkzeug.serving import make_server
 
@@ -615,7 +823,8 @@ def draai(cfg: Config) -> None:
 
     # De ingebouwde server van Flask/Werkzeug, met een thread per aanvraag. Voldoende voor
     # één of enkele gebruikers achter Tailscale; er staat niets open op internet (§5.6).
-    server = make_server(cfg.web.host, cfg.web.port, maak_app(cfg, live, bus), threaded=True)
+    server = make_server(cfg.web.host, cfg.web.port,
+                         maak_app(cfg, live, bus, config_pad=config_pad), threaded=True)
     log.info("webservice gestart op http://%s:%d", cfg.web.host, cfg.web.port)
     try:
         server.serve_forever()
