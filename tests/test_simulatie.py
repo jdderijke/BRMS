@@ -315,7 +315,9 @@ class TestOntvanger(unittest.TestCase):
         self.tracer.bij_opdracht(trace.TOPIC_AAN, json.dumps({"sensor_ids": [MAC]}).encode())
         _opdracht(self.sim, simulatie.TOPIC_AAN, MAC, duur=60)
         self._simuleer_stap()
-        stappen = {d["stap"]: d["tekst"] for _, d in self.bus.berichten}
+        # Alleen de traceberichten: de simulator meldt op de bus ook wat hij simuleert.
+        stappen = {d["stap"]: d["tekst"] for topic, d in self.bus.berichten
+                   if topic.startswith("brms/trace/")}
         self.assertEqual(list(stappen), ["ruw", "gedecodeerd", "gecorrigeerd", "gepubliceerd"])
         self.assertTrue(stappen["ruw"].startswith("SIMULATIE BTHome 40 00 00"))
 
@@ -323,10 +325,15 @@ class TestOntvanger(unittest.TestCase):
 class TestVraagDuur(unittest.TestCase):
     def _vraag(self, *antwoorden):
         reeks = iter(antwoorden)
-        return simulatie.vraag_duur(lambda tekst: next(reeks))
+        with contextlib.redirect_stdout(io.StringIO()):     # de uitleg en de foutmeldingen
+            return simulatie.vraag_duur(lambda tekst: next(reeks))
 
-    def test_standaard_is_tien_minuten(self):
-        self.assertEqual(self._vraag(""), 600)
+    def test_alleen_enter_is_een_demo(self):
+        # Geen duur = een demo, die doorloopt tot `brms sim stop` (§10.3 punt 2).
+        self.assertIsNone(self._vraag(""))
+
+    def test_hooguit_zestig_minuten(self):
+        self.assertEqual(self._vraag("61", "60"), 3600)
 
     def test_minuten(self):
         self.assertEqual(self._vraag("5"), 300)
@@ -334,6 +341,159 @@ class TestVraagDuur(unittest.TestCase):
 
     def test_ongeldige_invoer_opnieuw_vragen(self):
         self.assertEqual(self._vraag("lang", "0", "-1", "999", "2"), 120)
+
+
+class TestDemo(unittest.TestCase):
+    """De demo (§10.3 punt 5a): waarden rond normaal, met dag- en nachtritme, elke sensor
+    onafhankelijk van de andere."""
+
+    def test_dagritme(self):
+        self.assertAlmostEqual(simulatie.dagritme(6), -1.0)     # koudst
+        self.assertAlmostEqual(simulatie.dagritme(15), 1.0)     # warmst
+        self.assertAlmostEqual(simulatie.dagritme(10.5), 0.0)   # halverwege het opwarmen
+        self.assertAlmostEqual(simulatie.dagritme(22.5), 0.0)   # halverwege het afkoelen
+        # Vloeiend over middernacht.
+        self.assertAlmostEqual(simulatie.dagritme(0), simulatie.dagritme(24))
+        self.assertLess(abs(simulatie.dagritme(23.99) - simulatie.dagritme(0.01)), 0.01)
+
+    def test_daglicht(self):
+        self.assertEqual(simulatie.daglicht(3), 0.0)
+        self.assertEqual(simulatie.daglicht(20), 0.0)
+        self.assertAlmostEqual(simulatie.daglicht(12.5), 1.0)
+
+    def _dag(self, type_, zaad, stap=60.0):
+        """Een etmaal aan demo-waarden, één per `stap` seconden, vanaf middernacht."""
+        demo = simulatie.Demo(type_, 0.0, random.Random(zaad))
+        return [demo.waarden(i * stap, (i * stap / 3600) % 24)
+                for i in range(1, int(24 * 3600 / stap) + 1)]
+
+    def test_waarden_blijven_rond_normaal(self):
+        # Meerdere sensoren, elk een etmaal: niets komt in de buurt van een alarmgrens.
+        for zaad in range(5):
+            for w in self._dag("ruuvi", zaad):
+                self.assertTrue(0 < w["temperatuur"] < 18, w["temperatuur"])
+                self.assertTrue(30 <= w["vocht"] <= 90, w["vocht"])
+                self.assertTrue(2.8 < w["batterijspanning"] < 3.1, w["batterijspanning"])
+                self.assertTrue(970 < w["luchtdruk"] < 1056, w["luchtdruk"])
+                self.assertTrue(abs(w["versnelling_x"]) < 150 and 950 < w["versnelling_z"] < 1050)
+
+    def test_dag_is_warmer_dan_nacht(self):
+        dag = self._dag("bthome", 1)
+        gem = lambda van, tot: (sum(w["temperatuur"] for w in dag[van * 60:tot * 60])
+                                / ((tot - van) * 60))
+        self.assertGreater(gem(13, 17), gem(4, 8) + 2)
+
+    def test_sensoren_lopen_onafhankelijk(self):
+        een = [w["temperatuur"] for w in self._dag("bthome", 1)]
+        twee = [w["temperatuur"] for w in self._dag("bthome", 2)]
+        # Niet dezelfde lijn, en ook niet dezelfde lijn met een vast verschil.
+        verschil = [a - b for a, b in zip(een, twee)]
+        self.assertGreater(max(verschil) - min(verschil), 0.5)
+
+    def test_beweging_af_en_toe(self):
+        # Elke 2 s een advertentie, een uur lang: enkele bewegingen, geen 1800.
+        demo = simulatie.Demo("ruuvi", 0.0, random.Random(3))
+        teller = [demo.waarden(i * 2.0, 12.0)["bewegingsteller"] for i in range(1, 1801)][-1]
+        self.assertTrue(1 <= teller <= 20, teller)
+
+    def test_accu_en_zon(self):
+        for w in self._dag("victron-bmv", 4):
+            self.assertTrue(50 <= w["soc"] <= 100)
+            self.assertTrue(12.0 < w["spanning"] < 13.0, w["spanning"])
+            self.assertTrue(-2.5 < w["stroom"] < 4.0, w["stroom"])
+            self.assertTrue(1 <= w["resterende_tijd"] <= simulatie.DEMO_TIJD_MAX)
+            self.assertAlmostEqual(w["verbruikt"], (100 - w["soc"]) * 2)
+        zon = self._dag("victron-mppt", 4)
+        self.assertEqual(zon[3 * 60]["zonnevermogen"], 0.0)          # 's nachts precies 0 W
+        self.assertGreater(max(w["zonnevermogen"] for w in zon), 5)  # overdag zon
+        self.assertLessEqual(max(w["zonnevermogen"] for w in zon), simulatie.ZON_PIEK + 6)
+        self.assertEqual(self._dag("victron-multiplus", 4)[0], {"walstroom": 1.0})
+
+    def test_demo_waarden_passen_in_een_bericht(self):
+        # Wat de demo maakt, moet de echte decoder kunnen lezen (ook de Victron-berichten).
+        from brms.readers.ble import verwerk
+        sleutel = "00112233445566778899aabbccddeeff"
+        for type_ in simulatie.BLE_TYPES:
+            sensor = Sensor("AA:BB:CC:00:00:09", type_, "s", sleutel=sleutel)
+            demo = simulatie.Demo(type_, 0.0, random.Random(5))
+            for i in range(1, 200):
+                sd, fd = simulatie.advertentie(sensor, demo.waarden(i * 400.0, (i * 400 / 3600) % 24), i)
+                ms = verwerk(sensor.id, sd, fd, -60, 1000, {sensor.id: sensor}, gesimuleerd=True)
+                self.assertTrue(ms, type_)
+
+    def test_bilgepomp_loopt_af_en_toe_kort(self):
+        demo = simulatie.Demo("shelly-uni", 0.0, random.Random(6))
+        standen = [demo.bilge(float(t)) for t in range(0, 6 * 3600, 5)]    # elke 5 s, 6 uur
+        self.assertTrue(all(s["bilge"] is False for s in standen))         # geen hoogwater
+        aan = [s["bilgepomp"] for s in standen]
+        beurten = sum(1 for vorige, nu in zip(aan, aan[1:]) if nu and not vorige)
+        self.assertTrue(2 <= beurten <= 7, beurten)
+        self.assertLess(sum(aan) * 5, beurten * 40)                        # elke beurt kort
+        # De eerste beurt komt binnen 10 minuten, zodat er wat te zien is.
+        self.assertIn(True, aan[:125])
+
+
+class TestSimulatorDemo(unittest.TestCase):
+    def setUp(self):
+        self.klok = NepKlok()
+        self.bus = NepBus()
+        self.sim = simulatie.Simulator(self.bus, SENSOREN, klok=self.klok,
+                                       tijd=lambda: 1_800_000_000)
+
+    def _stand(self):
+        """De laatste melding op de bus over wat er gesimuleerd wordt."""
+        topic, d = [b for b in self.bus.berichten if b[0].startswith(simulatie.TOPIC_STAND)][-1]
+        self.assertEqual(topic, "brms/simulatie/ble-reader")
+        self.assertEqual((d["dienst"], d["ts"]), ("ble-reader", 1_800_000_000))
+        return d["sensoren"]
+
+    def test_demo_loopt_door_tot_stop(self):
+        _opdracht(self.sim, simulatie.TOPIC_AAN, MAC, demo=True)
+        self.assertEqual(self._stand(), [{"sensor_id": MAC, "soort": "demo", "einde": None}])
+        for _ in range(5):
+            self.klok.t += 24 * 3600          # dagen later loopt hij nog
+            self.assertTrue(self.sim.actief(MAC))
+            (sensor, waarden, n), = self.sim.stappen()
+            self.assertIsInstance(waarden, dict)   # de waarden zelf, geen fractie
+            self.assertIn("temperatuur", waarden)
+        _opdracht(self.sim, simulatie.TOPIC_UIT, MAC)
+        self.assertFalse(self.sim.actief(MAC))
+        self.assertEqual(self.sim.stappen(), [])
+        self.assertEqual(self._stand(), [])
+
+    def test_test_meldt_zijn_einde_en_het_aflopen(self):
+        _opdracht(self.sim, simulatie.TOPIC_AAN, MAC, duur=60)
+        self.assertEqual(self._stand(), [{"sensor_id": MAC, "soort": "test",
+                                          "einde": 1_800_000_060}])
+        self.klok.t += 61
+        self.sim.stappen()                    # de duur is om: de simulatie stopt
+        self.assertEqual(self._stand(), [])
+
+    def test_test_en_demo_naast_elkaar(self):
+        _opdracht(self.sim, simulatie.TOPIC_AAN, MAC, duur=60)
+        _opdracht(self.sim, simulatie.TOPIC_AAN, RMAC, demo=True)
+        self.assertEqual([(s["sensor_id"], s["soort"]) for s in self._stand()],
+                         [(MAC, "test"), (RMAC, "demo")])
+        # Een test over een lopende demo heen vervangt hem (en andersom).
+        _opdracht(self.sim, simulatie.TOPIC_AAN, RMAC, duur=60)
+        self.assertEqual([s["soort"] for s in self._stand()], ["test", "test"])
+
+    def test_meld_zonder_simulatie(self):
+        self.sim.meld()
+        self.assertEqual(self._stand(), [])
+
+    def test_demo_van_een_shelly(self):
+        sensor = Sensor("bilge", "shelly-uni", "bilge", adres="10.0.0.9",
+                        bron={"bilgepomp": "voltmeter:100", "bilge": "input:0"}, drempel=6.0)
+        sim = simulatie.Simulator(self.bus, {"bilge": sensor}, klok=self.klok,
+                                  types=simulatie.SHELLY_TYPES, dienst="shelly-reader")
+        _opdracht(sim, simulatie.TOPIC_AAN, "bilge", demo=True)
+        self.klok.t += 7 * 24 * 3600
+        toestand, n = sim.stap("bilge")
+        self.assertEqual(set(toestand), {"bilgepomp", "bilge"})
+        status = simulatie.shelly_status(sensor, toestand)
+        self.assertIs(status["input:0"]["state"], False)
+        self.assertIn("voltage", status["voltmeter:100"])
 
 
 CFG = Config(MqttConfig(), OpslagConfig(), SENSOREN)
@@ -387,11 +547,20 @@ class TestOpdracht(unittest.TestCase):
         return code, uit.getvalue()
 
     def test_start_meteen_na_akkoord_en_duur(self):
-        code, uit = self._sim(["kajuit"], "", "")      # twee keer Enter: ja, 10 minuten
+        code, uit = self._sim(["kajuit"], "", "10")    # Enter = ja; een test van 10 minuten
         self.assertEqual(code, 0)
         self.assertEqual(self.verstuurd, [(simulatie.TOPIC_AAN, [MAC], {"duur": 600})])
         self.assertIn("genegeerd", uit)                # de waarschuwing over de bypass
         self.assertIn("brms sim stop kajuit", uit)
+        self.assertIn("loopt vanzelf af", uit)
+
+    def test_zonder_duur_start_een_demo(self):
+        code, uit = self._sim(["all"], "", "")         # twee keer Enter: ja, en geen duur
+        self.assertEqual(code, 0)
+        self.assertEqual(self.verstuurd, [(simulatie.TOPIC_AAN, [MAC, RMAC], {"demo": True})])
+        self.assertIn("Demo gestart", uit)
+        self.assertIn("brms sim stop all", uit)
+        self.assertNotIn("loopt vanzelf af", uit)
 
     def test_meerdere_sensoren_en_eigen_duur(self):
         code, _ = self._sim(["all"], "j", "2")

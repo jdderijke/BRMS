@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.53 – concept** · 12 november 2026
+**Versie 0.55 – concept** · 12 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -163,6 +163,7 @@ staat; daarom QoS 1.
 | Opname | `brms/opname/<camera_id>` | `{"ts", "camera_id", "type", "duur", "bestand", "bytes", "aanleiding"}` | 1 |
 | Opdracht | `brms/opdracht/<doel>/<actie>`, bijv. `brms/opdracht/camera/poll-nu`, `brms/opdracht/shelly/poll-nu`, `brms/opdracht/opslag/verwijder`, `brms/opdracht/trace/aan`, `brms/opdracht/simulatie/aan` (§10.3), `brms/opdracht/relais/zet` (§5.2.6), `brms/opdracht/alarm/schakel` (§5.5.3) | afhankelijk van de actie, bijv. `{"type": "video", "aanleiding": "alarm:beweging"}` | 1 |
 | Alarm (v0.31) | `brms/alarm/<alarm_id>` | `{"ts", "alarm_id", "sensor_id", "grootheid", "gebeurtenis", "waarde"}`; `gebeurtenis` is `begin`, `herstel` of `uitgezet` (§5.5.3). De alarmlaag meldt bij zijn start en daarna elke minuut op `brms/alarm/herstart` welke alarmen actief zijn: `{"ts", "actief": [[alarm_id, sensor_id], ...]}` (v0.34, §5.5.3 punt 8). | 1 |
+| Simulatie (v0.55) | `brms/simulatie/<dienst>` | `{"ts", "dienst", "sensoren": [{"sensor_id", "soort", "einde"}, ...]}`: welke sensoren een reader simuleert; `soort` is `test` of `demo`, `einde` in Unix-seconden (leeg bij een demo). Bij de start van de reader, bij elke verandering en elke 30 s (§10.3 punt 10). | 1 |
 | Trace (v0.16) | `brms/trace/<sensor_id>` | `{"ts", "sensor_id", "dienst", "stap", "tekst"}`, optioneel `"deel"` – alleen zolang trace voor die sensor aanstaat (§10.2) | 0 |
 
 1. Elk bericht is **compleet**: ook wat in de topic staat, staat in de inhoud.
@@ -1541,7 +1542,11 @@ schrijvers op dezelfde database en map.
 **Opnames** (`/opnames`), **Alarmen** (`/alarmen`) en **Systeem** (`/systeem`). Het wordt
 ook op een telefoon gebruikt.
 1. Elke pagina heeft dezelfde **bovenbalk**: links de menuknop (drie streepjes), daarnaast
-   de titel van de pagina, rechts een **statusstip**.
+   de titel van de pagina, rechts een **statusstip**. Links van de stip staat een
+   **tegeltje** (v0.55) met één woord: **Actief** (alle sensoren zijn echt),
+   **Simulatie** (er loopt een test met de testreeks) of **Demo** (er loopt een demo);
+   zie §10.3 punt 10. Loopt er een test én een demo, dan staat er Simulatie. De uitleg
+   bij het tegeltje noemt de gesimuleerde sensoren.
 2. De menuknop schuift een **zijbalk** in beeld met de vier pagina's. Op een smal scherm
    ligt hij over de pagina en sluit hij na een keuze, een tik ernaast of Escape; op een
    breed scherm (vanaf 1000 px) staat hij vast in beeld en is er geen menuknop.
@@ -1937,10 +1942,18 @@ registreert per 5 minuten (§5.3.2) → web leest uit SQLite.
 |---|---|
 | systemd met `Restart=always` | Crash van de software |
 | Hardware-watchdog van de Pi | Vastgelopen systeem |
-| Router-DO → relais → Pi-herstart | Pi onbereikbaar terwijl router werkt |
-| Teltonika RMS | Router beheren/herstarten op afstand |
+| "Ping Reboot" van de router (RutOS) | Router of 4G-verbinding vastgelopen: de router herstart zichzelf als internet een tijd onbereikbaar is |
 | SQLite WAL | Datacorruptie bij stroomuitval |
 | Wekelijkse back-up naar OneDrive (§7.1) | Verlies van de opslag |
+
+**Geen noodingang via Teltonika RMS (v0.54).** Tot v0.53 stonden hier Teltonika RMS (de
+router op afstand beheren en herstarten) en een relais op de digitale uitgang van de
+router om de Pi te herstarten. Beide zijn vervallen: RMS is een extra externe dienst waar
+het systeem dan van afhangt, en het nut is klein. Wat ervoor in de plaats komt, werkt
+lokaal en vanzelf: de hardware-watchdog herstart een vastgelopen Pi, en de router herstart
+zichzelf met "Ping Reboot". Zonder RMS is het relais niet op afstand te bedienen; het
+vervalt daarom ook. Geaccepteerd gevolg: werkt Tailscale niet meer terwijl de Pi wel
+draait, dan is er geen toegang op afstand en moet er iemand naar de boot.
 
 **[OPEN-21]** Maatregelen op OS-niveau tegen flashslijtage (o.a. journald-logs, swap,
 caches). Het schrijfvolume van de database zelf is verwaarloosbaar (§5.3.2).
@@ -2004,7 +2017,8 @@ bereikbaar; metingen gaan wel door (P4). **[OPEN-18]** Moet uitval van BRMS zelf
 - Pi via ethernet aan Teltonika RUT241 (wifi van router als reserve).
 - Mobiel internet zit achter CGNAT → Tailscale op de Pi (key expiry uit), met subnet-route
   naar router en camera. Niets open op internet.
-- Noodingang: Teltonika RMS + Pi-herstart via router-DO.
+- Geen noodingang buiten Tailscale om (v0.54): Teltonika RMS staat uit en het relais op de
+  router-uitgang vervalt (§7). De router herstart zichzelf met "Ping Reboot".
 
 ---
 
@@ -2232,6 +2246,16 @@ het gemiddelde in de database niets meer. Daarom negeert de reader de echte sens
 de simulatie loopt, en vraagt de opdracht daarvoor eerst om bevestiging. Een vaste looptijd
 voorkomt dat een sensor per ongeluk genegeerd blijft.
 
+**Test en demo (v0.55).** De gebruiker wil de simulatie ook veel langer dan een uur
+kunnen laten lopen, om te laten zien hoe BRMS eruitziet met sensoren die er (nog) niet
+zijn. Dat is een ander doel dan testen: een testreeks die dwars door de alarmgrenzen
+loopt, is daar niet bruikbaar, en een einde is er niet. Daarom twee soorten. Een **test**
+heeft een duur (hooguit 60 minuten) en de testreeks; een **demo** heeft geen duur en
+geeft waarden rond normaal. Bij een demo vervalt de vaste looptijd als vangnet. Wat
+ervoor in de plaats komt: het web toont op elke pagina of er gesimuleerd wordt, en een
+herstart van de reader beëindigt elke simulatie (ze staat alleen in het geheugen van de
+reader).
+
 De gesimuleerde waarden komen als gewone metingen in de database: dat hoort bij een
 volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 
@@ -2253,14 +2277,21 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
    gescheiden, of **`all`** voor alle sensoren die gesimuleerd kunnen worden.
    Voor BTHome, Ruuvi, Victron (v0.30) en de Shelly (v0.29); GPIO volgt met zijn reader.
 2. De opdracht **waarschuwt** dat de echte sensoren worden genegeerd zolang de simulatie
-   loopt, vraagt om akkoord (Enter = ja) en vraagt hoe lang de simulatie moet lopen:
-   standaard **10 minuten**, hooguit 60 minuten. Daarna begint de simulatie meteen. Er
-   wordt niet meer eerst geluisterd of de echte sensor zendt (v0.25): dat kostte 15 s
-   wachttijd.
+   loopt, vraagt om akkoord (Enter = ja) en vraagt hoe lang de simulatie moet lopen
+   (v0.55):
+   - **een getal** (minuten, hooguit 60): een **test**. De testreeks van punt 5 loopt
+     binnen die tijd twee keer heen en weer; daarna stopt de simulatie vanzelf.
+   - **alleen Enter**: een **demo** (punt 5a). Die loopt door tot `brms sim stop`.
+
+   Daarna begint de simulatie meteen. Er wordt niet meer eerst geluisterd of de echte
+   sensor zendt (v0.25): dat kostte 15 s wachttijd. Tot v0.54 betekende alleen Enter
+   "10 minuten".
 3. **Startsein:** opdracht `brms/opdracht/simulatie/aan` met
-   `{"sensor_id": ..., "duur": 60}` (seconden); eerder stoppen met
+   `{"sensor_id": ..., "duur": 60}` (seconden) voor een test, of
+   `{"sensor_id": ..., "demo": true}` voor een demo (v0.55); stoppen met
    `brms/opdracht/simulatie/uit` (`{"sensor_id": ...}`). Elke reader luistert mee en
-   voert alleen de opdrachten voor zijn eigen sensoren uit.
+   voert alleen de opdrachten voor zijn eigen sensoren uit. Een nieuwe opdracht voor een
+   sensor vervangt de simulatie die voor die sensor loopt.
 4. Zolang de simulatie loopt:
    - maakt de reader elke **2 s** een advertentie aan in het formaat van de sensor en
      verwerkt die via dezelfde ingang als een advertentie van bleak, met het MAC-adres van
@@ -2268,12 +2299,14 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
    - **negeert** de reader de echte advertenties van die sensor (bypass). Andere sensoren
      lopen gewoon door.
 
-   Na `duur` stopt de simulatie vanzelf en telt de echte sensor weer mee.
+   Na `duur` stopt een test vanzelf en telt de echte sensor weer mee. Een demo stopt
+   met `brms sim stop`, of als de reader herstart (`brms update`, "Herstart BRMS", een
+   herstart van de Pi).
 
    Bij een **Shelly** (v0.29) maakt de Shelly-reader bij elke poll zelf het antwoord aan,
    in de vorm van `Shelly.GetStatus`, en verwerkt dat als een echt antwoord. De echte
    Shelly wordt zolang niet gepolld; hij hoeft er dus niet te zijn.
-5. **Testreeks:** elke grootheid loopt lineair van begin- naar eindwaarde **en weer
+5. **Testreeks** (bij een test)**:** elke grootheid loopt lineair van begin- naar eindwaarde **en weer
    terug**, en doet dat binnen de duur **twee keer** (v0.35): begin → eind → begin → eind
    → begin, elk stuk een kwart van de duur. Door het teruglopen is ook het herstellen van
    een alarm te testen. De simulatie eindigt op de beginwaarden. De tabellen hieronder
@@ -2321,16 +2354,47 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
    beurt, van 6 s oplopend tot 30 s). In het laatste vijfde deel staat ook de
    hoogwatervlotter aan. De pompspanning is 12,6 V of 0 V, met wat ruis; `rssi` rond
    −55 dBm.
+5a. **Demo (v0.55):** geen reeks, maar waarden rond normaal, zodat er wat te zien valt
+   zonder dat er een alarm afgaat. Elke waarde is de som van een normale waarde, een
+   vaste afwijking per sensor, het dag- en nachtritme volgens de klok, een langzame
+   willekeurige afwijking en de ruis van punt 5. Elke sensor heeft zijn eigen toeval:
+   twee sensoren tekenen nooit dezelfde lijn.
+
+   | Grootheid | Normaal | Per sensor | Dag en nacht | Langzame afwijking |
+   |---|---|---|---|---|
+   | `temperatuur` | 8 °C | ± 2 °C | ± 2,5 °C (koudst 6 uur, warmst 15 uur) | 0,8 °C, over uren |
+   | `vocht` | 70 % | ± 5 % | ∓ 6 % (tegen de temperatuur in) | 3 %, over uren; blijft tussen 30 en 90 % |
+   | `batterijspanning` | 2,95 V | ± 0,05 V | ± 0,02 V | – |
+   | `luchtdruk` | 1013 hPa | – | – | 8 hPa, over dagen |
+   | `versnelling_x` / `_y` / `_z` | 0 / 0 / 1000 mG | ± 20 mG (x, y) | – | 15 / 15 / 5 mG, over minuten |
+   | `beweging` | gemiddeld 1 per 10 minuten | | | |
+   | `spanning`, `stroom`, `soc` (accu) | accu van 200 Ah, begint tussen 80 en 95 % | | verbruik 0,5 A; overdag tot 2,4 A erbij van de zon | 0,25 A; de laadtoestand volgt uit de stroom en blijft tussen 50 en 100 % |
+   | `zonnevermogen` | 0 W in het donker; licht van 8.30 tot 16.30 uur, piek 45 W | | | bewolking laat 5 tot 100 % door |
+   | `walstroom` | 1 (blijft aan) | | | |
+   | `bilgepomp` | uit; loopt 10–25 s, de eerste keer 2–10 minuten na de start, daarna elke 1–3 uur | | | |
+   | `bilge` (hoogwater) | 0 (blijft uit) | | | |
+
+   De waarden gaan door dezelfde keten als bij een test (bytes in het formaat van de
+   sensor, decoder, correctie, bus, opslag) en komen als gewone metingen in de database.
+   Een alarmregel met een grens dicht bij deze waarden kan ook in een demo afgaan.
 6. In de trace (§10.2) begint de stap `ruw` van een gesimuleerde advertentie met
    `SIMULATIE`.
 7. Gesimuleerde waarden zijn voor de rest van het systeem **gewone metingen**: ze komen
    onder het ID van de sensor in de database en laten (later) alarmen afgaan.
 8. De opdracht geeft alleen het startsein en is dan klaar (v0.25): de shell is meteen weer
    vrij, bijvoorbeeld voor een tweede `brms sim` voor een andere sensor terwijl de eerste
-   nog loopt. Elke simulatie stopt vanzelf na haar eigen duur. Eerder stoppen:
-   **`brms sim stop <sensor ...>`** of **`brms sim stop all`**.
+   nog loopt. Elke test stopt vanzelf na zijn eigen duur. Eerder stoppen, of een demo
+   stoppen: **`brms sim stop <sensor ...>`** of **`brms sim stop all`**.
 9. Draait de reader van een sensor niet (volgens systemd), dan meldt de opdracht dat er
    voor die sensor niets gesimuleerd wordt.
+10. **Zichtbaar op het web (v0.55).** Elke reader meldt op `brms/simulatie/<dienst>`
+    (§3.2) welke van zijn sensoren gesimuleerd worden en of dat een test of een demo is:
+    bij zijn start, bij elke verandering en elke 30 s. Er is geen retain op de bus; door
+    het herhalen weet de webservice het na een eigen herstart binnen 30 s weer. De
+    webservice onthoudt per reader de laatste melding en laat die na 90 s vervallen (de
+    reader is dan gestopt). Het tegeltje in de bovenbalk (§5.6) toont de stand.
+
+*Gebouwd in code v0.20.0. Getest op de pc; nog niet op de Pi.*
 
 ---
 
@@ -2390,7 +2454,9 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.53** | 2026-11-12 | Claude Code, Fable 5.2 | `update.sh` (§10.1 punt 3): na het uitchecken neemt het script uit de nieuwe code het over, zodat één keer `brms update` volstaat. Gebouwd in code v0.19.1. Herstartknoppen van v0.52 werken op de test-Pi. |
+| **0.55** | 2026-11-12 | Claude Code, Fable 5.2 | Simulatie (§10.3): naast de test (duur opgegeven, hooguit 60 minuten, testreeks) een **demo** (alleen Enter): waarden rond normaal met dag- en nachtritme, elke sensor onafhankelijk, tot `brms sim stop`. Readers melden op `brms/simulatie/<dienst>` wat ze simuleren (§3.2); tegeltje Actief / Simulatie / Demo in de bovenbalk (§5.6). Gebouwd in code v0.20.0. |
+| 0.54 | 2026-11-12 | Claude Code, Fable 5.2 | Teltonika RMS en het relais op de router-uitgang (Pi-herstart) vervallen (§7, §9): geen extra externe dienst. In de plaats: "Ping Reboot" van de router, naast de hardware-watchdog van de Pi. |
+| 0.53 | 2026-11-12 | Claude Code, Fable 5.2 | `update.sh` (§10.1 punt 3): na het uitchecken neemt het script uit de nieuwe code het over, zodat één keer `brms update` volstaat. Gebouwd in code v0.19.1. Herstartknoppen van v0.52 werken op de test-Pi. |
 | 0.52 | 2026-11-12 | Claude Code, Fable 5.2 | Gebouwd in code v0.19.0, samen met v0.51 (nog niet getest op de Pi). Web (§5.6): vier pagina's (Grafieken, Opnames, Alarmen, Systeem) met een gedeelde bovenbalk, een zijbalk als menu, statusstip, thema licht/donker/automatisch en lijn-iconen; geschikt voor de telefoon. Systeempagina: knoppen "Herstart BRMS" en "Herstart de Pi" met bevestiging, via een polkit-regel. Foutmeldingen van de kernel in het logboek en als melding (§5.5.5). |
 | 0.51 | 2026-11-12 | Claude Code, Fable 5.2 | Ontwerp (gebouwd met v0.52). Systeempagina in het web (§5.6): alarmregels met schakelaar, status van de services, logboek, schijfruimte (SMART getest en verworpen: de schijf geeft via USB geen bruikbare gegevens). Systeemmeldingen (§5.5.5): logboek uit journald; een fout (ERROR) geeft een melding, hooguit één per service per uur. Camera in een `stil`-regel, met elke geslaagde opname als levensteken (§5.5.3 punt 2); `bereikbaar` verworpen. |
 | 0.50 | 2026-11-11 | Claude Code, Fable 5.2 | Opnamepagina (§5.6 punt 2, code v0.18.1): een foto of video die tijdens het live kijken is gemaakt, staat in de lijst zodra hij is opgeslagen; het live-beeld loopt door. |

@@ -255,7 +255,7 @@ async def draai(config: Config, bus, stop: asyncio.Event) -> None:
     tracer.start()
 
     # Luistert naar simulatie-opdrachten (`brms sim`, §10.3); standaard loopt er geen.
-    simulator = Simulator(bus, sensoren, types=SHELLY_TYPES)
+    simulator = Simulator(bus, sensoren, types=SHELLY_TYPES, dienst="shelly-reader")
     simulator.start()
 
     pollers = {s.id: Poller(s, bus, tracer, simulator) for s in sensoren.values()}
@@ -282,6 +282,9 @@ async def draai(config: Config, bus, stop: asyncio.Event) -> None:
              ", ".join(f"{s.naam} ({s.id}) op {s.adres} elke {s.interval:g} s"
                        for s in sensoren.values()))
     taken = [asyncio.create_task(p.draai(stop)) for p in pollers.values()]
+    # Meldt op de bus welke Shelly's gesimuleerd worden (ook als dat er geen zijn); het web
+    # toont daarmee "Actief", "Simulatie" of "Demo" (§10.3 punt 10).
+    taken.append(asyncio.create_task(simulator.meld_steeds(stop)))
     await stop.wait()
     # De pollers wachten op hun volgende poll; wekken, zodat ze het stopsein zien.
     for p in pollers.values():

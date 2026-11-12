@@ -39,7 +39,8 @@ Adressen:
     /api/systeem             status van de services en de schijfruimte
     /api/logboek             ?fouten=1&service=<naam>&voor=<us>  regels uit journald (§5.5.5)
     /api/systeem/herstart    (POST) {"wat": "brms"|"pi"}: de services of de Pi herstarten
-    /api/status              kort: aantal actieve alarmen, services in orde, broker bereikbaar
+    /api/status              kort: aantal actieve alarmen, services in orde, broker bereikbaar,
+                             en of er gesimuleerd wordt (actief, simulatie of demo)
 
 Er is geen aanmelding: de pagina is alleen via Tailscale of het lokale netwerk bereikbaar
 (OPEN-15).
@@ -68,6 +69,11 @@ log = logging.getLogger(__name__)
 TOPIC_VERWIJDER = "brms/opdracht/opslag/verwijder"
 TOPIC_POLL_NU = "brms/opdracht/camera/poll-nu"
 TOPIC_SCHAKEL = "brms/opdracht/alarm/schakel"
+# Hierop melden de readers welke sensoren ze simuleren (§10.3 punt 10); zie
+# brms/simulatie.py. Elke reader meldt zich elke 30 s; een melding die ouder is dan
+# SIMULATIE_GELDIG seconden telt niet meer (de reader is dan gestopt of herstart).
+TOPIC_SIMULATIE = "brms/simulatie"
+SIMULATIE_GELDIG = 90.0
 # Zoveel opgetreden alarmen toont de alarmenpagina hooguit.
 MAX_HISTORIE = 200
 # Zo lang (seconden) geldt een opgevraagde status van de services voor /api/status: elke
@@ -133,6 +139,61 @@ class _Reeks:
         self.nr = array.array("q")      # volgnummer (oplopend)
         self.ts = array.array("q")      # ontvangsttijd, Unix-seconden
         self.waarde = array.array("d")
+
+
+class SimulatieStand:
+    """Onthoudt wat de readers melden over lopende simulaties (§10.3 punt 10), voor het
+    tegeltje bovenaan elke pagina: "Actief", "Simulatie" of "Demo".
+
+    De meldingen komen binnen in paho's netwerkthread en worden gelezen in de threads van
+    de webserver; daarom een lock. Alles staat alleen in het geheugen: na een herstart van
+    de webservice is de stand binnen 30 s weer bekend (zo vaak meldt elke reader zich).
+    """
+
+    def __init__(self, klok=time.monotonic):
+        self._klok = klok
+        self._lock = threading.Lock()
+        # Per reader: (tijdstip van ontvangst op de monotone klok, de gemelde sensoren).
+        self._gemeld: dict[str, tuple[float, list[dict]]] = {}
+
+    def bij_bericht(self, topic: str, payload: bytes) -> None:
+        """Callback voor de bus (brms/simulatie/#)."""
+        try:
+            d = json.loads(payload)
+            dienst, sensoren = d["dienst"], d["sensoren"]
+            if not isinstance(dienst, str) or not isinstance(sensoren, list):
+                raise ValueError("dienst of sensoren heeft de verkeerde vorm")
+            sensoren = [{"sensor_id": str(s["sensor_id"]), "soort": str(s["soort"]),
+                         "einde": s.get("einde")} for s in sensoren]
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
+            log.debug("ongeldig bericht op %s genegeerd: %s", topic, e)
+            return
+        with self._lock:
+            self._gemeld[dienst] = (self._klok(), sensoren)
+
+    def lees(self) -> list[dict]:
+        """De sensoren die nu gesimuleerd worden, van alle readers samen: per sensor
+        {"sensor_id", "soort" ("test" of "demo"), "einde"}. Meldingen die te oud zijn
+        tellen niet mee."""
+        grens = self._klok() - SIMULATIE_GELDIG
+        with self._lock:
+            return [s for ontvangen, sensoren in self._gemeld.values() if ontvangen >= grens
+                    for s in sensoren]
+
+
+def bedrijf(gesimuleerd: list[dict], cfg: Config) -> dict:
+    """Wat het tegeltje bovenaan toont (§5.6): {"stand", "sensoren"}.
+
+    stand:     "simulatie" als er een test loopt (dan kunnen er alarmen afgaan die niet
+               echt zijn; dat gaat voor), anders "demo" als er een demo loopt, anders
+               "actief": alle sensoren zijn echt.
+    sensoren:  de namen van de gesimuleerde sensoren, voor de uitleg bij het tegeltje.
+    """
+    soorten = {s["soort"] for s in gesimuleerd}
+    stand = "simulatie" if "test" in soorten else "demo" if "demo" in soorten else "actief"
+    namen = [cfg.sensoren[s["sensor_id"]].naam if s["sensor_id"] in cfg.sensoren
+             else s["sensor_id"] for s in gesimuleerd]
+    return {"stand": stand, "sensoren": namen}
 
 
 class LiveBuffer:
@@ -467,10 +528,11 @@ def _sensor(cfg: Config, sensor_id) -> "config.Sensor | None":
 
 
 def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
-             config_pad: str | None = None) -> Flask:
+             config_pad: str | None = None, simulatie: SimulatieStand | None = None) -> Flask:
     """Maakt de Flask-toepassing. `bus` is nodig voor opdrachten en om te melden of de
     broker bereikbaar is; in tests mag hij ontbreken. `klok` is te vervangen in tests.
-    `config_pad` is het pad van brms.toml: "Herstart BRMS" controleert dat bestand eerst."""
+    `config_pad` is het pad van brms.toml: "Herstart BRMS" controleert dat bestand eerst.
+    `simulatie` onthoudt wat de readers over simulaties melden; zonder: altijd "actief"."""
     app = Flask(__name__)
     # Flask sorteert JSON standaard op sleutel (alfabetisch); de volgorde van de tabel van
     # grootheden (§5.3.3) moet blijven. Twee instellingen: één voor de antwoorden
@@ -747,11 +809,13 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
     def api_status():
         """Kort, voor de statusstip en de teller in het menu op elke pagina (§5.6):
         hoeveel alarmen er actief zijn, of alle services draaien (None = onbekend, bijv.
-        op de ontwikkel-pc) en of de broker bereikbaar is."""
+        op de ontwikkel-pc) en of de broker bereikbaar is. En voor het tegeltje ernaast:
+        of de sensoren echt zijn ("actief") of gesimuleerd ("simulatie", "demo")."""
         lijst, uitleg = _services()
         return jsonify(alarmen=tel_actieve_alarmen(cfg.opslag.database),
                        services=None if uitleg else all(s["actief"] for s in lijst),
-                       broker=bus.verbonden if bus is not None else None)
+                       broker=bus.verbonden if bus is not None else None,
+                       bedrijf=bedrijf(simulatie.lees() if simulatie else [], cfg))
 
     @app.get("/api/systeem")
     def api_systeem():
@@ -819,12 +883,16 @@ def draai(cfg: Config, config_pad: str | None = None) -> None:
     bus = Bus("web", cfg.mqtt.host, cfg.mqtt.port)
     # QoS 0: voor een grafiek is een gemiste meting geen probleem.
     bus.abonneer(f"{TOPIC_PREFIX}/#", 0, live.bij_bericht)
+    # Wat de readers melden over simulaties, voor het tegeltje bovenaan (§10.3 punt 10).
+    simulatie = SimulatieStand()
+    bus.abonneer(f"{TOPIC_SIMULATIE}/#", 1, simulatie.bij_bericht)
     bus.start()
 
     # De ingebouwde server van Flask/Werkzeug, met een thread per aanvraag. Voldoende voor
     # één of enkele gebruikers achter Tailscale; er staat niets open op internet (§5.6).
     server = make_server(cfg.web.host, cfg.web.port,
-                         maak_app(cfg, live, bus, config_pad=config_pad), threaded=True)
+                         maak_app(cfg, live, bus, config_pad=config_pad,
+                                  simulatie=simulatie), threaded=True)
     log.info("webservice gestart op http://%s:%d", cfg.web.host, cfg.web.port)
     try:
         server.serve_forever()

@@ -19,7 +19,7 @@ Het systeem draait maanden **onbeheerd**: betrouwbaarheid en eenvoud gaan boven 
 | OS | Raspberry Pi OS Lite 64-bit, headless, SSH met sleutel | — |
 | Opslag | Raspberry Pi Flash Drive 256 GB (USB 3); tijdelijk SanDisk 32 GB USB-stick | Besteld |
 | Klok | Tijd via router (RUT241, operator time + NTP), zie ARCHITECTURE.md §4.2. DS3231 RTC-module optioneel (past niet zonder meer in behuizing) | DS3231 in bezit |
-| Router | Teltonika RUT241 eSIM (4G Cat 4, 9–30 VDC, RutOS, RMS, 1 DI/1 DO, wifi 2,4 GHz) | Besteld |
+| Router | Teltonika RUT241 eSIM (4G Cat 4, 9–30 VDC, RutOS, 1 DI/1 DO, wifi 2,4 GHz); "Ping Reboot" aan, RMS uit | In bezit |
 | Bluetooth | USB-BLE-dongle met antenne (ingebouwde BT Pi 4 heeft beperkt bereik) | Nog kopen |
 | Sensoren Xiaomi | 3× Xiaomi Monitor 3 (MJWSD05MMC), pvvx-firmware, advertising **BTHome v2**. Eerst test-sensoren, daarna vooronder + 2 achterkajuiten | Besteld |
 | Sensoren Ruuvi | 1× RuuviTag (4-in-1) hoofdkajuit; 2× RuuviTag Pro 3-in-1: motorruim en buiten (IP66: beschut ophangen) | Gepland |
@@ -29,7 +29,6 @@ Het systeem draait maanden **onbeheerd**: betrouwbaarheid en eenvoud gaan boven 
 | Bilge | Shelly Plus Uni (12V), lokale API: tweede (hoogwater)vlotter + spanning op bilgepomp (ARCHITECTURE.md §5.2.4) | Shelly besteld; hoogwatervlotter nog kopen |
 | Camera | IP-camera wifi 2,4 GHz, RTSP/ONVIF, 12V, altijd aan (zie ARCHITECTURE.md §5.7) | Later |
 | Voeding | 12V boordnet → zekering → BatteryProtect → DC-DC 12→5V 3A | Nog kopen |
-| Relais | Router-DO → relais voor Pi-herstart | Gepland |
 
 Energie: systeem ca. 11 W (~21 Ah/dag). Walstroom aanwezig maar kan wegvallen; accu overbrugt ca. 5 dagen.
 
@@ -37,7 +36,9 @@ Energie: systeem ca. 11 W (~21 Ah/dag). Walstroom aanwezig maar kan wegvallen; a
 - Pi via ethernet aan RUT241 (wifi van router als reserve).
 - Mobiel internet zit achter CGNAT → **Tailscale** op de Pi (key expiry uit), subnet-route
   voor router en camera. Niets open op internet.
-- Noodingang: Teltonika RMS (router beheren/herstarten) + Pi-herstart via router-DO.
+- Geen noodingang buiten Tailscale om: Teltonika RMS wordt niet gebruikt (geen extra externe
+  dienst) en het relais voor Pi-herstart via de router-uitgang is vervallen. Vangnet: de router
+  herstart zichzelf ("Ping Reboot"), de Pi via de hardware-watchdog (ARCHITECTURE.md §7).
 - Hostnaam Pi: `BRMS` (via Tailscale MagicDNS bereikbaar als `brms`).
 - Test-/ontwikkel-Pi 4 thuis: 192.168.178.114, user `jandirk`, SSH-alias `brms` (sleutel `~/.ssh/id_ed25519`).
 

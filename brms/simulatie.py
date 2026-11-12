@@ -4,11 +4,21 @@
     brms sim kajuit              (ook: meerdere sensoren, of 'all')
     brms sim stop kajuit         (ook: 'all')
 
+Er zijn twee soorten (§10.3 punt 2):
+- een TEST: de gebruiker geeft een duur op (hooguit 60 minuten). De testreeks loopt binnen
+  die duur twee keer heen en weer, dwars door de alarmgrenzen, en stopt vanzelf. Bedoeld
+  om alarmen te testen;
+- een DEMO: de gebruiker geeft geen duur op (alleen Enter). De waarden schommelen rond
+  een normale waarde, met een dag- en nachtritme, elke sensor onafhankelijk van de
+  andere, tot `brms sim stop`. Bedoeld om te laten zien hoe BRMS eruitziet met sensoren
+  die er (nog) niet zijn; er gaat in principe geen alarm af.
+
 Werking:
 1. De opdracht `brms sim` waarschuwt, vraagt om akkoord en om de duur, en stuurt dan per
    sensor alleen een startsein naar de readers (de reader van die sensor voert het uit):
 
        brms/opdracht/simulatie/aan   {"sensor_id": "A4:C1:38:...", "duur": 60}
+       brms/opdracht/simulatie/aan   {"sensor_id": "A4:C1:38:...", "demo": true}
 
 2. De BLE-reader maakt daarna zelf elke STAP seconden een advertentie aan in het echte
    formaat van die sensor (BTHome, Ruuvi of Victron) en verwerkt die via dezelfde ingang
@@ -27,8 +37,12 @@ Wat buiten de test blijft: de radio, BlueZ en bleak.
 Let op: de gesimuleerde waarden zijn voor de rest van het systeem gewone metingen. Ze
 komen onder het ID van de sensor in de database (§10.3 punt 7).
 
-Dit module bevat drie delen:
+5. Elke reader meldt op de bus welke sensoren hij simuleert (brms/simulatie/<dienst>);
+   het web toont daarmee bovenaan elke pagina "Actief", "Simulatie" of "Demo".
+
+Dit module bevat vier delen:
 - de testreeks en het omzetten daarvan naar bytes (zuivere functies);
+- de demo: waarden rond normaal, met dag- en nachtritme (klasse Demo);
 - de Simulator, die in de BLE-reader en in de Shelly-reader draait;
 - de opdracht `brms sim` voor de beheerder.
 """
@@ -52,9 +66,18 @@ log = logging.getLogger(__name__)
 
 TOPIC_AAN = "brms/opdracht/simulatie/aan"
 TOPIC_UIT = "brms/opdracht/simulatie/uit"
+# Hierop meldt elke reader welke sensoren hij simuleert: brms/simulatie/<dienst>, bijv.
+# brms/simulatie/ble-reader (§10.3 punt 10). Bij zijn start, bij elke verandering en
+# daarna elke MELD_INTERVAL seconden: er is geen retain op de bus (§3.2 punt 2), dus wie
+# later begint te luisteren (het web na een herstart) hoort het binnen die tijd.
+TOPIC_STAND = "brms/simulatie"
+MELD_INTERVAL = 30.0
+# De twee soorten simulatie, zoals ze in de melding staan.
+TEST = "test"
+DEMO = "demo"
 
 STANDAARD_DUUR = 600  # seconden; de standaard van 10 minuten (§10.3 punt 2)
-MAX_DUUR = 3600       # langer dan een uur simuleren is altijd een vergissing
+MAX_DUUR = 3600       # een test van langer dan een uur is altijd een vergissing
 STAP = 2.0            # seconden tussen twee gesimuleerde advertenties
 
 # Signaalsterkte van een gesimuleerde advertentie (er is geen adapter die hem meet), en de
@@ -164,7 +187,8 @@ def ruuvi_bytes(w: dict[str, float], n: int, mac: str) -> bytes:
     """Maakt een Ruuvi formaat 5-bericht (zie readers/ruuvi.py voor de opbouw).
 
     n is het volgnummer van de advertentie. De bewegingsteller loopt per advertentie één
-    op, zodat de reader per stap een `beweging` van 1 publiceert.
+    op, zodat de reader per stap een `beweging` van 1 publiceert. In een demo staat de
+    stand van de teller in w["bewegingsteller"]: daar beweegt de boot maar af en toe.
     """
     # Bovenste 11 bits: mV boven 1600; onderste 5 bits: zendvermogen (22 = +4 dBm).
     voeding = ((round(w["batterijspanning"] * 1000) - 1600) << 5) | 22
@@ -176,7 +200,7 @@ def ruuvi_bytes(w: dict[str, float], n: int, mac: str) -> bytes:
             + round(w["versnelling_y"]).to_bytes(2, "big", signed=True)
             + round(w["versnelling_z"]).to_bytes(2, "big", signed=True)
             + voeding.to_bytes(2, "big")
-            + bytes([n % 255])                     # bewegingsteller: 0 t/m 254
+            + bytes([int(w.get("bewegingsteller", n)) % 255])   # bewegingsteller: 0 t/m 254
             + (n % 65535).to_bytes(2, "big")       # volgnummer van de meting
             + bytes.fromhex(mac.replace(":", "")))
 
@@ -293,16 +317,20 @@ def victron_bytes(type_: str, w: dict[str, float], n: int, sleutel: str) -> byte
             + sleutel_b[:1] + versleuteld)
 
 
-def advertentie(sensor: Sensor, fractie: float, n: int,
+def advertentie(sensor: Sensor, fractie: float | dict, n: int,
                 toeval: random.Random | None = None) -> tuple[dict, dict]:
     """Eén gesimuleerde advertentie voor deze sensor, in de vorm waarin bleak hem aanlevert:
     (service data {UUID: bytes}, manufacturer data {fabrikant-ID: bytes}).
 
-    toeval: bron voor de ruis op de waarden (zie waarden); zonder: geen ruis."""
+    fractie: bij een test de plaats in de testreeks (0.0 = begin, 1.0 = einde); bij een
+             demo de waarden zelf, als dict (van Demo.waarden; de ruis zit er al in).
+    toeval:  bron voor de ruis op de waarden van de testreeks (zie waarden); zonder: geen
+             ruis."""
+    demo = isinstance(fractie, dict)
     if sensor.type in victron.LEVERT:
-        w = victron_waarden(sensor.type, fractie, toeval)
+        w = fractie if demo else victron_waarden(sensor.type, fractie, toeval)
         return {}, {victron.FABRIKANT_ID: victron_bytes(sensor.type, w, n, sensor.sleutel)}
-    w = waarden(fractie, toeval)
+    w = fractie if demo else waarden(fractie, toeval)
     if sensor.type == "bthome":
         return {bthome.FCD2_UUID: bthome_bytes(w, n)}, {}
     if sensor.type == "ruuvi":
@@ -326,15 +354,19 @@ def bilge_toestand(fractie: float) -> dict[str, bool]:
             "bilge": fractie >= 0.8}
 
 
-def shelly_status(sensor: Sensor, fractie: float, toeval: random.Random | None = None) -> dict:
+def shelly_status(sensor: Sensor, fractie: float | dict,
+                  toeval: random.Random | None = None) -> dict:
     """Eén gesimuleerd antwoord van Shelly.GetStatus voor deze Shelly, in de vorm waarin
     de echte Shelly antwoordt (zie readers/shelly_uni.py): voor elke component uit 'bron'
     een onderdeel, en de wifi.
 
-    toeval: bron voor de ruis op spanning en signaalsterkte; zonder: geen ruis."""
+    fractie: bij een test de plaats in de testreeks (0.0 = begin, 1.0 = einde); bij een
+             demo de toestand van pomp en vlotter zelf, als dict (van Demo.bilge).
+    toeval:  bron voor de ruis op spanning en signaalsterkte; zonder: geen ruis."""
     ruis = toeval.gauss if toeval is not None else (lambda gemiddelde, afwijking: 0.0)
     status: dict = {"wifi": {"rssi": WIFI_RSSI + round(ruis(0, RSSI_RUIS))}}
-    for grootheid, aan in bilge_toestand(fractie).items():
+    toestand = fractie if isinstance(fractie, dict) else bilge_toestand(fractie)
+    for grootheid, aan in toestand.items():
         component = sensor.bron.get(grootheid)
         if component is None:
             continue
@@ -354,15 +386,196 @@ def shelly_status(sensor: Sensor, fractie: float, toeval: random.Random | None =
 
 
 # =============================================================================
+# De demo: waarden rond normaal, met dag- en nachtritme (§10.3 punt 5a)
+# =============================================================================
+#
+# Een demo loopt door tot de gebruiker hem stopt. Er is dus geen begin en einde waartussen
+# een reeks kan lopen. In plaats daarvan is elke waarde de som van:
+#   - een normale waarde voor een boot in de winter (DEMO_NORMAAL);
+#   - een vaste afwijking per sensor (de ene hut is wat warmer dan de andere);
+#   - het dag- en nachtritme, volgens de echte klok (dagritme, daglicht);
+#   - een langzame willekeurige afwijking, per sensor en per grootheid apart (_Zwerver);
+#   - dezelfde ruis als in de testreeks (RUIS, VICTRON_RUIS).
+# Elke sensor heeft zijn eigen bron van toeval: twee sensoren tekenen nooit dezelfde lijn.
+# De waarden blijven binnen normale grenzen: een demo laat in principe geen alarm afgaan.
+
+# Per grootheid: (normale waarde, grootste vaste afwijking per sensor, uitslag van het
+# dagritme, spreiding van de langzame afwijking, traagheid daarvan in seconden).
+# Uitslag van het dagritme: zoveel boven normaal op het warmste moment (15 uur) en zoveel
+# eronder op het koudste (6 uur). Negatief = loopt tegen de temperatuur in (vocht).
+DEMO_NORMAAL: dict[str, tuple[float, float, float, float, float]] = {
+    "temperatuur": (8.0, 2.0, 2.5, 0.8, 2 * 3600),          # °C
+    "vocht": (70.0, 5.0, -6.0, 3.0, 2 * 3600),              # %
+    "batterijspanning": (2.95, 0.05, 0.02, 0.0, 3600),      # V; iets hoger als het warmer is
+    "luchtdruk": (1013.0, 0.0, 0.0, 8.0, 24 * 3600),        # hPa; het weer, over dagen
+    "versnelling_x": (0.0, 20.0, 0.0, 15.0, 600),           # mG; de boot beweegt wat
+    "versnelling_y": (0.0, 20.0, 0.0, 15.0, 600),           # mG
+    "versnelling_z": (1000.0, 0.0, 0.0, 5.0, 600),          # mG
+}
+# Vocht blijft in een demo tussen deze grenzen (%).
+DEMO_VOCHT = (30.0, 90.0)
+# De Ruuvi telt een beweging gemiddeld eens per zoveel seconden.
+DEMO_BEWEGING = 600.0
+
+# Accu (victron-bmv): een accu van DEMO_CAPACITEIT Ah met een klein vast verbruik, die
+# overdag door de zon wordt bijgeladen. Over een etmaal is dat ongeveer in evenwicht.
+DEMO_CAPACITEIT = 200.0     # Ah
+DEMO_VERBRUIK = -0.5        # A, dag en nacht
+DEMO_ZONSTROOM = 2.4        # A extra op het lichtste moment van de dag
+DEMO_SOC = (50.0, 100.0)    # % ; de laadtoestand blijft hiertussen
+DEMO_TIJD_MAX = 14400.0     # min; "resterende tijd" als de accu niet ontlaadt (10 dagen)
+# Zon (victron-mppt): het aandeel van de piek dat door de bewolking komt: (normaal,
+# spreiding, traagheid in seconden); het blijft tussen 5 % en 100 %.
+DEMO_BEWOLKING = (0.65, 0.25, 1800)
+# Bilge (Shelly): de pomp loopt af en toe kort. De eerste keer vrij snel na de start, zodat
+# er wat te zien is; daarna met een pauze van uren. De hoogwatervlotter blijft uit.
+DEMO_POMP_EERSTE = (120.0, 600.0)        # s na de start: tussen 2 en 10 minuten
+DEMO_POMP_PAUZE = (3600.0, 3 * 3600.0)   # s tussen twee beurten
+DEMO_POMP_BEURT = (10.0, 25.0)           # s dat de pomp loopt
+
+
+def dagritme(uur: float) -> float:
+    """Het dag- en nachtritme van de temperatuur: -1.0 op het koudste moment (6 uur),
+    +1.0 op het warmste (15 uur), vloeiend daartussen. uur: plaatselijke tijd, 0–24.
+
+    Opwarmen gaat sneller (6 → 15 uur, 9 uur) dan afkoelen (15 → 6 uur, 15 uur), zoals
+    buiten; daarom twee halve cosinussen van ongelijke lengte."""
+    uur %= 24
+    if 6 <= uur < 15:
+        return -math.cos(math.pi * (uur - 6) / 9)
+    return math.cos(math.pi * ((uur - 15) % 24) / 15)
+
+
+def daglicht(uur: float) -> float:
+    """Hoeveel zon er is: 0.0 in het donker, 1.0 midden op de dag. Een winterdag: licht
+    van 8.30 tot 16.30 uur, de piek om 12.30 uur. uur: plaatselijke tijd, 0–24."""
+    uur %= 24
+    return math.sin(math.pi * (uur - 8.5) / 8) if 8.5 < uur < 16.5 else 0.0
+
+
+class _Zwerver:
+    """Een waarde die langzaam en willekeurig rond nul zwerft en er vanzelf naar terugkeert
+    (een Ornstein-Uhlenbeck-proces).
+
+    spreiding:  de standaardafwijking op de lange duur;
+    traagheid:  na ongeveer zoveel seconden is de waarde "vergeten" waar hij was.
+    De stap is exact voor elke tijdsduur: het maakt niet uit of er elke 2 s (Bluetooth) of
+    elke minuut (Shelly) een waarde gevraagd wordt.
+    """
+
+    def __init__(self, spreiding: float, traagheid: float, toeval: random.Random):
+        self._spreiding, self._traagheid, self._toeval = spreiding, traagheid, toeval
+        # Ergens binnen de spreiding beginnen, niet precies op normaal.
+        self.x = toeval.gauss(0, spreiding)
+
+    def stap(self, dt: float) -> float:
+        """Zet de waarde dt seconden verder en geeft hem terug."""
+        rest = math.exp(-max(0.0, dt) / self._traagheid)
+        self.x = self.x * rest + self._toeval.gauss(0, self._spreiding * math.sqrt(1 - rest * rest))
+        return self.x
+
+
+class Demo:
+    """De demo van één sensor: onthoudt de langzame afwijkingen en tellers, en geeft op
+    verzoek de waarden van dit moment (§10.3 punt 5a).
+
+    Wordt alleen gebruikt binnen het lock van de Simulator.
+    """
+
+    def __init__(self, type_: str, nu: float, toeval: random.Random | None = None):
+        """type_: het sensortype; nu: monotone klok; toeval: eigen bron van toeval voor
+        deze sensor (te vervangen in tests)."""
+        self._type = type_
+        self._toeval = t = toeval or random.Random()
+        self._vorige = nu
+        # Per grootheid de vaste afwijking van deze sensor en de langzame afwijking.
+        self._vast = {g: t.uniform(-v[1], v[1]) for g, v in DEMO_NORMAAL.items()}
+        self._zwerf = {g: _Zwerver(v[3], v[4], t) for g, v in DEMO_NORMAAL.items()}
+        self._zwerf["stroom"] = _Zwerver(0.25, 1800, t)
+        self._zwerf["bewolking"] = _Zwerver(DEMO_BEWOLKING[1], DEMO_BEWOLKING[2], t)
+        self._soc = t.uniform(80.0, 95.0)      # laadtoestand van de accu, %
+        self._bewegingen = 0                   # stand van de bewegingsteller (Ruuvi)
+        # Bilgepomp: het tijdstip (monotone klok) van de volgende beurt, en tot wanneer
+        # een lopende beurt duurt (None = de pomp staat uit).
+        self._pomp_aan = nu + t.uniform(*DEMO_POMP_EERSTE)
+        self._pomp_tot: float | None = None
+
+    def waarden(self, nu: float, uur: float) -> dict[str, float]:
+        """De waarden van dit moment voor een Bluetooth-sensor, in de vorm die
+        bthome_bytes, ruuvi_bytes en victron_bytes verwachten.
+
+        nu: monotone klok (voor de verstreken tijd); uur: plaatselijke tijd, 0–24."""
+        dt, self._vorige = max(0.0, nu - self._vorige), nu
+        t = self._toeval
+        if self._type == "victron-bmv":
+            stroom = (DEMO_VERBRUIK + DEMO_ZONSTROOM * daglicht(uur)
+                      + self._zwerf["stroom"].stap(dt))
+            if self._soc >= DEMO_SOC[1] and stroom > 0:
+                stroom = 0.05      # de accu is vol: er loopt alleen nog een druppellading
+            # De accumonitor telt de stroom: Ah erbij of eraf, omgerekend naar procenten.
+            self._soc = min(DEMO_SOC[1], max(DEMO_SOC[0],
+                            self._soc + stroom * dt / 3600 / DEMO_CAPACITEIT * 100))
+            stroom += t.gauss(0, VICTRON_RUIS["stroom"])
+            return {
+                # Een vollere accu en een accu die geladen wordt, hebben een hogere spanning.
+                "spanning": 11.9 + 0.008 * self._soc + 0.04 * stroom
+                            + t.gauss(0, VICTRON_RUIS["spanning"]),
+                "stroom": stroom,
+                "soc": self._soc,
+                "verbruikt": (100 - self._soc) / 100 * DEMO_CAPACITEIT,
+                # Alleen bij ontladen is er een resterende tijd: de inhoud gedeeld door de stroom.
+                "resterende_tijd": (min(DEMO_TIJD_MAX, self._soc / 100 * DEMO_CAPACITEIT
+                                        / -stroom * 60)
+                                    if stroom < -0.05 else DEMO_TIJD_MAX),
+            }
+        if self._type == "victron-mppt":
+            licht = daglicht(uur)
+            door = min(1.0, max(0.05, DEMO_BEWOLKING[0] + self._zwerf["bewolking"].stap(dt)))
+            # In het donker precies 0 W: ruis zou daar een zonnetje in de nacht geven.
+            vermogen = (max(0.0, ZON_PIEK * licht * door + t.gauss(0, VICTRON_RUIS["zonnevermogen"]))
+                        if licht > 0 else 0.0)
+            return {"zonnevermogen": vermogen, "laadstroom_zon": vermogen / LAADSPANNING}
+        if self._type == "victron-multiplus":
+            return {"walstroom": 1.0}      # de walstroom blijft aan
+        # BTHome en Ruuvi.
+        dag = dagritme(uur)
+        w = {g: normaal + self._vast[g] + uitslag * dag + self._zwerf[g].stap(dt)
+                + t.gauss(0, RUIS[g])
+             for g, (normaal, _, uitslag, _, _) in DEMO_NORMAAL.items()}
+        w["vocht"] = min(DEMO_VOCHT[1], max(DEMO_VOCHT[0], w["vocht"]))
+        w["batterijspanning"] = min(3.6, max(1.6, w["batterijspanning"]))
+        # Af en toe een beweging: de kans in deze stap volgt uit de verstreken tijd.
+        if t.random() < dt / DEMO_BEWEGING:
+            self._bewegingen += 1
+        w["bewegingsteller"] = self._bewegingen
+        return w
+
+    def bilge(self, nu: float) -> dict[str, bool]:
+        """De toestand van bilgepomp en hoogwatervlotter op dit moment (nu: monotone klok),
+        in de vorm van bilge_toestand.
+
+        Een beurt is altijd bij minstens één poll te zien: de pomp gaat pas uit bij de
+        eerste poll ná het einde van de beurt."""
+        if self._pomp_tot is not None and nu >= self._pomp_tot:
+            self._pomp_tot = None
+            self._pomp_aan = nu + self._toeval.uniform(*DEMO_POMP_PAUZE)
+        elif self._pomp_tot is None and nu >= self._pomp_aan:
+            self._pomp_tot = nu + self._toeval.uniform(*DEMO_POMP_BEURT)
+        return {"bilgepomp": self._pomp_tot is not None, "bilge": False}
+
+
+# =============================================================================
 # De Simulator (draait in de BLE-reader en in de Shelly-reader)
 # =============================================================================
 
 @dataclass
 class _Loop:
     """Eén lopende simulatie."""
-    begin: float   # monotone klok
-    einde: float   # monotone klok
-    n: int = 0     # volgnummer van de volgende advertentie
+    begin: float          # monotone klok
+    einde: float | None   # monotone klok; None = een demo, loopt tot hij gestopt wordt
+    n: int = 0            # volgnummer van de volgende advertentie
+    demo: Demo | None = None      # de demo van deze sensor (alleen bij een demo)
+    einde_ts: int | None = None   # het einde als Unix-tijd, voor de melding op de bus
 
 
 class Simulator:
@@ -373,14 +586,20 @@ class Simulator:
     """
 
     def __init__(self, bus, sensoren: dict[str, Sensor], klok=time.monotonic,
-                 types: tuple[str, ...] = BLE_TYPES):
+                 types: tuple[str, ...] = BLE_TYPES, dienst: str = "ble-reader",
+                 tijd=time.time):
         """sensoren: de sensoren van de reader, {sensor-ID: Sensor}.
         klok: monotone klok (§4.2); te vervangen in tests.
-        types: de sensortypen die deze reader kan simuleren."""
+        types: de sensortypen die deze reader kan simuleren.
+        dienst: de naam van de reader, voor de melding op de bus (TOPIC_STAND).
+        tijd: de gewone klok (Unix-seconden): voor het dag- en nachtritme van een demo en
+              voor de tijdstippen in de melding; te vervangen in tests."""
         self._bus = bus
         self._sensoren = sensoren
         self._types = types
         self._klok = klok
+        self._dienst = dienst
+        self._tijd = tijd
         self._lock = threading.Lock()
         self._lopend: dict[str, _Loop] = {}
         # Bron voor de ruis op de testreeks; elke start van de reader geeft andere ruis.
@@ -412,17 +631,55 @@ class Simulator:
             return
         sensor_id = sensor.id
         with self._lock:
-            if topic == TOPIC_AAN:
+            nu = self._klok()
+            if topic == TOPIC_AAN and d.get("demo") is True:
+                # Een demo: geen einde; loopt tot `brms sim stop` of tot de reader herstart.
+                self._lopend[sensor_id] = _Loop(nu, None, demo=Demo(sensor.type, nu))
+                log.info("demo aan voor %s (%s); de echte sensor wordt genegeerd tot "
+                         "'brms sim stop'", sensor.naam, sensor_id)
+            elif topic == TOPIC_AAN:
                 duur = d.get("duur", STANDAARD_DUUR)
                 if isinstance(duur, bool) or not isinstance(duur, (int, float)) or duur <= 0:
                     duur = STANDAARD_DUUR
                 duur = min(duur, MAX_DUUR)
-                nu = self._klok()
-                self._lopend[sensor_id] = _Loop(nu, nu + duur)
+                self._lopend[sensor_id] = _Loop(nu, nu + duur,
+                                                einde_ts=int(self._tijd() + duur))
                 log.info("simulatie aan voor %s (%s), %d s; de echte sensor wordt genegeerd",
                          sensor.naam, sensor_id, duur)
             elif self._lopend.pop(sensor_id, None) is not None:
                 log.info("simulatie uit voor %s (%s)", sensor.naam, sensor_id)
+        # Het web meteen laten weten wat er nu gesimuleerd wordt (buiten het lock).
+        self.meld()
+
+    # --- melden wat er gesimuleerd wordt (§10.3 punt 10) --------------------------------
+    def stand(self) -> list[dict]:
+        """De lopende simulaties: per sensor {"sensor_id", "soort" (TEST of DEMO), "einde"
+        (Unix-seconden; None bij een demo)}."""
+        with self._lock:
+            return [{"sensor_id": sensor_id, "soort": DEMO if loop.einde is None else TEST,
+                     "einde": loop.einde_ts}
+                    for sensor_id, loop in self._lopend.items()]
+
+    def meld(self) -> None:
+        """Zet op de bus welke sensoren deze reader nu simuleert (ook als dat er geen zijn:
+        zo ziet het web dat een simulatie gestopt is)."""
+        self._bus.publiceer(f"{TOPIC_STAND}/{self._dienst}", json.dumps(
+            {"ts": int(self._tijd()), "dienst": self._dienst, "sensoren": self.stand()}), qos=1)
+
+    async def meld_steeds(self, stop: asyncio.Event) -> None:
+        """Meldt de stand bij de start van de reader en daarna elke MELD_INTERVAL seconden,
+        tot `stop` gezet wordt. De reader start dit als taak."""
+        while not stop.is_set():
+            self.meld()
+            try:
+                await asyncio.wait_for(stop.wait(), MELD_INTERVAL)
+            except asyncio.TimeoutError:
+                pass
+
+    def _uur(self) -> float:
+        """De plaatselijke tijd als uur van de dag (0–24), voor het ritme van een demo."""
+        t = time.localtime(self._tijd())
+        return t.tm_hour + t.tm_min / 60 + t.tm_sec / 3600
 
     # --- simuleren (draait in de asyncio-loop) ---------------------------------------
     def actief(self, sensor_id: str) -> bool:
@@ -432,6 +689,8 @@ class Simulator:
             loop = self._lopend.get(sensor_id)
             if loop is None:
                 return False
+            if loop.einde is None:
+                return True      # een demo heeft geen einde
             # Vangnet: normaal ruimt stappen() een afgelopen simulatie op. Mocht dat niet
             # gebeuren, dan mag de echte sensor toch nooit genegeerd blijven.
             if self._klok() > loop.einde + 3 * STAP:
@@ -440,52 +699,68 @@ class Simulator:
                 return False
             return True
 
-    def stappen(self) -> list[tuple[Sensor, float, int]]:
+    def stappen(self) -> list[tuple[Sensor, float | dict, int]]:
         """De advertenties die nu aangemaakt moeten worden: (sensor, fractie, volgnummer).
 
-        De fractie loopt binnen de duur heen en weer (zie verloop). Is de duur van een
-        simulatie om, dan volgt nog één laatste advertentie, weer met de beginwaarden
-        (fractie 0.0), en stopt de simulatie.
+        Bij een test loopt de fractie binnen de duur heen en weer (zie verloop). Is de
+        duur om, dan volgt nog één laatste advertentie, weer met de beginwaarden (fractie
+        0.0), en stopt de simulatie. Bij een demo staan op de plaats van de fractie de
+        waarden zelf (een dict, van Demo.waarden); zie advertentie().
         """
         uit = []
+        afgelopen = False
         with self._lock:
             nu = self._klok()
             for sensor_id, loop in list(self._lopend.items()):
                 sensor = self._sensoren[sensor_id]
-                if nu >= loop.einde:
+                if loop.demo is not None:
+                    fractie = loop.demo.waarden(nu, self._uur())
+                elif nu >= loop.einde:
                     fractie = verloop(1.0)
                     del self._lopend[sensor_id]
+                    afgelopen = True
                     log.info("simulatie afgelopen voor %s (%s); echte sensor telt weer mee",
                              sensor.naam, sensor_id)
                 else:
                     fractie = verloop((nu - loop.begin) / (loop.einde - loop.begin))
                 uit.append((sensor, fractie, loop.n))
                 loop.n += 1
+        if afgelopen:
+            self.meld()
         return uit
 
-    def stap(self, sensor_id: str) -> tuple[float, int] | None:
+    def stap(self, sensor_id: str) -> tuple[float | dict, int] | None:
         """Voor een pollende reader (Shelly): (fractie, volgnummer) als voor deze sensor een
         simulatie loopt, anders None. De reader vraagt dit bij elke poll en maakt dan zelf
         het antwoord aan in plaats van de echte sensor te pollen.
 
-        De fractie loopt binnen de duur heen en weer (zie verloop). Is de duur om, dan
-        volgt nog één laatste stap, weer met fractie 0.0, en stopt de simulatie.
+        Bij een test loopt de fractie binnen de duur heen en weer (zie verloop). Is de
+        duur om, dan volgt nog één laatste stap, weer met fractie 0.0, en stopt de
+        simulatie. Bij een demo staat op de plaats van de fractie de toestand van pomp en
+        vlotter zelf (een dict, van Demo.bilge); zie shelly_status().
         """
+        afgelopen = False
         with self._lock:
             loop = self._lopend.get(sensor_id)
             if loop is None:
                 return None
             nu = self._klok()
-            if nu >= loop.einde:
+            if loop.demo is not None:
+                fractie = loop.demo.bilge(nu)
+            elif nu >= loop.einde:
                 fractie = verloop(1.0)
                 del self._lopend[sensor_id]
+                afgelopen = True
                 sensor = self._sensoren[sensor_id]
                 log.info("simulatie afgelopen voor %s (%s); echte sensor telt weer mee",
                          sensor.naam, sensor_id)
             else:
                 fractie = verloop((nu - loop.begin) / (loop.einde - loop.begin))
             loop.n += 1
-            return fractie, loop.n - 1
+            uit = fractie, loop.n - 1
+        if afgelopen:
+            self.meld()
+        return uit
 
     async def draai(self, stop: asyncio.Event, ontvang) -> None:
         """Maakt elke STAP seconden de gesimuleerde advertenties aan en geeft ze aan
@@ -516,7 +791,8 @@ class Simulator:
 #
 # De opdracht geeft alleen het startsein en is daarna klaar: de shell is meteen weer vrij,
 # bijvoorbeeld voor een tweede `brms sim` voor een andere sensor. De simulatie loopt in de
-# reader van de sensor (BLE-reader of Shelly-reader) en stopt vanzelf na de opgegeven duur.
+# reader van de sensor (BLE-reader of Shelly-reader). Een test stopt vanzelf na de
+# opgegeven duur; een demo (geen duur opgegeven) loopt tot `brms sim stop`.
 
 def kies_sensoren(cfg: Config, namen: list[str]) -> list[Sensor]:
     """De sensoren die bij de opgegeven namen horen; ValueError met uitleg als het niet kan.
@@ -547,17 +823,22 @@ def kies_sensoren(cfg: Config, namen: list[str]) -> list[Sensor]:
     return gekozen
 
 
-def vraag_duur(vraag=input) -> int:
-    """Vraagt hoe lang de simulatie moet lopen; geeft de duur in seconden.
+def vraag_duur(vraag=input) -> int | None:
+    """Vraagt hoe lang de simulatie moet lopen; geeft de duur in seconden, of None voor
+    een demo.
 
-    Alleen Enter = de standaard van 10 minuten. Bij ongeldige invoer wordt opnieuw gevraagd.
+    Een getal = een test van zoveel minuten (§10.3 punt 2). Alleen Enter = een demo, die
+    doorloopt tot `brms sim stop`. Bij ongeldige invoer wordt opnieuw gevraagd.
     """
     maximum = MAX_DUUR // 60
+    print(f"Hoe lang moet de simulatie lopen?\n"
+          f"  een getal    = test: de testreeks loopt in zoveel minuten twee keer heen en "
+          f"weer (hooguit {maximum})\n"
+          f"  alleen Enter = demo: waarden rond normaal, loopt door tot 'brms sim stop'")
     while True:
-        antwoord = vraag(f"Hoe lang moet de simulatie lopen, in minuten? "
-                         f"[{STANDAARD_DUUR // 60}] ").strip()
+        antwoord = vraag("Minuten, of Enter voor een demo: ").strip()
         if not antwoord:
-            return STANDAARD_DUUR
+            return None
         try:
             minuten = float(antwoord.replace(",", "."))  # ook 0,5 met een komma
         except ValueError:
@@ -632,12 +913,21 @@ def opdracht(cfg: Config, argumenten: list[str], vraag=input) -> int:
         print("\nAfgebroken; er is niets gesimuleerd.")
         return 1
 
-    if not _stuur(cfg, TOPIC_AAN, sensoren, duur=duur):
-        return 1
-    einde = time.strftime("%H:%M:%S", time.localtime(time.time() + duur))
-    print(f"Simulatie gestart ({duur // 60}:{duur % 60:02d} min); loopt vanzelf af om {einde}.")
-    print(f"  meekijken:      brms monitor {sensoren[0].naam}")
-    print(f"  eerder stoppen: brms sim stop {'all' if len(sensoren) > 1 else sensoren[0].naam}")
+    stop = f"brms sim stop {'all' if len(sensoren) > 1 else sensoren[0].naam}"
+    if duur is None:
+        # Een demo: geen duur, wel het kenmerk "demo" (zie Simulator.bij_opdracht).
+        if not _stuur(cfg, TOPIC_AAN, sensoren, demo=True):
+            return 1
+        print("Demo gestart; loopt door tot je hem stopt (of tot BRMS herstart).")
+        print(f"  meekijken: brms monitor {sensoren[0].naam}")
+        print(f"  stoppen:   {stop}")
+    else:
+        if not _stuur(cfg, TOPIC_AAN, sensoren, duur=duur):
+            return 1
+        einde = time.strftime("%H:%M:%S", time.localtime(time.time() + duur))
+        print(f"Simulatie gestart ({duur // 60}:{duur % 60:02d} min); loopt vanzelf af om {einde}.")
+        print(f"  meekijken:      brms monitor {sensoren[0].naam}")
+        print(f"  eerder stoppen: {stop}")
     # De opdracht is verstuurd; draait de reader van een sensor niet, dan voert niemand
     # hem uit.
     gelukt = 0

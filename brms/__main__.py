@@ -17,7 +17,8 @@ Opdrachten:
   monitor [sensor..]  monitor in tmux: busverkeer, of met sensor(en) de trace (§10.2)
   monitor stop        het monitorvak sluiten; de shell blijft
   grootheden [type]   alle grootheden, of wat een sensortype levert (§5.4.2)
-  sim <sensor ..>     een testreeks van gesimuleerde sensordata door de keten sturen (§10.3);
+  sim <sensor ..>     gesimuleerde sensordata door de keten sturen (§10.3): een test (met
+                      een duur) of een demo (zonder duur, loopt tot 'sim stop');
                       'all' = alle sensoren; 'sim stop <sensor ..>' stopt (ook: simuleer)
   start | stop | herstart   alle BRMS-services via systemd (§10.1 punt 9)
   update [--terug]    code bijwerken vanaf GitHub, of terug naar de vorige versie (§10.1)
@@ -229,9 +230,10 @@ OPDRACHTEN = """opdrachten voor de beheerder:
   grootheden [type]      alle grootheden, of wat een sensortype levert
   monitor [sensor ...]   monitor onderin het scherm; met sensor: trace van de keten
   monitor stop           het monitorvak sluiten
-  sim <sensor ...>       testreeks van gesimuleerde data door de keten sturen (meerdere
-                         sensoren of 'all'); vraagt om akkoord en om de duur
-  sim stop <sensor ...>  de simulatie stoppen (ook: sim stop all)
+  sim <sensor ...>       gesimuleerde data door de keten sturen (meerdere sensoren of
+                         'all'); vraagt om akkoord en om de duur. Een duur = een test met
+                         de testreeks; alleen Enter = een demo, die doorloopt tot 'sim stop'
+  sim stop <sensor ...>  de simulatie of demo stoppen (ook: sim stop all)
   start                  alle BRMS-services starten (na controle van de configuratie)
   stop                   alle BRMS-services stoppen (tot de volgende herstart van de Pi)
   herstart               configuratie controleren en alle services herstarten,

@@ -90,7 +90,8 @@ class TestMenu(Basis):
         with mock.patch.object(systeem, "services", return_value=([], "systemctl is er niet")):
             # Zonder database en zonder systemd: onbekend, geen fout.
             self.assertEqual(self.client.get("/api/status").get_json(),
-                             {"alarmen": None, "services": None, "broker": True})
+                             {"alarmen": None, "services": None, "broker": True,
+                              "bedrijf": {"stand": "actief", "sensoren": []}})
         db = Database(self.pad)
         db.alarm_begin(100, "vorst", MAC, "temperatuur", 1.5)
         db.alarm_begin(200, "vorst", MAC2, "temperatuur", 1.0)
@@ -100,14 +101,49 @@ class TestMenu(Basis):
         client = web.maak_app(self.cfg, web.LiveBuffer(), self.bus).test_client()
         with mock.patch.object(systeem, "services", return_value=(draait, None)):
             self.assertEqual(client.get("/api/status").get_json(),
-                             {"alarmen": 1, "services": True, "broker": True})
+                             {"alarmen": 1, "services": True, "broker": True,
+                              "bedrijf": {"stand": "actief", "sensoren": []}})
         # Een service die niet draait.
         client = web.maak_app(self.cfg, web.LiveBuffer(), self.bus).test_client()
         self.bus.verbonden = False
         with mock.patch.object(systeem, "services",
                                return_value=(draait + [{"naam": "brms-camera", "actief": False}], None)):
             self.assertEqual(client.get("/api/status").get_json(),
-                             {"alarmen": 1, "services": False, "broker": False})
+                             {"alarmen": 1, "services": False, "broker": False,
+                              "bedrijf": {"stand": "actief", "sensoren": []}})
+
+    def test_tegeltje_actief_simulatie_of_demo(self):
+        # Wat de readers op de bus melden (§10.3 punt 10) bepaalt het tegeltje bovenaan.
+        tijd = [1000.0]
+        stand = web.SimulatieStand(klok=lambda: tijd[0])
+        client = web.maak_app(self.cfg, web.LiveBuffer(), self.bus, simulatie=stand).test_client()
+
+        def meld(dienst, *sensoren):
+            stand.bij_bericht(f"brms/simulatie/{dienst}", json.dumps(
+                {"ts": 1, "dienst": dienst,
+                 "sensoren": [{"sensor_id": i, "soort": s, "einde": None} for i, s in sensoren]}).encode())
+
+        def bedrijf():
+            with mock.patch.object(systeem, "services", return_value=([], None)):
+                return client.get("/api/status").get_json()["bedrijf"]
+
+        naam = self.cfg.sensoren[MAC].naam
+        self.assertEqual(bedrijf(), {"stand": "actief", "sensoren": []})
+        meld("ble-reader", (MAC, "demo"))
+        self.assertEqual(bedrijf(), {"stand": "demo", "sensoren": [naam]})
+        # Een test gaat voor een demo; een onbekende sensor staat er met zijn ID.
+        meld("shelly-reader", ("bilge-x", "test"))
+        self.assertEqual(bedrijf(), {"stand": "simulatie", "sensoren": [naam, "bilge-x"]})
+        # Een nieuwe melding van een reader vervangt zijn vorige.
+        meld("shelly-reader")
+        self.assertEqual(bedrijf()["stand"], "demo")
+        # Meldt een reader zich niet meer (gestopt), dan vervalt wat hij meldde.
+        tijd[0] += web.SIMULATIE_GELDIG + 1
+        self.assertEqual(bedrijf(), {"stand": "actief", "sensoren": []})
+        # Onzin op de bus wordt genegeerd.
+        for onzin in (b"geen json", b"[]", b'{"dienst": "x"}', b'{"dienst": "x", "sensoren": [1]}'):
+            stand.bij_bericht("brms/simulatie/x", onzin)
+        self.assertEqual(bedrijf()["stand"], "actief")
 
     def test_status_van_de_services_wordt_kort_bewaard(self):
         # Elke open pagina vraagt de status elke 30 s; niet elke vraag start systemctl.

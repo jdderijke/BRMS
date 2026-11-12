@@ -46,6 +46,9 @@ try {
 <header class="balk">
   <button id="menuknop" aria-label="Menu" aria-controls="zijbalk" aria-expanded="false">{{ icoon("menu") }}</button>
   <span class="titel">{{ titel }}</span>
+  <!-- Het tegeltje: zijn de sensoren echt ("Actief") of gesimuleerd ("Simulatie" = een
+       test met de testreeks, "Demo" = waarden rond normaal)? Zie ARCHITECTURE.md §10.3. -->
+  <span id="bedrijf" class="tegel" hidden></span>
   <!-- De statusstip: op elke pagina te zien of er iets mis is; een klik gaat erheen. -->
   <a id="stip" href="/systeem" title="Status wordt opgehaald"><span id="stiptekst"></span><i></i></a>
 </header>
@@ -121,11 +124,24 @@ const BRMS = {
   async status() {
     const stip = document.getElementById("stip"), tekst = document.getElementById("stiptekst");
     const teller = document.getElementById("teller-alarmen");
+    const tegel = document.getElementById("bedrijf");
     let soort = "", uitleg = "Alles in orde", kort = "";
     try {
       const a = await fetch("/api/status");
       if (!a.ok) throw new Error("fout " + a.status);
       const s = await a.json();
+      // Het tegeltje: echt of gesimuleerd. De namen van de gesimuleerde sensoren staan in
+      // de uitleg (aanwijzen met de muis, of lang drukken op een telefoon).
+      const b = s.bedrijf || {stand: "actief", sensoren: []};
+      const TEGEL = {
+        actief: ["Actief", "Normaal bedrijf: alle sensoren zijn echt"],
+        simulatie: ["Simulatie", "Test met de testreeks; alarmen kunnen afgaan. Gesimuleerd: "],
+        demo: ["Demo", "Demo met waarden rond normaal. Gesimuleerd: "]};
+      const [woord, zin] = TEGEL[b.stand] || TEGEL.actief;
+      tegel.textContent = woord;
+      tegel.className = "tegel " + (TEGEL[b.stand] ? b.stand : "actief");
+      tegel.title = b.stand === "actief" || !TEGEL[b.stand] ? zin : zin + b.sensoren.join(", ");
+      tegel.hidden = false;
       const n = s.alarmen || 0;
       teller.textContent = n;
       teller.hidden = n === 0;
@@ -145,6 +161,7 @@ const BRMS = {
         stip.href = "/systeem";
       }
     } catch (e) {
+      tegel.hidden = true;       // zonder verbinding is niet bekend wat er loopt
       soort = "fout"; kort = "geen verbinding";
       uitleg = "Geen verbinding met de BRMS-webservice";
     }

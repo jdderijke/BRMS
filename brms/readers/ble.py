@@ -215,7 +215,7 @@ async def draai(config: Config, bus, stop: asyncio.Event) -> None:
     tracer.start()
 
     # Luistert naar simulatie-opdrachten (`brms simuleer`, §10.3); standaard loopt er geen.
-    simulator = Simulator(bus, sensoren)
+    simulator = Simulator(bus, sensoren, dienst="ble-reader")
     simulator.start()
 
     # De ene ingang voor alle advertenties: van bleak én van de simulator.
@@ -233,8 +233,11 @@ async def draai(config: Config, bus, stop: asyncio.Event) -> None:
         # De simulator draait als taak in dezelfde asyncio-loop; hij doet niets zolang er
         # geen simulatie loopt.
         taak = asyncio.create_task(simulator.draai(stop, ontvang))
+        # Meldt op de bus welke sensoren gesimuleerd worden (ook als dat er geen zijn); het
+        # web toont daarmee "Actief", "Simulatie" of "Demo" (§10.3 punt 10).
+        melder = asyncio.create_task(simulator.meld_steeds(stop))
         await stop.wait()
-        await taak
+        await asyncio.gather(taak, melder)
     log.info("BLE-reader gestopt")
 
 

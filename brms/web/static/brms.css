@@ -74,6 +74,14 @@ svg.icoon { width: 22px; height: 22px; flex: none; fill: none; stroke: currentCo
 #menuknop { display: grid; place-items: center; width: 42px; height: 42px; padding: 0;
             border: none; background: none; border-radius: 8px; color: var(--tekst); }
 #menuknop:hover { background: var(--raster); }
+/* Het tegeltje naast de stip: zijn de sensoren echt (Actief, groen) of gesimuleerd
+   (Simulatie = een test, oranje; Demo, blauw)? Zie ARCHITECTURE.md §10.3 punt 10. */
+.tegel { flex: none; padding: 3px 10px; border-radius: 6px; font-size: 12px; font-weight: 700;
+         letter-spacing: .03em; text-transform: uppercase; white-space: nowrap; cursor: default;
+         border: 1px solid currentColor; }
+.tegel.actief { color: var(--goed); }
+.tegel.simulatie { color: var(--op-accent); background: var(--let-op); border-color: var(--let-op); }
+.tegel.demo { color: var(--op-accent); background: var(--accent); border-color: var(--accent); }
 /* De statusstip: groen = in orde, oranje = er is een alarm actief, rood = een service
    draait niet of de broker is onbereikbaar, grijs = onbekend. De tekst ernaast staat er
    alleen als er iets te melden is. */
