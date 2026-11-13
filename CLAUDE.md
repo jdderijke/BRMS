@@ -58,7 +58,11 @@ Deze regels gelden in elke sessie, op elke machine.
 - **Nooit committen of pushen zonder toestemming.** Na een wijziging: melden wat er veranderd is,
   vragen "Zal ik committen en pushen?" en wachten op een uitdrukkelijk ja. Toestemming geldt alleen
   voor die ene wijziging, en apart voor commit en voor push; eerdere commits zijn geen doorlopende
-  toestemming.
+  toestemming. Commit en push nooit in één shell-commando aan elkaar rijgen.
+- **Stil werken, één keer rapporteren.** Geen stroom van bestandswijzigingen of tussentijds
+  commentaar: wijzigingen met `Edit`/`Write`, één keer per bestand, geen bestandsinhoud in een
+  Bash-commando plakken, niet teruglezen wat net geschreven is. Aan het eind één samenvatting van
+  wat er veranderd is en wat de gebruiker moet controleren.
 - **Eerst ontwerpen, dan bouwen.** Geen code in `brms/` voordat ARCHITECTURE.md het beschrijft én de
   gebruiker opdracht geeft om te bouwen. Onbesliste punten komen als [OPEN-n] in ARCHITECTURE.md §11;
   Claude beslist die nooit zelf en verzint niets buiten het ontwerp.
