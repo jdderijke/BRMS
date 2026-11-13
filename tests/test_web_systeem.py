@@ -157,14 +157,14 @@ class TestMenu(Basis):
 
 
 class TestAlarmen(Basis):
-    def _overzicht(self):
-        r = self.client.get("/api/alarmen/overzicht")
+    def _overzicht(self, vraag=""):
+        r = self.client.get("/api/alarmen/overzicht" + vraag)
         self.assertEqual(r.status_code, 200)
         return r.get_json()
 
     def test_regels_in_woorden(self):
         d = self._overzicht()         # er is nog geen database
-        self.assertEqual(d["alarmen"], [])
+        self.assertEqual((d["actief"], d["alarmen"], d["eerder"], d["vol"]), ([], [], False, False))
         self.assertEqual([r["id"] for r in d["regels"]], ["vorst", "beweging", "camera-stil"])
         vorst, beweging, camera = d["regels"]
         self.assertEqual(vorst, {
@@ -177,7 +177,66 @@ class TestAlarmen(Basis):
         self.assertEqual((camera["voorwaarde"], camera["sensoren"], camera["melding"]),
                          ("geen opnames gedurende 15 min", ["Dek"], "één melding"))
 
-    def test_actief_eerst_dan_de_historie(self):
+    def _vul(self, aantal):
+        """Zet `aantal` afgelopen alarmen in de database: begin 1000, 2000, ..., elk 100 s lang."""
+        db = Database(self.pad)
+        for i in range(1, aantal + 1):
+            db.alarm_begin(i * 1000, "vorst", MAC, "temperatuur", 1.0)
+            db.alarm_einde(i * 1000 + 100, "vorst", MAC, "herstel")
+        db.sluit()
+
+    def test_laatste_tien_en_bladeren(self):
+        # Zonder keuze: de laatste 10, de nieuwste eerst; er zijn er nog meer (eerder).
+        self._vul(25)
+        d = self._overzicht()
+        self.assertEqual([a["begin"] for a in d["alarmen"]], list(range(25000, 15000, -1000)))
+        self.assertEqual((d["eerder"], d["vol"]), (True, False))
+        # Eén blad eerder: de 10 daarvoor.
+        d = self._overzicht("?aantal=10&overslaan=10")
+        self.assertEqual([a["begin"] for a in d["alarmen"]], list(range(15000, 5000, -1000)))
+        self.assertTrue(d["eerder"])
+        # Het laatste blad: de rest, en verder terug is er niets meer.
+        d = self._overzicht("?aantal=10&overslaan=20")
+        self.assertEqual([a["begin"] for a in d["alarmen"]], list(range(5000, 0, -1000)))
+        self.assertFalse(d["eerder"])
+        # Precies 10 alarmen: er is geen eerder blad.
+        self.assertFalse(self._overzicht("?aantal=10&overslaan=15")["eerder"])
+        # Onzin in de aanvraag valt terug op de standaard.
+        d = self._overzicht("?aantal=x&overslaan=-5&van=abc")
+        self.assertEqual(len(d["alarmen"]), 10)
+
+    def test_periode(self):
+        self._vul(25)
+        # De alarmen die in de periode begonnen (van <= begin < tot), de nieuwste eerst.
+        d = self._overzicht("?van=5000&tot=8000")
+        self.assertEqual([a["begin"] for a in d["alarmen"]], [7000, 6000, 5000])
+        # Er begon al eerder een alarm: de knop "eerder" heeft zin.
+        self.assertEqual((d["eerder"], d["vol"]), (True, False))
+        # De oudste periode: verder terug is er niets.
+        d = self._overzicht("?van=0&tot=3000")
+        self.assertEqual(([a["begin"] for a in d["alarmen"]], d["eerder"]), ([2000, 1000], False))
+        # Een lege periode met oudere alarmen ervoor.
+        d = self._overzicht("?van=90000&tot=99000")
+        self.assertEqual((d["alarmen"], d["eerder"]), ([], True))
+        # Een periode met meer dan het maximum: alleen de nieuwste, en `vol` zegt het.
+        with mock.patch("brms.web.MAX_HISTORIE", 4):
+            d = self._overzicht("?van=0&tot=99000")
+        self.assertEqual(([a["begin"] for a in d["alarmen"]], d["vol"]),
+                         ([25000, 24000, 23000, 22000], True))
+        # Een omgekeerde periode is geen periode: dan de laatste 10.
+        self.assertEqual(len(self._overzicht("?van=8000&tot=5000")["alarmen"]), 10)
+
+    def test_pagina_heeft_de_keuze_en_de_bladerknoppen(self):
+        # De alarmenpagina en de grafiekenpagina gebruiken dezelfde knoppen (_bladeren.html).
+        alarmen = self.client.get("/alarmen").get_data(as_text=True)
+        for verwacht in ['<option value="laatste">laatste 10</option>', '<option value="jaar">dit jaar</option>',
+                         'class="pijl eerder"', 'class="pijl later"', 'class="pijl nu"']:
+            self.assertIn(verwacht, alarmen)
+        grafieken = self.client.get("/").get_data(as_text=True)
+        for verwacht in ['class="pijl eerder"', 'class="pijl later"', 'class="pijl nu"']:
+            self.assertIn(verwacht, grafieken)
+
+    def test_actief_apart_en_de_historie(self):
         db = Database(self.pad)
         db.alarm_begin(100, "vorst", MAC, "temperatuur", 1.5)
         db.alarm_einde(400, "vorst", MAC, "herstel")
@@ -189,11 +248,15 @@ class TestAlarmen(Basis):
         db.sluit()
         d = self._overzicht()
         self.assertEqual(d["nu"], 5000)
-        # Eerst wat nog actief is (nieuwste eerst), dan wat voorbij is (nieuwste eerst).
+        # Wat nog actief is staat apart (nieuwste eerst), los van de keuze van de historie.
+        self.assertEqual([(a["alarm_id"], a["begin"]) for a in d["actief"]],
+                         [("weg", 800), ("camera-stil", 500)])
+        self.assertEqual(d["actief"][1]["naam"], "Camera stil")
+        # De historie: alle alarmen op volgorde van begin, de nieuwste eerst.
         self.assertEqual([(a["alarm_id"], a["begin"], a["einde"]) for a in d["alarmen"]],
-                         [("weg", 800, None), ("camera-stil", 500, None),
-                          ("vorst", 600, 700), ("vorst", 100, 400)])
-        stil, uitgezet = d["alarmen"][1], d["alarmen"][2]
+                         [("weg", 800, None), ("vorst", 600, 700),
+                          ("camera-stil", 500, None), ("vorst", 100, 400)])
+        uitgezet, stil = d["alarmen"][1], d["alarmen"][2]
         self.assertEqual((stil["naam"], stil["sensor"], stil["waardetekst"]), ("Camera stil", "Dek", None))
         self.assertEqual((uitgezet["sensor"], uitgezet["waardetekst"], uitgezet["reden"]),
                          ("motorruim", "0,5 °C", "uitgezet"))

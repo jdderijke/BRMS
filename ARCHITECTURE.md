@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.55 – concept** · 12 november 2026
+**Versie 0.56 – concept** · 13 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1506,6 +1506,13 @@ schrijvers op dezelfde database en map.
      actief als de webservice nog oudere metingen heeft dan het getoonde venster; verder
      terug dan 24 uur (of dan de laatste herstart van de webservice) kan alleen via de
      database.
+
+     De drie knoppen zijn **pictogrammen** (v0.56): een haakje naar links (eerder), een
+     haakje naar rechts (later) en een haakje tegen een streep (nu). Woorden namen op een
+     telefoon een hele regel in. De alarmenpagina gebruikt dezelfde knoppen. Op een smal
+     scherm (telefoon rechtop) staat de kop van een grafiek in twee regels: de bron met
+     het **kruisje (sluiten) rechtsboven**, daaronder de keuzelijst met de knoppen ernaast.
+     Het kruisje staat zo op elk scherm op dezelfde plaats.
    - **Database**: de opgeslagen rijen (per 5 minuten, §5.3.2), over 1 uur, 6 uur, 24 uur,
      7 dagen of 30 dagen, met bladeren naar eerdere perioden. Een interval zonder rij
      blijft in de grafiek open.
@@ -1573,8 +1580,31 @@ uit en volgen het thema niet.
 2. De **alarmregels**, met per regel de voorwaarde in woorden, de sensoren, de melding en
    de **aan/uit-schakelaar** (§5.5.3 punt 7). De pagina toont de nieuwe stand zodra de
    opslag hem heeft vastgelegd.
-3. De **opgetreden alarmen** uit de tabel `alarm`, de nieuwste bovenaan (hooguit 200),
-   met begin, einde, duur en de reden van het einde.
+3. De **opgetreden alarmen** uit de tabel `alarm`, de nieuwste bovenaan, met begin,
+   einde, duur en de reden van het einde. De pagina toont niet de hele tabel maar een
+   **keuze** (v0.56; gebouwd in code v0.21.0):
+
+   *Redenering.* De tabel groeit de hele winter door. Tot v0.55 stonden de nieuwste 200
+   alarmen onder elkaar: op een telefoon een lange lijst waarin het recente wegvalt. De
+   gebruiker wil standaard alleen de laatste alarmen zien en gericht kunnen terugkijken,
+   op dezelfde manier als bij de grafieken.
+
+   *Specificatie.*
+   - Een keuzelijst: **laatste 10** (de standaard bij elk openen van de pagina),
+     **vandaag**, **deze week** (maandag t/m zondag), **deze maand**, **dit jaar**.
+   - Ernaast de knoppen **eerder**, **later** en **nu** (dezelfde pictogrammen als bij de
+     grafieken, punt 4 hierboven). Bij "laatste 10" geeft "eerder" de 10 alarmen
+     daarvoor; bij een periode de vorige dag, week, maand of het vorige jaar. "nu" gaat
+     terug naar de nieuwste alarmen of de lopende periode. "eerder" is alleen actief als
+     er nog oudere alarmen zijn.
+   - Achter de knoppen staat welk deel er getoond wordt (de datum, de week, de maand,
+     het jaar, of "alarm 11 t/m 20").
+   - Een alarm hoort bij de periode waarin het **begon**.
+   - De browser rekent de grenzen van een periode uit en stuurt ze mee: een dag begint in
+     de tijdzone van de kijker.
+   - Van één periode staan er hooguit 200 alarmen; zijn het er meer, dan zegt de pagina
+     dat en kiest de gebruiker een kortere periode.
+   - De alarmen die **nu actief** zijn (punt 1) staan er altijd allemaal, los van de keuze.
 
 **Systeempagina (v0.51; herzien in v0.52; gebouwd in code v0.19.0, de herstartknoppen en
 het logboek nog niet getest op de Pi).** Van boven naar beneden:
@@ -2454,7 +2484,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.55** | 2026-11-12 | Claude Code, Fable 5.2 | Simulatie (§10.3): naast de test (duur opgegeven, hooguit 60 minuten, testreeks) een **demo** (alleen Enter): waarden rond normaal met dag- en nachtritme, elke sensor onafhankelijk, tot `brms sim stop`. Readers melden op `brms/simulatie/<dienst>` wat ze simuleren (§3.2); tegeltje Actief / Simulatie / Demo in de bovenbalk (§5.6). Gebouwd in code v0.20.0. |
+| **0.56** | 2026-11-13 | Claude Code, Fable 5.2 | Alarmenpagina (§5.6): de opgetreden alarmen als keuze (laatste 10 als standaard, vandaag, deze week, deze maand, dit jaar) met bladeren eerder / later / nu, in plaats van de nieuwste 200 onder elkaar. Grafiekenpagina (§5.6 punt 4): de knoppen eerder / later / nu als pictogram; op een smal scherm het kruisje van een grafiek rechtsboven. Gebouwd in code v0.21.0. |
+| 0.55 | 2026-11-12 | Claude Code, Fable 5.2 | Simulatie (§10.3): naast de test (duur opgegeven, hooguit 60 minuten, testreeks) een **demo** (alleen Enter): waarden rond normaal met dag- en nachtritme, elke sensor onafhankelijk, tot `brms sim stop`. Readers melden op `brms/simulatie/<dienst>` wat ze simuleren (§3.2); tegeltje Actief / Simulatie / Demo in de bovenbalk (§5.6). Gebouwd in code v0.20.0. |
 | 0.54 | 2026-11-12 | Claude Code, Fable 5.2 | Teltonika RMS en het relais op de router-uitgang (Pi-herstart) vervallen (§7, §9): geen extra externe dienst. In de plaats: "Ping Reboot" van de router, naast de hardware-watchdog van de Pi. |
 | 0.53 | 2026-11-12 | Claude Code, Fable 5.2 | `update.sh` (§10.1 punt 3): na het uitchecken neemt het script uit de nieuwe code het over, zodat één keer `brms update` volstaat. Gebouwd in code v0.19.1. Herstartknoppen van v0.52 werken op de test-Pi. |
 | 0.52 | 2026-11-12 | Claude Code, Fable 5.2 | Gebouwd in code v0.19.0, samen met v0.51 (nog niet getest op de Pi). Web (§5.6): vier pagina's (Grafieken, Opnames, Alarmen, Systeem) met een gedeelde bovenbalk, een zijbalk als menu, statusstip, thema licht/donker/automatisch en lijn-iconen; geschikt voor de telefoon. Systeempagina: knoppen "Herstart BRMS" en "Herstart de Pi" met bevestiging, via een polkit-regel. Foutmeldingen van de kernel in het logboek en als melding (§5.5.5). |

@@ -17,5 +17,8 @@ config/brms.toml
 # Eigen bestanden van de gebruiker die niet in git horen (bevat geheimen)
 diversen/
 
+# Crashrestjes van Git Bash op Windows
+*.stackdump
+
 # Het programma go2rtc (door deploy/go2rtc.sh opgehaald; ARCHITECTURE.md §5.7 punt 18)
 bin/

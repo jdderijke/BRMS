@@ -1,0 +1,16 @@
+{#
+  De drie bladerknoppen "eerder", "later" en "nu" (ARCHITECTURE.md §5.6, v0.56).
+
+  Eén bestand voor alle pagina's die door de tijd bladeren (grafieken, alarmen), zodat de
+  knoppen overal hetzelfde zijn. Het zijn pictogrammen in plaats van woorden: dat neemt op
+  een telefoon veel minder ruimte in. De betekenis staat in `title` (muis) en `aria-label`
+  (schermlezer).
+
+  De pictogrammen zijn getekende lijnen, net als die van het menu (basis.html): een haakje
+  naar links (eerder), een haakje naar rechts (later) en een haakje tegen een streep
+  (helemaal naar het einde: nu). De pagina zelf koppelt de knoppen aan hun werking en zet
+  ze uit (`disabled`) als er niets te bladeren valt.
+#}
+<button class="pijl eerder" title="Eerder" aria-label="Eerder"><svg class="icoon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button>
+<button class="pijl later" title="Later" aria-label="Later"><svg class="icoon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+<button class="pijl nu" title="Terug naar nu" aria-label="Terug naar nu"><svg class="icoon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 6l6 6-6 6M17 6v12"/></svg></button>

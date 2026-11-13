@@ -53,7 +53,18 @@
     .toevoegen label { flex: 1 1 100%; display: flex; align-items: center; gap: 8px; }
     .toevoegen label select { flex: 1 1 auto; min-width: 0; }
     .toevoegen .voegtoe { flex: 1 1 100%; }
-    .grafiek .venster, .grafiek .periode { flex: 1 1 100%; }
+    /* De kop van een grafiek op een smal scherm (v0.56), in twee regels:
+         regel 1: de bron links, het kruisje (sluiten) helemaal rechts;
+         regel 2: de keuzelijst, met de drie bladerknoppen ernaast.
+       De bron krijgt bijna de hele breedte, zodat alleen het kruisje er nog naast past en
+       de keuzelijst naar de volgende regel gaat. Zonder dit schoof het kruisje naar de
+       laatste regel, achter de knoppen. De volgorde wordt hier met `order` gezet; in de
+       pagina zelf blijft het kruisje het laatste element (breed scherm: uiterst rechts). */
+    .grafiek .kop .bron { order: 0; flex: 1 1 calc(100% - 60px); margin-right: 0; }
+    .grafiek .kop .weg { order: 1; font-size: 20px; padding: 8px; }
+    .grafiek .kop .ruimte { display: none; }
+    .grafiek .kop select { order: 2; flex: 1 1 0; min-width: 0; }
+    .grafiek .kop .pijl { order: 3; }
   }
 </style>
 {% endblock %}
@@ -71,7 +82,7 @@
 <!-- Sjabloon van één grafiek; wordt voor elke grafiek gekopieerd. -->
 <template id="sjabloon">
   <section class="grafiek">
-    <div class="rij">
+    <div class="rij kop">
       <span class="bron"></span>
       <select class="venster" title="Welk deel van de live-metingen de grafiek toont">
         <option value="n50">laatste 50 metingen</option>
@@ -90,9 +101,8 @@
         <option value="604800">7 dagen</option>
         <option value="2592000">30 dagen</option>
       </select>
-      <button class="eerder" title="Eén venster eerder">◀ eerder</button>
-      <button class="later" title="Eén venster later">later ▶</button>
-      <button class="nu" title="Terug naar nu">nu</button>
+      {# De bladerknoppen eerder / later / nu, als pictogram (v0.56). #}
+      {% include "_bladeren.html" %}
       <span class="ruimte"></span>
       <button class="kaal weg" title="Deze grafiek verwijderen">✕</button>
     </div>

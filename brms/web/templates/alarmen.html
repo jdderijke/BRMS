@@ -4,7 +4,11 @@
   Van boven naar beneden:
     1. de alarmen die nu actief zijn;
     2. de alarmregels uit brms.toml, elk met een aan/uit-schakelaar;
-    3. de opgetreden alarmen (de historie), de nieuwste bovenaan.
+    3. de opgetreden alarmen (de historie), de nieuwste bovenaan. Niet de hele tabel,
+       maar een keuze (v0.56): de laatste 10 (de standaard), vandaag, deze week, deze
+       maand of dit jaar. Met de knoppen eerder / later / nu (dezelfde als bij de
+       grafieken, _bladeren.html) bladert de lijst: de 10 alarmen daarvoor, of de vorige
+       dag, week, maand of het vorige jaar.
 
   De schakelaar: uit geldt voor de hele regel (geen beoordeling, geen melding, geen
   actie). De pagina zet de stand niet zelf: ze vraagt het aan de webservice, die een
@@ -34,6 +38,16 @@
   .actief { border-left: 4px solid var(--let-op); padding: 6px 0 6px 12px; margin-bottom: 10px; }
   .actief:last-child { margin-bottom: 0; }
   .actief .naam { font-weight: 600; }
+  /* De keuze van de historie: keuzelijst, bladerknoppen en erachter welk deel er staat. */
+  .historiekeuze { margin-bottom: 10px; }
+  .historiekeuze .welke { color: var(--zacht); font-size: 13px; }
+  /* Zonder tekst (het eerste blad van "laatste 10") neemt hij geen eigen regel in. */
+  .historiekeuze .welke:empty { display: none; }
+  /* Smal scherm: de keuzelijst vult de regel naast de drie knoppen; de tekst eronder. */
+  @media (max-width: 640px) {
+    .historiekeuze select { flex: 1 1 0; min-width: 0; }
+    .historiekeuze .welke { flex: 1 1 100%; }
+  }
 </style>
 {% endblock %}
 
@@ -54,11 +68,23 @@
 
   <section class="blok">
     <h2>Opgetreden alarmen</h2>
+    <div class="rij historiekeuze" id="keuze">
+      <select class="periode" title="Welke alarmen de lijst toont" aria-label="Welke alarmen de lijst toont">
+        <option value="laatste">laatste 10</option>
+        <option value="dag">vandaag</option>
+        <option value="week">deze week</option>
+        <option value="maand">deze maand</option>
+        <option value="jaar">dit jaar</option>
+      </select>
+      {% include "_bladeren.html" %}
+      <span class="welke"></span>
+    </div>
     <table class="kaartjes">
       <thead><tr><th>Begin</th><th>Alarm</th><th>Sensor</th><th>Waarde</th><th>Duur</th><th>Einde</th></tr></thead>
       <tbody id="historie"></tbody>
     </table>
-    <p id="vol" class="zacht klein" hidden>Alleen de nieuwste alarmen staan hier; oudere staan in de database.</p>
+    <p id="vol" class="zacht klein" hidden>Deze periode heeft meer alarmen dan hier passen: alleen de
+      nieuwste staan er. Kies een kortere periode voor de rest.</p>
   </section>
 {% endblock %}
 
@@ -70,12 +96,56 @@ const INTERVAL = 15000;      // ms tussen twee keer ophalen van het overzicht
 // opdracht gaat via de bus naar de opslag, die de stand in de database zet.
 const NA_KLIK = [700, 2500];
 
+// --- de keuze van de historie (v0.56) -----------------------------------------------------
+// Welke opgetreden alarmen de lijst toont:
+//   keuze         "laatste" (de laatste AANTAL), "dag", "week", "maand" of "jaar";
+//   verschuiving  0 = nu (de nieuwste, of de lopende dag/week/maand/jaar);
+//                 N = N bladen of perioden eerder.
+// Bij elke start staat de pagina op "laatste 10": de keuze wordt bewust niet onthouden.
+const AANTAL = 10;
+let keuze = "laatste", verschuiving = 0;
+// Telt de aanvragen: een antwoord op een vraag van vóór de laatste klik wordt weggegooid.
+let aanvraag = 0;
+const MAANDEN = ["januari", "februari", "maart", "april", "mei", "juni", "juli", "augustus",
+                 "september", "oktober", "november", "december"];
+const DAGEN = ["zo", "ma", "di", "wo", "do", "vr", "za"];
+
+// De gekozen periode als {van, tot (Unix-seconden), tekst}, of null bij "laatste".
+// De grenzen worden hier uitgerekend en niet op de Pi: een dag, week of maand begint in
+// de tijdzone van de kijker. `new Date(jaar, maand, dag)` rekent zelf door over
+// maand- en jaargrenzen (dag 0 of -3, maand -1) en volgt zomer- en wintertijd.
+function periode() {
+  if (keuze === "laatste") return null;
+  const nu = new Date(), j = nu.getFullYear(), m = nu.getMonth(), d = nu.getDate();
+  const dm = x => x.getDate() + "-" + (x.getMonth() + 1);
+  let van, tot, tekst;
+  if (keuze === "dag") {
+    van = new Date(j, m, d - verschuiving); tot = new Date(j, m, d - verschuiving + 1);
+    tekst = DAGEN[van.getDay()] + " " + dm(van) + "-" + van.getFullYear();
+  } else if (keuze === "week") {
+    // Een week loopt van maandag tot en met zondag. getDay() telt vanaf zondag (0).
+    const maandag = d - (nu.getDay() + 6) % 7 - 7 * verschuiving;
+    van = new Date(j, m, maandag); tot = new Date(j, m, maandag + 7);
+    const zondag = new Date(j, m, maandag + 6);
+    tekst = "ma " + dm(van) + " t/m zo " + dm(zondag) + "-" + zondag.getFullYear();
+  } else if (keuze === "maand") {
+    van = new Date(j, m - verschuiving, 1); tot = new Date(j, m - verschuiving + 1, 1);
+    tekst = MAANDEN[van.getMonth()] + " " + van.getFullYear();
+  } else {
+    van = new Date(j - verschuiving, 0, 1); tot = new Date(j - verschuiving + 1, 0, 1);
+    tekst = String(van.getFullYear());
+  }
+  return {van: Math.floor(van / 1000), tot: Math.floor(tot / 1000), tekst};
+}
+
 // --- tekst -----------------------------------------------------------------------------
 const twee = n => String(n).padStart(2, "0");
-// Tijdstempels zijn Unix-seconden UTC; de browser toont ze in de lokale tijd.
+// Tijdstempels zijn Unix-seconden UTC; de browser toont ze in de lokale tijd. Het jaar
+// staat er alleen bij als het niet het lopende jaar is (bladeren naar een vorig jaar).
 function moment(ts) {
   const d = new Date(ts * 1000);
-  return d.getDate() + "-" + (d.getMonth() + 1) + " " + twee(d.getHours()) + ":" + twee(d.getMinutes());
+  const jaar = d.getFullYear() === new Date().getFullYear() ? "" : "-" + d.getFullYear();
+  return d.getDate() + "-" + (d.getMonth() + 1) + jaar + " " + twee(d.getHours()) + ":" + twee(d.getMinutes());
 }
 function duur(s) {
   if (s < 60) return s + " s";
@@ -99,10 +169,9 @@ function maak(soort, klasse, tekst) {
 }
 
 // --- tonen -----------------------------------------------------------------------------
-function toonActief(alarmen, nu) {
+function toonActief(actief, nu) {
   const vak = el("actief");
   vak.replaceChildren();
-  const actief = alarmen.filter(a => a.einde === null);
   if (!actief.length) { vak.append(maak("p", "zacht", "Er is geen alarm actief.")); return; }
   for (const a of actief) {
     const d = maak("div", "actief");
@@ -148,7 +217,10 @@ function toonHistorie(alarmen, nu, vol) {
   tbody.replaceChildren();
   if (!alarmen.length) {
     const td = tbody.insertRow().insertCell();
-    td.colSpan = 6; td.className = "zacht"; td.textContent = "Er zijn nog geen alarmen opgetreden.";
+    td.colSpan = 6; td.className = "zacht";
+    // Alleen op het eerste blad van "laatste 10" betekent leeg: er is nog nooit een alarm geweest.
+    td.textContent = keuze === "laatste" && verschuiving === 0
+      ? "Er zijn nog geen alarmen opgetreden." : "Geen alarmen in deze periode.";
   }
   const cel = (tr, kop, tekst, klasse) => {
     const td = tr.insertCell();
@@ -171,14 +243,33 @@ function toonHistorie(alarmen, nu, vol) {
 }
 
 // --- ophalen en schakelen ----------------------------------------------------------------
+// De knoppen en de tekst van de historiekeuze bijwerken. `eerder`: of er nog oudere
+// alarmen zijn dan de getoonde (uit het antwoord van de webservice).
+function toonKeuze(p, eerder) {
+  const q = klasse => el("keuze").querySelector("." + klasse);
+  q("eerder").disabled = !eerder;
+  // Later en nu hebben alleen zin als er teruggebladerd is.
+  q("later").disabled = q("nu").disabled = verschuiving === 0;
+  // Erachter: welke periode, of bij "laatste" welk blad (11 t/m 20, ...). Op het eerste
+  // blad staat er niets: de keuzelijst zegt het al.
+  q("welke").textContent = p ? p.tekst
+    : verschuiving ? "alarm " + (verschuiving * AANTAL + 1) + " t/m " + (verschuiving + 1) * AANTAL : "";
+}
+
 async function laad() {
+  const mijn = ++aanvraag, p = periode();
+  const vraag = p ? "van=" + p.van + "&tot=" + p.tot
+                  : "aantal=" + AANTAL + "&overslaan=" + verschuiving * AANTAL;
   try {
-    const a = await fetch("/api/alarmen/overzicht");
+    const a = await fetch("/api/alarmen/overzicht?" + vraag);
     if (!a.ok) throw new Error("fout " + a.status);
     const d = await a.json();
-    toonActief(d.alarmen, d.nu);
+    // Intussen is er opnieuw geklikt: dit antwoord hoort bij een oude keuze.
+    if (mijn !== aanvraag) return;
+    toonActief(d.actief, d.nu);
     toonRegels(d.regels, d.broker);
     toonHistorie(d.alarmen, d.nu, d.vol);
+    toonKeuze(p, d.eerder);
     meld(d.broker === false ? "De MQTT-broker is niet bereikbaar: de schakelaars werken nu niet." : "",
          d.broker === false);
   } catch (e) {
@@ -204,6 +295,16 @@ async function schakel(regel, vink) {
     vink.checked = !aan; vink.disabled = false;
     meld("De regel kon niet worden omgezet: " + e.message, true);
   }
+}
+
+// De historiekeuze: elke wijziging haalt het overzicht direct opnieuw op.
+{
+  const q = klasse => el("keuze").querySelector("." + klasse);
+  // Een andere keuze begint altijd bij nu.
+  q("periode").addEventListener("change", () => { keuze = q("periode").value; verschuiving = 0; laad(); });
+  q("eerder").addEventListener("click", () => { verschuiving += 1; laad(); });
+  q("later").addEventListener("click", () => { verschuiving = Math.max(0, verschuiving - 1); laad(); });
+  q("nu").addEventListener("click", () => { verschuiving = 0; laad(); });
 }
 
 laad();

@@ -33,7 +33,8 @@ Adressen:
     /live/<camera_id>        (POST) het live-beeld van een camera aanvragen (WebRTC via
                              go2rtc, §5.7 punt 18)
     /alarmen                 de pagina met de alarmregels, hun schakelaars en de historie
-    /api/alarmen/overzicht   regels (met aan/uit), actieve en opgetreden alarmen
+    /api/alarmen/overzicht   regels (met aan/uit), actieve en opgetreden alarmen;
+                             ?van=&tot= (periode) of ?aantal=&overslaan= (de laatste N)
     /api/alarmen/schakel     (POST) een alarmregel aan- of uitzetten; opdracht over de bus
     /systeem                 de pagina met services, herstarten, logboek en schijfruimte
     /api/systeem             status van de services en de schijfruimte
@@ -74,8 +75,13 @@ TOPIC_SCHAKEL = "brms/opdracht/alarm/schakel"
 # SIMULATIE_GELDIG seconden telt niet meer (de reader is dan gestopt of herstart).
 TOPIC_SIMULATIE = "brms/simulatie"
 SIMULATIE_GELDIG = 90.0
-# Zoveel opgetreden alarmen toont de alarmenpagina hooguit.
+# Zoveel opgetreden alarmen toont de alarmenpagina hooguit van één periode (dag, week,
+# maand of jaar).
 MAX_HISTORIE = 200
+# De keuze "laatste 10" van de alarmenpagina (§5.6): zoveel alarmen per blad, en het
+# grootste aantal dat een aanvraag in één keer mag vragen.
+STANDAARD_AANTAL = 10
+MAX_AANTAL = 100
 # Zo lang (seconden) geldt een opgevraagde status van de services voor /api/status: elke
 # open pagina vraagt die elke 30 s, en elke vraag aan systemd is een apart proces.
 STATUS_BEWAREN = 10.0
@@ -425,30 +431,66 @@ def lees_opnames(pad: str, van: int, tot: int, camera_id: str | None = None,
     return [dict(zip(sleutels, rij)) for rij in rijen], totalen
 
 
-def lees_alarmoverzicht(pad: str, limiet: int = MAX_HISTORIE) -> tuple[list, dict]:
-    """Leest voor de alarmenpagina (§5.6): de opgetreden alarmen, de nieuwste eerst
-    (hooguit `limiet`; een alarm zonder einde is nog actief), en de regels die uit staan
-    als {alarm_id: sinds}. Bestaat de database of een tabel (nog) niet, dan is dat deel leeg.
+def lees_alarmoverzicht(pad: str, van: int | None = None, tot: int | None = None,
+                        aantal: int = STANDAARD_AANTAL, overslaan: int = 0) -> dict:
+    """Leest voor de alarmenpagina (§5.6) uit de database:
+
+      actief   de alarmen die nu actief zijn (zonder einde), de nieuwste eerst. Altijd
+               allemaal: dit deel hangt niet af van de gekozen periode;
+      alarmen  de opgetreden alarmen van de keuze op de pagina, de nieuwste eerst:
+                 - met `van` en `tot`: de alarmen die in die periode begonnen
+                   (van <= begin < tot), hooguit MAX_HISTORIE;
+                 - zonder: de laatste `aantal` alarmen, na het overslaan van de
+                   `overslaan` nieuwste (bladeren: 10 eerder, nog 10 eerder, ...);
+      eerder   of er nog oudere alarmen zijn dan de getoonde (voor de knop "eerder");
+      vol      of de periode meer alarmen heeft dan er getoond worden;
+      uit      de regels die uit staan, als {alarm_id: sinds}.
+
+    Waarom niet de hele tabel: die groeit de hele winter door, en op een telefoon over
+    4G is een lijst van honderden regels onbruikbaar (v0.56).
+
+    Bestaat de database of een tabel (nog) niet, dan is dat deel leeg.
     """
+    uitkomst = {"actief": [], "alarmen": [], "eerder": False, "vol": False, "uit": {}}
     if not pathlib.Path(pad).exists():
-        return [], {}
+        return uitkomst
+    # Alleen-lezen openen: de opslag-service is de enige schrijver (§3.1).
     con = sqlite3.connect(pathlib.Path(pad).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
-    alarmen_, uit = [], {}
+    sleutels = ("alarm_id", "sensor_id", "begin", "grootheid", "waarde", "einde", "reden")
+    kies = f"SELECT {', '.join(sleutels)} FROM alarm "
+
+    def rijen(sql: str, waarden: tuple = ()) -> list[dict]:
+        return [dict(zip(sleutels, rij)) for rij in con.execute(kies + sql, waarden)]
+
     try:
         try:
-            sleutels = ("alarm_id", "sensor_id", "begin", "grootheid", "waarde", "einde", "reden")
-            alarmen_ = [dict(zip(sleutels, rij)) for rij in con.execute(
-                f"SELECT {', '.join(sleutels)} FROM alarm "
-                "ORDER BY einde IS NOT NULL, begin DESC LIMIT ?", (limiet,))]
+            uitkomst["actief"] = rijen("WHERE einde IS NULL ORDER BY begin DESC, alarm_id, sensor_id")
+            if van is not None and tot is not None:
+                # Een periode. Eén rij meer vragen dan er getoond wordt: zo is zonder
+                # tweede vraag bekend of de periode meer heeft dan het maximum.
+                gevonden = rijen("WHERE begin >= ? AND begin < ? ORDER BY begin DESC, alarm_id, sensor_id "
+                                 "LIMIT ?", (van, tot, MAX_HISTORIE + 1))
+                uitkomst["vol"] = len(gevonden) > MAX_HISTORIE
+                uitkomst["alarmen"] = gevonden[:MAX_HISTORIE]
+                # "eerder" heeft zin zolang er vóór deze periode nog een alarm begon.
+                uitkomst["eerder"] = con.execute(
+                    "SELECT 1 FROM alarm WHERE begin < ? LIMIT 1", (van,)).fetchone() is not None
+            else:
+                # De laatste N. Ook hier één rij extra: is die er, dan bestaat er een
+                # volgend (ouder) blad.
+                gevonden = rijen("ORDER BY begin DESC, alarm_id, sensor_id LIMIT ? OFFSET ?",
+                                 (aantal + 1, overslaan))
+                uitkomst["eerder"] = len(gevonden) > aantal
+                uitkomst["alarmen"] = gevonden[:aantal]
         except sqlite3.OperationalError as e:
             log.debug("alarmen niet leesbaar: %s", e)
         try:
-            uit = dict(con.execute("SELECT alarm_id, sinds FROM alarm_uit"))
+            uitkomst["uit"] = dict(con.execute("SELECT alarm_id, sinds FROM alarm_uit"))
         except sqlite3.OperationalError as e:
             log.debug("schakelaars niet leesbaar: %s", e)
     finally:
         con.close()
-    return alarmen_, uit
+    return uitkomst
 
 
 def tel_actieve_alarmen(pad: str) -> int | None:
@@ -760,20 +802,36 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
 
     @app.get("/api/alarmen/overzicht")
     def api_alarmoverzicht():
-        """De regels (met de stand van hun schakelaar), en de opgetreden alarmen: eerst
-        die nog actief zijn, dan de rest, de nieuwste eerst."""
-        alarmen_, uit = lees_alarmoverzicht(cfg.opslag.database)
+        """De regels (met de stand van hun schakelaar), de alarmen die nu actief zijn en
+        de opgetreden alarmen van de keuze op de pagina (v0.56), de nieuwste eerst.
+
+        De keuze staat in de aanvraag:
+          ?van=<ts>&tot=<ts>          een periode (vandaag, deze week, ...). De pagina
+                                      rekent de grenzen uit: een dag of week begint in de
+                                      tijdzone van de kijker, en die kent alleen de browser;
+          ?aantal=<n>&overslaan=<m>   de laatste n alarmen, na de m nieuwste (bladeren).
+        Zonder iets: de laatste 10.
+        """
+        van = _getal(request.args.get("van"), laagste=0)
+        tot = _getal(request.args.get("tot"), laagste=0)
+        if van is None or tot is None or tot <= van:
+            van = tot = None        # geen (geldige) periode: de laatste N
+        d = lees_alarmoverzicht(
+            cfg.opslag.database, van, tot,
+            aantal=_getal(request.args.get("aantal"), STANDAARD_AANTAL, 1, MAX_AANTAL),
+            overslaan=_getal(request.args.get("overslaan"), 0, 0))
         namen = {r.id: r.naam for r in cfg.alarmen}
-        for a in alarmen_:
+        # Een actief alarm kan in beide lijsten staan; elke rij krijgt zijn namen.
+        for a in d["actief"] + d["alarmen"]:
             a["naam"] = namen.get(a["alarm_id"], a["alarm_id"])
             a["sensor"] = _bronnaam(cfg, a["sensor_id"])
             # De waarde waarmee het alarm afging, met eenheid.
             a["waardetekst"] = (alarms.waardetekst(a["grootheid"], a["waarde"])
                                 if a["waarde"] is not None
                                 and a["grootheid"] in grootheden.GROOTHEDEN else None)
-        return jsonify(nu=int(klok()), regels=_regeloverzicht(cfg, uit), alarmen=alarmen_,
-                       vol=len(alarmen_) >= MAX_HISTORIE,
-                       broker=bus.verbonden if bus is not None else None)
+        return jsonify(nu=int(klok()), regels=_regeloverzicht(cfg, d["uit"]),
+                       actief=d["actief"], alarmen=d["alarmen"], eerder=d["eerder"],
+                       vol=d["vol"], broker=bus.verbonden if bus is not None else None)
 
     @app.post("/api/alarmen/schakel")
     def api_schakel():
