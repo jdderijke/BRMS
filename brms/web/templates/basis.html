@@ -55,7 +55,8 @@ try {
 
 <div id="sluier" hidden></div>
 <aside id="zijbalk">
-  <div class="merk">BRMS <small>boot op afstand</small></div>
+  {# De naam in twee regels (v0.58): de afkorting, met eronder waar hij voor staat. #}
+  <div class="merk">BRMS<small>Boat Remote Monitoring System</small></div>
   <nav aria-label="Pagina's">
     <a href="/" {% if pagina == "grafieken" %}class="hier" aria-current="page"{% endif %}>{{ icoon("grafieken") }}<span class="naam">Grafieken</span></a>
     <a href="/opnames" {% if pagina == "opnames" %}class="hier" aria-current="page"{% endif %}>{{ icoon("opnames") }}<span class="naam">Opnames</span></a>

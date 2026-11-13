@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.56 – concept** · 13 november 2026
+**Versie 0.58 – concept** · 13 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1483,6 +1483,20 @@ schrijvers op dezelfde database en map.
      de pagina vraagt elke 2 s wat er nieuw is. Na een herstart van de webservice begint
      dat geheugen leeg.
 
+     **Het live-geheugen nader (v0.57).** De webservice luistert **altijd** mee en bewaart
+     de metingen, ook als er geen live-grafiek openstaat.
+     - *Waarom:* een live-grafiek toont zo meteen een gevuld venster (tot "laatste 24 uur")
+       en kan terugbladeren, in de volle resolutie van de sensor. De database heeft per
+       reeks maar één rij per 5 minuten (§5.3.2). Pas gaan bewaren als er een grafiek
+       opengaat zou betekenen dat elke nieuwe grafiek leeg begint.
+     - *Waar:* alleen in het werkgeheugen (RAM) van `brms-web`. Er gaat niets naar de
+       opslag, dus het kost geen schrijfacties op flash (P7).
+     - *Hoe lang:* 24 uur; wat ouder is wordt weggegooid.
+     - *Groeit niet door:* naast de grens van 24 uur geldt het maximum van 100.000
+       metingen per reeks (2,4 MB). Drie Xiaomi's (4 grootheden, elke 2,5 s) komen op
+       ongeveer 10 MB; met de RuuviTags (elke seconde) en de Victron-apparaten erbij
+       naar schatting enkele tientallen MB. Dat is ruim binnen het geheugen van de Pi 4.
+
    **Herstart van de webservice** (v0.36). De sensoren en alarmregels staan in de pagina
    zoals ze waren toen de pagina geladen werd. Na een wijziging van `brms.toml` en een
    herstart kende een pagina die al open stond de nieuwe regels niet (en tekende dan geen
@@ -1636,7 +1650,8 @@ het logboek nog niet getest op de Pi).** Van boven naar beneden:
    - Wie de pagina kan openen, kan herstarten (OPEN-15).
 3. **Logboek** (§5.5.5): de laatste 200 waarschuwingen en fouten, de nieuwste bovenaan,
    met tijd, service, niveau en tekst. Te kiezen: de service, en alleen fouten of ook
-   waarschuwingen; "ouder" bladert terug. Zolang de pagina open staat, ververst hij
+   waarschuwingen. De pagina opent op **alleen fouten** (v0.58; eerder op waarschuwingen
+   en fouten): waarschuwingen zijn er veel en zelden dringend. "ouder" bladert terug. Zolang de pagina open staat, ververst hij
    elke 30 s.
 4. **Opslag:**
    - *Schijfruimte:* grootte, gebruikt en vrij van de schijf waarop `data/` staat, en
@@ -2484,7 +2499,9 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.56** | 2026-11-13 | Claude Code, Fable 5.2 | Alarmenpagina (§5.6): de opgetreden alarmen als keuze (laatste 10 als standaard, vandaag, deze week, deze maand, dit jaar) met bladeren eerder / later / nu, in plaats van de nieuwste 200 onder elkaar. Grafiekenpagina (§5.6 punt 4): de knoppen eerder / later / nu als pictogram; op een smal scherm het kruisje van een grafiek rechtsboven. Gebouwd in code v0.21.0. |
+| **0.58** | 2026-11-13 | Claude Code, Fable 5.2 | Systeempagina (§5.6): het logboek opent op "alleen fouten". Zijbalk: de naam in twee regels, "BRMS" met eronder "Boat Remote Monitoring System" (was "BRMS boot op afstand"). Gebouwd in code v0.21.1. |
+| 0.57 | 2026-11-13 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4): het live-geheugen van de webservice toegelicht: bewaart altijd (ook zonder open grafiek), waarom, alleen in RAM, 24 uur, en waarom het niet doorgroeit. Alleen tekst; de code is niet gewijzigd. |
+| 0.56 | 2026-11-13 | Claude Code, Fable 5.2 | Alarmenpagina (§5.6): de opgetreden alarmen als keuze (laatste 10 als standaard, vandaag, deze week, deze maand, dit jaar) met bladeren eerder / later / nu, in plaats van de nieuwste 200 onder elkaar. Grafiekenpagina (§5.6 punt 4): de knoppen eerder / later / nu als pictogram; op een smal scherm het kruisje van een grafiek rechtsboven. Gebouwd in code v0.21.0. |
 | 0.55 | 2026-11-12 | Claude Code, Fable 5.2 | Simulatie (§10.3): naast de test (duur opgegeven, hooguit 60 minuten, testreeks) een **demo** (alleen Enter): waarden rond normaal met dag- en nachtritme, elke sensor onafhankelijk, tot `brms sim stop`. Readers melden op `brms/simulatie/<dienst>` wat ze simuleren (§3.2); tegeltje Actief / Simulatie / Demo in de bovenbalk (§5.6). Gebouwd in code v0.20.0. |
 | 0.54 | 2026-11-12 | Claude Code, Fable 5.2 | Teltonika RMS en het relais op de router-uitgang (Pi-herstart) vervallen (§7, §9): geen extra externe dienst. In de plaats: "Ping Reboot" van de router, naast de hardware-watchdog van de Pi. |
 | 0.53 | 2026-11-12 | Claude Code, Fable 5.2 | `update.sh` (§10.1 punt 3): na het uitchecken neemt het script uit de nieuwe code het over, zodat één keer `brms update` volstaat. Gebouwd in code v0.19.1. Herstartknoppen van v0.52 werken op de test-Pi. |

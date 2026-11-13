@@ -73,8 +73,10 @@
     <div class="rij">
       <label>Service <select id="log-service"><option value="">alle</option></select></label>
       <label>Niveau <select id="log-niveau">
+        {# Standaard alleen de fouten (v0.58): waarschuwingen zijn er veel en zelden
+           dringend. De keuze wordt niet onthouden; na opnieuw laden geldt de standaard. #}
         <option value="">waarschuwingen en fouten</option>
-        <option value="1">alleen fouten</option>
+        <option value="1" selected>alleen fouten</option>
       </select></label>
       <span class="ruimte"></span>
       <button id="log-nieuwste" hidden>◀ nieuwste</button>
