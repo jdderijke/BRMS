@@ -52,6 +52,35 @@ Er wordt niets gebouwd dat daar niet in staat.
   zodat sensoren later makkelijk toe te voegen zijn.
 - Eerst werkend en eenvoudig; daarna uitbreiden.
 
+## Werkafspraken voor Claude
+Deze regels gelden in elke sessie, op elke machine.
+
+- **Nooit committen of pushen zonder toestemming.** Na een wijziging: melden wat er veranderd is,
+  vragen "Zal ik committen en pushen?" en wachten op een uitdrukkelijk ja. Toestemming geldt alleen
+  voor die ene wijziging, en apart voor commit en voor push; eerdere commits zijn geen doorlopende
+  toestemming.
+- **Eerst ontwerpen, dan bouwen.** Geen code in `brms/` voordat ARCHITECTURE.md het beschrijft én de
+  gebruiker opdracht geeft om te bouwen. Onbesliste punten komen als [OPEN-n] in ARCHITECTURE.md §11;
+  Claude beslist die nooit zelf en verzint niets buiten het ontwerp.
+- **ARCHITECTURE.md bijhouden.** Opbouw per onderdeel: redenering → afgewezen alternatieven →
+  specificatie. Elke wijziging krijgt een regel in de revisietabel (Versie / Datum / Auteur /
+  Wijziging), auteur "Claude Code, <modelnaam>". De codeversie staat in `brms/__init__.py` (`VERSION`).
+- **Ontwerpantwoorden kort en helder.** Begin met de keuze in één zin plus een aanbeveling. Noem
+  uitvoeringsdetails alleen als ze de keuze veranderen; presenteer details niet als problemen.
+  Korte vragenlijsten.
+- **Ruim verklarend commentaar in de code, in het Nederlands.** Bij elk blok wat het doet en waarom,
+  met verwijzing naar de paragraaf in ARCHITECTURE.md; elke ontwerpkeuze en elk shell-commando in
+  deploy-scripts toegelicht. Liever iets te veel dan te weinig: de code moet maanden later nog te
+  begrijpen zijn. Geldt voor Python, tests en shell.
+- **Hoofdbranch is altijd `main`**, nooit `master`.
+- **Taal:** Nederlands, in antwoorden, documenten en commentaar.
+- **Sudo op de Pi** vraagt een wachtwoord: stappen met sudo voert de gebruiker zelf uit.
+  `sudo rpi-clone` alleen op uitdrukkelijk verzoek.
+- **`diversen/`** bevat eigen bestanden van de gebruiker (met geheimen) en blijft buiten git.
+
+Claude Code-instellingen die met het project meekomen staan in `.claude/`: `settings.json`
+(statusregel) en `statusline-command.sh` (branch | model | BRMS-versie | verbruik).
+
 ## Eerste stap
 Eerste bouwstap (pas na expliciete opdracht): de 3 Xiaomi Monitor 3's (pvvx, BTHome v2) door de keten
 volgens ARCHITECTURE.md – BLE-reader met BTHome-decoder → MQTT (Mosquitto) → opslag-service →
