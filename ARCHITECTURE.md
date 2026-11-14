@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.62 – concept** · 14 november 2026
+**Versie 0.63 – concept** · 14 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -343,7 +343,7 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
 | Ruuvi | RuuviTag (Pro) | BLE-advertenties, eigen decoder (§5.2.3) | Gebouwd (v0.19); nog niet getest met een echte RuuviTag |
 | Victron | BMV-700, 3× MPPT, MultiPlus | BLE Instant Readout, decoder in de BLE-reader (§5.2.2) | Gebouwd (v0.27); nog niet getest met de echte apparaten |
 | Shelly | Bilge: pompspanning achter de bestaande vlotter (Shelly Plus Uni) | Lokale HTTP-API (§5.2.4) | Gebouwd (v0.29); nog niet getest met een echte Shelly |
-| Shelly-relais | Schakelaar voor o.a. verwarming | Lokale HTTP-API: pollen en schakelen (§5.2.6) | Ontworpen (v0.31) |
+| Shelly-relais | Tussenstekker met energiemeting voor de kachel (Shelly Plug M Gen3) | Lokale HTTP-API: pollen en schakelen (§5.2.6) | Ontworpen (v0.31, v0.63) |
 | Camera | IP-camera dek | Foto per interval, video op poll-nu (§5.7) | Later |
 | GPIO | Waar nodig | — | Gepland |
 
@@ -620,45 +620,100 @@ grafieken.
 9. Afgeleide waarden worden **niet apart gesimuleerd** (§10.3): ze volgen uit de
    gesimuleerde meting. In de **trace** (§10.2) krijgen ze een eigen stap `afgeleid`.
 
-#### 5.2.6 Relais (v0.31)
+#### 5.2.6 Relais (v0.31, uitgewerkt in v0.63)
 
-*Ontworpen; nog niet gebouwd. Het model van de Shelly-schakelaar is nog niet gekozen.*
+*Ontworpen; nog niet gebouwd. Model (v0.63): Shelly Plug M Gen3, een tussenstekker met
+energiemeting (3000 W weerstandsbelasting, 13 A, −20 tot +40 °C). Nog te controleren met
+de plug zelf: de namen in het antwoord van de API en de uitschakeltijd per opdracht
+(punt 3).*
 
 **Aanleiding.** Een alarm moet een apparaat kunnen schakelen (§5.5.3), als eerste een
-elektrische verwarming bij vorstgevaar; later mogelijk boordverlichting.
+elektrische kachel van 1500 W bij vorstgevaar; later mogelijk boordverlichting.
 
-**Redenering.** Een verwarming vraagt een schakelaar voor 230 V en een hoge stroom. Dat is
+**Redenering.** Een kachel vraagt een schakelaar voor 230 V en een hoge stroom. Dat is
 een ander apparaat dan de Shelly Plus Uni van de bilge (§5.2.4), waarvan de uitgangen
 daarvoor niet bedoeld zijn. Een Shelly-schakelaar heeft dezelfde lokale HTTP-API en past
-in de bestaande Shelly-reader. Een verwarming die aan blijft staan als BRMS vastloopt, is
-een risico; de beveiliging hoort daarom in de Shelly zelf te zitten en niet in BRMS.
+in de bestaande Shelly-reader; een tussenstekker vraagt bovendien geen montage. Hij wordt
+via wifi uitgelezen en geschakeld, om dezelfde reden als de bilge-Shelly (§5.2.4).
+
+*Eén regel als thermostaat (v0.63).* De kachel gaat aan en uit met één alarmregel: aan
+als het alarm afgaat (temperatuur onder de grens), uit bij herstel (boven de
+herstelgrens). De twee grenzen van de regel zijn zo de schakelpunten van een thermostaat.
+Een tweede regel die bij een hogere temperatuur "uit" geeft, is niet nodig en zou de
+eerste kunnen tegenspreken.
+
+*Beveiliging in de Shelly.* Een kachel die aan blijft staan als BRMS vastloopt, is een
+risico; de beveiliging hoort daarom in de Shelly zelf te zitten en niet in BRMS. "Aan"
+geldt daarom maar kort, en BRMS moet het blijven herhalen.
+
+*Alleen met walstroom (v0.63).* De kachel mag alleen aan als er walstroom is. Normaal zit
+hij op een stopcontact buiten de MultiPlus om en valt hij zonder walstroom vanzelf uit;
+maar op een stopcontact achter de omvormer zou hij de accu in korte tijd leegstoken. BRMS
+gaat daar niet van uit en controleert het zelf, altijd.
+
+*Vermogen meten (v0.63).* De plug meet vermogen, spanning en stroom. Daarmee is te zien
+of de kachel echt stookt: een relais dat aan staat zegt niet dat de kachel het doet (eigen
+thermostaat, omgevallen, defect).
 
 **Verworpen alternatieven.**
 - *De uitgangen van de Shelly Plus Uni gebruiken.* Niet geschikt voor 230 V en de stroom
-  van een verwarming.
+  van een kachel.
 - *Uitschakelen alleen door BRMS.* Valt BRMS weg, dan blijft het relais aan.
+- *Een aparte alarmregel die het relais uitzet bij een hogere temperatuur.* Zie de
+  redenering: één regel met een grens en een herstelgrens doet hetzelfde.
+- *De walstroom als gewone voorwaarde in de alarmregel.* Dan zou het vorstalarm zelf
+  stoppen als de walstroom wegvalt, juist op het moment dat de melding ertoe doet. De
+  voorwaarde hoort bij de actie, niet bij het alarm.
+- *Uitlezen of schakelen via Bluetooth.* Zie §5.2.4.
 
 **Specificatie.**
-1. Sensortype **`shelly-relais`**: een aparte Shelly-schakelaar (230 V, 16 A of
-   vergelijkbaar; een model met de Gen2-API en één uitgang `switch:0`). Configuratie als
-   bij `shelly-uni` (§5.2.4 punt 4): `id`, `naam`, `adres`, `interval` (standaard 30 s).
-2. De Shelly-reader **pollt** het relais; de stand komt als gewone meting binnen:
-   grootheid **`relais`** (0/1, toestand), en `rssi`.
+1. Sensortype **`shelly-relais`**: een aparte Shelly-schakelaar met de Gen2-API en één
+   uitgang `switch:0`; het model is de Shelly Plug M Gen3. Configuratie als bij
+   `shelly-uni` (§5.2.4 punt 4): `id`, `naam`, `adres`, `interval` (standaard 30 s).
+2. De Shelly-reader **pollt** het relais; de stand en de metingen komen als gewone
+   metingen binnen:
+
+   | Grootheid | Eenheid | Betekenis |
+   |---|---|---|
+   | `relais` | 0/1 | 1 = relais aan |
+   | `vermogen` | W | wat de kachel nu opneemt (nieuwe grootheid, §5.3.3) |
+   | `spanning` | V | de netspanning op de plug |
+   | `stroom` | A | de stroom door de plug |
+   | `rssi` | dBm | signaalsterkte van de wifi |
+
+   **[OPEN-27]** Ook de energieteller van de plug (totaal verbruik in Wh) opslaan? Het is
+   een teller en geen meetwaarde; het verbruik is ook achteraf uit `vermogen` te
+   berekenen.
 3. **Schakelen:** opdracht `brms/opdracht/relais/zet` met
-   `{"sensor_id": ..., "aan": true, "duur": 900}`. De Shelly-reader voert hem uit via de
-   API van de Shelly en pollt direct daarna, zodat de nieuwe stand meteen op de bus staat.
+   `{"sensor_id": ..., "aan": true, "duur": 600}`. De Shelly-reader voert hem uit via de
+   API van de Shelly (de uitschakeltijd gaat met de opdracht mee) en pollt direct daarna,
+   zodat de nieuwe stand meteen op de bus staat. Kan de plug geen uitschakeltijd per
+   opdracht aan, dan wordt dezelfde tijd vast in de Shelly ingesteld.
 4. **Beveiliging:**
-   - "aan" gaat altijd met een **uitschakeltijd** (`duur`, standaard 15 minuten) die de
-     Shelly zelf bewaakt: na die tijd schakelt hij vanzelf uit.
-   - Zolang het alarm actief is, **ververst** de alarmlaag de opdracht elke 5 minuten.
-     Valt BRMS weg, dan gaat het relais binnen de uitschakeltijd uit.
-   - De alarmlaag ververst alleen zolang de sensor van de alarmregel nog waarden levert
+   - "aan" gaat altijd met een **uitschakeltijd** (`duur`, **10 minuten**) die de Shelly
+     zelf bewaakt: na die tijd schakelt hij vanzelf uit.
+   - Zolang het alarm actief is, **herhaalt** de alarmlaag de opdracht elke **5 minuten**.
+     Valt BRMS weg, dan gaat het relais binnen de uitschakeltijd uit. Eén gemiste
+     herhaling geeft nog geen onderbreking.
+   - De alarmlaag herhaalt alleen zolang de sensor van de alarmregel nog waarden levert
      (laatste waarde jonger dan de uitschakeltijd). Bij een **stille sensor** gaat het
      relais dus uit.
    - Bij herstel van het alarm, en als de regel wordt uitgezet (§5.5.3), volgt direct "uit".
-5. Na een **herstart** van de alarmlaag is er geen actief alarm (§5.5.2 punt 6); het relais
+   - In de Shelly staat ingesteld dat hij **uit** begint als de spanning terugkomt; BRMS
+     zet hem daarna zelf weer aan als dat nodig is.
+5. **Alleen met walstroom** (v0.63). De actie `relais` zet het relais alleen aan, en
+   herhaalt "aan" alleen, zolang `walstroom` = 1 (MultiPlus, §5.2.2) en die waarde jonger
+   is dan de uitschakeltijd.
+   - Valt de walstroom weg terwijl het relais aan staat, dan volgt direct "uit". Komt de
+     walstroom terug en is het alarm nog actief, dan gaat het relais weer aan.
+   - Is de walstroom **onbekend** (geen sensor die `walstroom` levert, of die sensor is
+     stil), dan blijft het relais uit. `check-config` weigert een actie `relais` als geen
+     sensor in de configuratie `walstroom` levert.
+   - Het alarm zelf en zijn melding hangen niet van de walstroom af: het vorstalarm blijft
+     actief en wordt gemeld, ook als de kachel niet aan mag.
+6. Na een **herstart** van de alarmlaag is er geen actief alarm (§5.5.2 punt 6); het relais
    gaat binnen de uitschakeltijd uit, en weer aan zodra het alarm opnieuw afgaat.
-6. Handmatig schakelen via het web is niet voorzien.
+7. Handmatig schakelen via het web is niet voorzien.
 
 ### 5.3 Opslag
 
@@ -886,7 +941,7 @@ hun eigen stappen.
 | Decimalen | Grootheden |
 |---|---|
 | 0 | `luchtdruk`, toestanden 0/1 (`walstroom`, `bilge`, `bilgepomp`, `relais`), `versnelling_x/y/z`, `rssi`, `beweging`, `resterende_tijd`, `helling` |
-| 1 | `temperatuur`, `vocht`, `soc`, `zonnevermogen`, `verbruikt` |
+| 1 | `temperatuur`, `vocht`, `soc`, `zonnevermogen`, `vermogen`, `verbruikt` |
 | 2 | `spanning`, `batterijspanning`, `stroom`, `laadstroom_zon` |
 
 | Grootheid | Eenheid | Soort | Bron | Opmerking |
@@ -899,8 +954,9 @@ hun eigen stappen.
 | `beweging` | aantal | toename | Ruuvi | toename van de bewegingsteller |
 | `batterijspanning` | V | doorlopend | BTHome, Ruuvi | batterij van de sensor zelf |
 | `rssi` | dBm | doorlopend | alle BLE-apparaten | signaalsterkte, gemeten door de scanner |
-| `spanning` | V | doorlopend | BMV-700 | accuspanning |
-| `stroom` | A | doorlopend | BMV-700 | negatief = ontladen |
+| `spanning` | V | doorlopend | BMV-700, Shelly-relais | accuspanning; bij het relais de netspanning (§5.2.6) |
+| `stroom` | A | doorlopend | BMV-700, Shelly-relais | accu: negatief = ontladen; bij het relais de stroom door de plug |
+| `vermogen` | W | doorlopend | Shelly-relais | wat het geschakelde apparaat opneemt (§5.2.6, v0.63) |
 | `soc` | % | doorlopend | BMV-700 | laadtoestand |
 | `verbruikt` | Ah | doorlopend | BMV-700 | verbruikt sinds vol |
 | `resterende_tijd` | min | doorlopend | BMV-700 | geen waarde tijdens laden |
@@ -1254,7 +1310,7 @@ betreffende reader uitvoert. Zo blijft er per apparaat één component die ermee
    |---|---|
    | `{ type = "video" }` | poll-nu voor een video als het alarm afgaat (§5.5.1, §5.7) |
    | `{ type = "foto" }` | poll-nu voor een foto als het alarm afgaat, los van de notificatie |
-   | `{ type = "relais", relais = "<sensor>" }` | relais aan als het alarm afgaat, uit bij herstel (§5.2.6) |
+   | `{ type = "relais", relais = "<sensor>" }` | relais aan als het alarm afgaat, uit bij herstel; alleen aan zolang `walstroom` = 1 (§5.2.6) |
 
    Een regel kan nul of meer acties hebben. Een opdracht aan de MultiPlus is niet
    voorzien: Instant Readout is alleen lezen (§5.2.2). Een actie wordt alleen uitgevoerd
@@ -2557,6 +2613,7 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 | 24 | ~~Opnamemethode camera~~ – **besloten in v0.37**: foto via het snapshot-adres, video via RTSP met `ffmpeg` zonder omrekenen; beide adressen per camera in de configuratie | §5.7 |
 | 25 | ~~Tabel van grootheden~~ – **besloten in v0.9** | §5.3.3 |
 | 26 | BLE passief scannen in plaats van actief (spaart een beetje sensorbatterij; vraagt extra BlueZ-instellingen) | §5.2.1 |
+| 27 | Energieteller van het Shelly-relais (Wh) ook opslaan, naast vermogen, spanning en stroom | §5.2.6 |
 
 Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/eSIM.
 
@@ -2584,7 +2641,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.62** | 2026-11-14 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4): één knop "+ Grafiek"; de bron (live of database) als keuzelijst linksboven in de grafiek, ook te wijzigen met reeksen erin (reeksen blijven, venster of periode terug naar de standaard). Legenda op de telefoon: rechtop één kolom, liggend twee kolommen, beide in de korte vorm. Systeempagina (§5.6 punt 3): logboek met "laatste 24 uur" en "laatste 48 uur" in plaats van "vandaag". Gebouwd in code v0.23.0. |
+| **0.63** | 2026-11-14 | Claude Code, Fable 5.2 | Relais uitgewerkt (§5.2.6): model Shelly Plug M Gen3 voor een kachel van 1500 W; één alarmregel als thermostaat; uitschakeltijd 10 minuten, herhalen elke 5 minuten; de actie `relais` schakelt alleen aan zolang `walstroom` = 1 (onbekend = uit); de plug levert ook `vermogen` (nieuwe grootheid, §5.3.3), `spanning` en `stroom`. OPEN-27 toegevoegd (energieteller). Ontwerp; nog niet gebouwd. |
+| 0.62 | 2026-11-14 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4): één knop "+ Grafiek"; de bron (live of database) als keuzelijst linksboven in de grafiek, ook te wijzigen met reeksen erin (reeksen blijven, venster of periode terug naar de standaard). Legenda op de telefoon: rechtop één kolom, liggend twee kolommen, beide in de korte vorm. Systeempagina (§5.6 punt 3): logboek met "laatste 24 uur" en "laatste 48 uur" in plaats van "vandaag". Gebouwd in code v0.23.0. |
 | 0.61 | 2026-11-14 | Claude Code, Fable 5.2 | Systeempagina (§5.6 punt 3): het logboek als keuze (laatste 10 als standaard, laatste 50, laatste 3 uur, laatste 6 uur, vandaag) met bladeren eerder / later / nu, in plaats van de laatste 200 met een knop "ouder"; de filters service en niveau blijven. Grafiekenpagina (§5.6 punt 4): de legenda in kolommen van gelijke breedte; op een smal scherm alleen sensornaam, waarde en leeftijd. Vast aantal decimalen per grootheid bij het tonen (§5.3.3). Gebouwd in code v0.22.0. |
 | 0.60 | 2026-11-14 | Claude Code, Fable 5.2 | Bilge herzien (§5.2.4): geen tweede vlotter voor hoogwater. De Shelly Plus Uni zit bij de bestaande vlotter van de bilgepomp: voeding van de kant met altijd 12 V, de geschakelde kant op de spanningsmeting → `bilgepomp`. Grootheid `bilge` en alarm "bilge" blijven bestaan voor een eventuele latere waterdetector, maar zijn nu niet in gebruik (§5.3.3, §5.5). Alleen tekst en voorbeeldconfiguratie; de code is niet gewijzigd. |
 | 0.59 | 2026-11-14 | Claude Code, Fable 5.2 | OPEN-26 toegevoegd (§5.2.1 punt 1, §11): de BLE-scanner scant nu actief (standaard van `bleak`), met de reden waarom `bleak` dat doet; open of dat passief moet worden om sensorbatterij te sparen. Alleen tekst; de code is niet gewijzigd. |

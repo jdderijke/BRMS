@@ -27,6 +27,7 @@ Het systeem draait maanden **onbeheerd**: betrouwbaarheid en eenvoud gaan boven 
 | Zonnepanelen | 3 banken: 2× Victron BlueSolar MPPT 75/15 + VE.Direct Bluetooth Smart dongle, 1× SmartSolar MPPT 100/30 (ingebouwde BT). Winter: alleen 50 Wp aangesloten | In bezit |
 | Lader/omvormer, walstroom | Victron MultiPlus 12/3000/120-16 (VE.Bus) + VE.Bus Smart dongle (Instant Readout, AC-ingang = walstroom). MK3-USB alleen voor configuratie | MultiPlus/MK3 in bezit, dongle nog kopen |
 | Bilge | Shelly Plus Uni (12V), lokale API: spanning achter de bestaande vlotter = bilgepomp aan; geen tweede vlotter, later eventueel een waterdetector (ARCHITECTURE.md §5.2.4) | Shelly besteld |
+| Kachel | Shelly Plug M Gen3 (tussenstekker met energiemeting, wifi, lokale API) schakelt een elektrische kachel van 1500 W bij vorst; alleen met walstroom (ARCHITECTURE.md §5.2.6) | Nog kopen |
 | Camera | IP-camera wifi 2,4 GHz, RTSP/ONVIF, 12V, altijd aan (zie ARCHITECTURE.md §5.7) | Later |
 | Voeding | 12V boordnet → zekering → BatteryProtect → DC-DC 12→5V 3A | Nog kopen |
 
