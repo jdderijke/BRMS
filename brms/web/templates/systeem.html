@@ -38,6 +38,10 @@
   #logboek td.tekst { word-break: break-word; }
   #logboek tr.fout td.tekst { color: var(--fout); }
   .log { max-height: 70vh; overflow: auto; }
+  /* Achter de bladerknoppen: welk deel er staat (een periode, of "regel 11 t/m 20"). Op
+     een eigen regel, zodat de knoppen niet verschuiven als de tekst verandert. */
+  .logkeuze .welke { flex: 1 1 100%; color: var(--zacht); font-size: 13px; }
+  .logkeuze .welke:empty { display: none; }
   /* De schijfruimte: een balk met het gebruikte deel ingekleurd. */
   .meter { height: 12px; border-radius: 6px; background: var(--raster); overflow: hidden; margin: 6px 0; }
   .meter i { display: block; height: 100%; background: var(--accent); }
@@ -46,6 +50,12 @@
   @media (max-width: 640px) {
     #logboek td.tekst { padding-top: 3px; }
     .herstart button { flex: 1 1 100%; }
+    /* Smal scherm: de twee filters elk op een eigen regel; daaronder de keuzelijst, die
+       de regel vult naast de drie bladerknoppen (zoals op de alarmenpagina). */
+    .logkeuze label { flex: 1 1 100%; display: flex; align-items: center; gap: 8px; }
+    .logkeuze label select { flex: 1 1 auto; min-width: 0; }
+    .logkeuze .ruimte { display: none; }
+    .logkeuze > select { flex: 1 1 0; min-width: 0; }
   }
 </style>
 {% endblock %}
@@ -70,17 +80,30 @@
 
   <section class="blok">
     <h2>Logboek</h2>
-    <div class="rij">
+    {# Twee filters (service en niveau) en de keuze welk deel van het logboek er staat
+       (v0.61), met dezelfde bladerknoppen als bij de grafieken en de alarmen. Niets hiervan
+       wordt onthouden: na opnieuw laden gelden de standaarden (alle services, alleen
+       fouten, laatste 10). #}
+    <div class="rij logkeuze" id="log-keuze">
       <label>Service <select id="log-service"><option value="">alle</option></select></label>
       <label>Niveau <select id="log-niveau">
         {# Standaard alleen de fouten (v0.58): waarschuwingen zijn er veel en zelden
-           dringend. De keuze wordt niet onthouden; na opnieuw laden geldt de standaard. #}
+           dringend. #}
         <option value="">waarschuwingen en fouten</option>
         <option value="1" selected>alleen fouten</option>
       </select></label>
       <span class="ruimte"></span>
-      <button id="log-nieuwste" hidden>◀ nieuwste</button>
-      <button id="log-ouder" disabled>ouder ▶</button>
+      {# n<aantal> = de laatste zoveel regels; t<seconden> = de laatste zoveel tijd;
+         dag = vandaag (zie logVenster in het script). #}
+      <select class="periode" title="Welk deel van het logboek de lijst toont" aria-label="Welk deel van het logboek de lijst toont">
+        <option value="n10" selected>laatste 10</option>
+        <option value="n50">laatste 50</option>
+        <option value="t10800">laatste 3 uur</option>
+        <option value="t21600">laatste 6 uur</option>
+        <option value="dag">vandaag</option>
+      </select>
+      {% include "_bladeren.html" %}
+      <span class="welke"></span>
     </div>
     <p id="log-uitleg" class="zacht" hidden></p>
     <div class="log">
@@ -89,6 +112,8 @@
         <tbody id="logregels"></tbody>
       </table>
     </div>
+    <p id="log-vol" class="zacht klein" hidden>Deze periode heeft meer regels dan hier passen: alleen de
+      nieuwste staan er. Kies een kortere periode of een filter voor de rest.</p>
   </section>
 
   <section class="blok">
@@ -203,22 +228,70 @@ function toonSchijf(s) {
 }
 
 // --- logboek -------------------------------------------------------------------------------
-// `voor`: alleen regels van vóór dit tijdstip (microseconden); null = de nieuwste. Zolang er
-// teruggebladerd is, ververst het logboek niet vanzelf (de lijst zou onder je vingers
-// verschuiven).
-let voor = null;
-let oudste = null;          // het tijdstip van de oudste getoonde regel
+// Welk deel van het logboek de lijst toont (v0.61, §5.6 systeempagina punt 3); dezelfde
+// opzet als bij de grafieken en de alarmen:
+//   logKeuze         "n10" / "n50"  de laatste 10 of 50 regels;
+//                    "t10800" / "t21600"  de laatste 3 of 6 uur;
+//                    "dag"  vandaag;
+//   logVerschuiving  0 = nu; N = N bladen of perioden eerder (de 10 regels daarvoor, de
+//                    3 uur daarvoor, gisteren);
+//   logAnker         bij een tijdvenster: het tijdstip (Unix-seconden) waarop het
+//                    terugbladeren begon. Eerdere vensters worden vanaf dat punt geteld,
+//                    zodat ze niet verschuiven terwijl de klok doorloopt.
+// De filters (service, niveau) gelden daarbovenop. Zolang er teruggebladerd is, ververst
+// het logboek niet vanzelf (de lijst zou onder je vingers verschuiven).
+let logKeuze = "n10", logVerschuiving = 0, logAnker = null;
+// Telt de aanvragen: een antwoord op een vraag van vóór de laatste klik wordt weggegooid.
+let logAanvraag = 0;
 let servicesGevuld = false;
+const LOG_DAGEN = ["zo", "ma", "di", "wo", "do", "vr", "za"];
+// Zoveel seconden loopt een venster "tot nu" door ná de klok van de browser: de tijden
+// in het logboek komen van de Pi, en die klok kan iets voorlopen.
+const LOG_MARGE = 300;
+const logQ = klasse => el("log-keuze").querySelector("." + klasse);
+
+// De gekozen keuze als {vraag: de velden voor /api/logboek, tekst: wat erachter staat}.
+// De grenzen van een periode worden hier uitgerekend en niet op de Pi: "vandaag" begint
+// in de tijdzone van de kijker.
+function logVenster() {
+  const getal = Number(logKeuze.slice(1));
+  if (logKeuze[0] === "n") {
+    // De laatste N regels; eerder = de N daarvoor. Op het eerste blad staat er geen
+    // tekst: de keuzelijst zegt het al.
+    return {vraag: {aantal: getal, overslaan: logVerschuiving * getal},
+            tekst: logVerschuiving ? "regel " + (logVerschuiving * getal + 1) + " t/m "
+                                     + (logVerschuiving + 1) * getal : ""};
+  }
+  if (logKeuze === "dag") {
+    // `new Date(jaar, maand, dag)` rekent zelf door over maand- en jaargrenzen en volgt
+    // zomer- en wintertijd.
+    const nu = new Date(), j = nu.getFullYear(), m = nu.getMonth(), d = nu.getDate();
+    const van = new Date(j, m, d - logVerschuiving), tot = new Date(j, m, d - logVerschuiving + 1);
+    return {vraag: {van: Math.floor(van / 1000), tot: Math.floor(tot / 1000)},
+            tekst: LOG_DAGEN[van.getDay()] + " " + van.getDate() + "-" + (van.getMonth() + 1)
+                   + "-" + van.getFullYear()};
+  }
+  // Een tijdvenster van `getal` seconden. Niet teruggebladerd: tot nu (met wat marge).
+  // Wel teruggebladerd: N vensters vóór het anker.
+  if (logVerschuiving === 0) {
+    const nu = Math.floor(Date.now() / 1000);
+    return {vraag: {van: nu - getal, tot: nu + LOG_MARGE}, tekst: ""};
+  }
+  const tot = logAnker - logVerschuiving * getal, van = tot - getal;
+  return {vraag: {van, tot}, tekst: moment(van) + "  –  " + moment(tot)};
+}
 
 async function laadLogboek() {
-  const vraag = new URLSearchParams();
+  const mijn = ++logAanvraag, venster = logVenster();
+  const vraag = new URLSearchParams(venster.vraag);
   if (el("log-service").value) vraag.set("service", el("log-service").value);
   if (el("log-niveau").value) vraag.set("fouten", "1");
-  if (voor !== null) vraag.set("voor", voor);
   try {
     const a = await fetch("/api/logboek?" + vraag);
     if (!a.ok) throw new Error("fout " + a.status);
     const d = await a.json();
+    // Intussen is er opnieuw geklikt: dit antwoord hoort bij een oude keuze.
+    if (mijn !== logAanvraag) return;
     if (!servicesGevuld) {
       for (const naam of d.services) el("log-service").add(new Option(naam, naam));
       servicesGevuld = true;
@@ -232,7 +305,8 @@ async function laadLogboek() {
     if (!d.regels.length && !d.uitleg) {
       const td = tbody.insertRow().insertCell();
       td.colSpan = 4; td.className = "zacht";
-      td.textContent = voor === null ? "Geen waarschuwingen of fouten (met deze keuze)." : "Geen oudere regels.";
+      td.textContent = logVerschuiving === 0 ? "Geen waarschuwingen of fouten (met deze keuze)."
+                     : logKeuze[0] === "n" ? "Geen oudere regels." : "Geen regels in deze periode.";
     }
     for (const r of d.regels) {
       const tr = tbody.insertRow();
@@ -242,18 +316,31 @@ async function laadLogboek() {
       tr.insertCell().append(maak("span", "etiket " + (r.niveau === "fout" ? "fout" : "let-op"), r.niveau));
       const tekst = tr.insertCell(); tekst.className = "tekst"; tekst.textContent = r.tekst;
     }
-    oudste = d.regels.length ? d.regels[d.regels.length - 1].us : null;
-    el("log-ouder").disabled = !d.meer || oudste === null;
-    el("log-nieuwste").hidden = voor === null;
+    el("log-vol").hidden = !d.vol;
+    // De bladerknoppen. "Eerder" alleen als er nog oudere regels zijn (uit het antwoord
+    // van de webservice); "later" en "nu" hebben alleen zin als er teruggebladerd is.
+    logQ("eerder").disabled = !d.eerder;
+    logQ("later").disabled = logQ("nu").disabled = logVerschuiving === 0;
+    logQ("welke").textContent = venster.tekst;
   } catch (e) {
     el("log-uitleg").hidden = false;
     el("log-uitleg").textContent = "Het logboek kon niet worden opgehaald (" + e.message + ").";
   }
 }
-el("log-ouder").addEventListener("click", () => { voor = oudste; laadLogboek(); });
-el("log-nieuwste").addEventListener("click", () => { voor = null; laadLogboek(); });
+// Een andere keuze of een ander filter begint altijd bij nu.
+logQ("periode").addEventListener("change", () => {
+  logKeuze = logQ("periode").value; logVerschuiving = 0; laadLogboek();
+});
 for (const id of ["log-service", "log-niveau"])
-  el(id).addEventListener("change", () => { voor = null; laadLogboek(); });
+  el(id).addEventListener("change", () => { logVerschuiving = 0; laadLogboek(); });
+logQ("eerder").addEventListener("click", () => {
+  // Bij de eerste stap terug het eindpunt vastleggen (zie logAnker hierboven).
+  if (logVerschuiving === 0) logAnker = Math.floor(Date.now() / 1000);
+  logVerschuiving += 1;
+  laadLogboek();
+});
+logQ("later").addEventListener("click", () => { logVerschuiving = Math.max(0, logVerschuiving - 1); laadLogboek(); });
+logQ("nu").addEventListener("click", () => { logVerschuiving = 0; laadLogboek(); });
 
 // --- herstarten ------------------------------------------------------------------------------
 const HERSTART = {
@@ -334,7 +421,7 @@ laadSysteem();
 laadLogboek();
 const verversen = setInterval(() => {
   laadSysteem();
-  if (voor === null) laadLogboek();
+  if (logVerschuiving === 0) laadLogboek();
 }, INTERVAL);
 </script>
 {% endblock %}

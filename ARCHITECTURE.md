@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.58 – concept** · 13 november 2026
+**Versie 0.61 – concept** · 14 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -301,6 +301,17 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
 1. **Eén BLE-reader** voor alle BLE-sensoren: één scanner die elke advertentie op basis van
    UUID/fabrikant-ID doorgeeft aan een **decoder** per sensortype (`brms/readers/`). Een
    decoder is een zuivere functie: bytes in, waarden uit.
+
+   *Actief of passief scannen (v0.59).* De scanner scant nu **actief**, de standaard van
+   `bleak`. Een advertentie kan maar 31 bytes bevatten; veel apparaten zetten daarom een
+   deel van hun gegevens (meestal de naam) in een tweede pakketje, de *scan response*,
+   dat ze alleen sturen als een scanner erom vraagt. Een algemene bibliotheek als `bleak`
+   wil van elk apparaat een zo compleet mogelijk beeld geven en vraagt er dus standaard
+   om; bovendien werkt actief scannen op elk platform zonder extra instellingen. BRMS
+   heeft de scan response niet nodig: de meetwaarden van Xiaomi (BTHome), Ruuvi en Victron
+   staan volledig in de advertentie zelf. Het antwoord kost de sensor een klein beetje
+   extra zendenergie. **[OPEN-26]** Overstappen op passief scannen (alleen luisteren)?
+   Dat vraagt op Linux extra BlueZ-instellingen.
 2. **Eén Shelly-reader** die alle Shelly's pollt (interval per Shelly instelbaar, standaard
    30 s; bilge 2 s, §5.2.4), via de standaardbibliotheek
    (`urllib`, uitgevoerd in een thread vanuit asyncio).
@@ -331,7 +342,7 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
 | BTHome v2 | Xiaomi Monitor 3 (pvvx) | BLE-advertenties, eigen decoder (§5.2.3) | Eerste stap |
 | Ruuvi | RuuviTag (Pro) | BLE-advertenties, eigen decoder (§5.2.3) | Gebouwd (v0.19); nog niet getest met een echte RuuviTag |
 | Victron | BMV-700, 3× MPPT, MultiPlus | BLE Instant Readout, decoder in de BLE-reader (§5.2.2) | Gebouwd (v0.27); nog niet getest met de echte apparaten |
-| Shelly | Bilge: hoogwatervlotter en pompspanning (Shelly Plus Uni) | Lokale HTTP-API (§5.2.4) | Gebouwd (v0.29); nog niet getest met een echte Shelly |
+| Shelly | Bilge: pompspanning achter de bestaande vlotter (Shelly Plus Uni) | Lokale HTTP-API (§5.2.4) | Gebouwd (v0.29); nog niet getest met een echte Shelly |
 | Shelly-relais | Schakelaar voor o.a. verwarming | Lokale HTTP-API: pollen en schakelen (§5.2.6) | Ontworpen (v0.31) |
 | Camera | IP-camera dek | Foto per interval, video op poll-nu (§5.7) | Later |
 | GPIO | Waar nodig | — | Gepland |
@@ -414,19 +425,29 @@ en betekent stilte gewoon "sensor stil". Er is geen werk aan de 230V-kant nodig.
 10. Victron-apparaten kunnen gesimuleerd worden (v0.30, §10.3): de reader maakt zelf een
     bericht aan en versleutelt het met de sleutel uit de configuratie.
 
-#### 5.2.4 Bilge (v0.14)
+#### 5.2.4 Bilge (v0.14, herzien in v0.60)
 
-**Aanleiding.** De bestaande vlotter is in gebruik door de bilgepomp en niet beschikbaar
-voor BRMS.
+**Aanleiding.** In v0.14 was naast de meting van de pompspanning een tweede vlotter
+(hoogwater) voorzien. In v0.60 is besloten die tweede vlotter niet te plaatsen: BRMS meet
+alleen aan de bestaande vlotter van de bilgepomp.
 
-**Redenering.** Twee signalen vullen elkaar aan. Een tweede vlotter, hoger dan het
-inschakelniveau van de pomp, gaat pas af als de pomp het niet bijhoudt of defect is: dan
-moet worden ingegrepen. Meten of de pomp draait geeft het vroegste signaal van een lek: de
-pomp draait vaker of langer. De Shelly Plus Uni kan beide: een digitale ingang voor een
-contact en een spanningsmeting (0–15 / 0–30 V DC), en wordt rechtstreeks uit het
-12V-boordnet gevoed (9–28 V DC, < 1 W); er komt geen 230 V in de bilge. Een pompbeurt kan
-korter zijn dan het standaard poll-interval van 30 s en zou dan gemist worden; vaker
-pollen via dezelfde lokale HTTP-API is de eenvoudigste oplossing (P1).
+**Redenering.** De bestaande vlotter staat in serie met de bilgepomp: stijgt het water,
+dan sluit hij en staat er 12 V op de pompkant. Die ene spanning zegt genoeg. Draait de
+pomp vaker of langer, dan is dat het vroegste signaal van een lek. Houdt de pomp het niet
+bij of is hij defect, dan blijft de vlotter gesloten en blijft de spanning staan: het
+alarm "bilgepomp lang" (§5.5.2) meldt dat. Een tweede vlotter voegt daar weinig aan toe en
+vraagt extra bedrading in de bilge (P1). De Shelly Plus Uni heeft een spanningsmeting
+(0–15 / 0–30 V DC) en wordt rechtstreeks uit het 12V-boordnet gevoed (9–28 V DC, < 1 W);
+er komt geen 230 V in de bilge. De voeding komt van de kant van de vlotter waar altijd
+12 V op staat, de meting van de andere (geschakelde) kant: alles zit bij dezelfde vlotter.
+Valt die 12 V weg, dan valt ook de Shelly stil en meldt het alarm "sensor stil" dat. Een
+pompbeurt kan korter zijn dan het standaard poll-interval van 30 s en zou dan gemist
+worden; vaker pollen via dezelfde lokale HTTP-API is de eenvoudigste oplossing (P1).
+
+Wat zo niet gezien wordt, is een vlotter die niet inschakelt terwijl het water stijgt.
+Daarvoor kan later een waterdetector (probe) op een digitale ingang van de Uni komen; de
+grootheid `bilge` en het alarm "bilge" blijven daarvoor bestaan, maar worden nu niet
+gebruikt.
 
 *Waarom wifi en niet Bluetooth (v0.19).* De overige sensoren komen via Bluetooth binnen
 omdat ze hun metingen zelf uitzenden als advertentie: de BLE-reader hoeft alleen te
@@ -445,17 +466,22 @@ er al.
 - *De Shelly Plus Uni via Bluetooth uitlezen.* De Uni zendt zijn toestand niet uit als
   advertentie; een verbinding per poll botst met de continu scannende adapter (zie
   redenering).
-- *De bestaande pompvlotter meegebruiken.* In gebruik door de pomp.
+- *Een tweede vlotter voor hoogwater, boven het inschakelniveau van de pomp (ontwerp
+  v0.14).* Vervallen in v0.60: een pomp die het niet bijhoudt of defect is, is al te zien
+  aan de spanning die blijft staan; de extra vlotter en bedrading wegen daar niet tegen op.
 - *Shelly stuurt zelf een bericht bij verandering (webhook of eigen MQTT).* Vraagt een extra
   ontvanger op de Pi; snel pollen volstaat.
 
 **Specificatie.**
-1. Eén **Shelly Plus Uni** op 12 V met:
-   - een **hoogwatervlotter** (tweede vlotter, boven het inschakelniveau van de pomp) op een
-     digitale ingang → grootheid `bilge`;
-   - de **spanning op de bilgepomp** via de spanningsmeting → grootheid `bilgepomp`
-     (1 = pomp krijgt spanning). De drempel (spanning → 0/1) staat in de configuratie. De
-     precieze aansluiting wordt bepaald zodra de Uni er is.
+1. Eén **Shelly Plus Uni** bij de bestaande vlotter van de bilgepomp:
+   - de **voeding** komt van de kant van de vlotter waar altijd 12 V op staat;
+   - de **geschakelde kant van de vlotter** (de pompkant) gaat naar de spanningsmeting →
+     grootheid `bilgepomp` (1 = vlotter gesloten, pomp krijgt spanning). De drempel
+     (spanning → 0/1) staat in de configuratie. De precieze aansluiting wordt bepaald
+     zodra de Uni er is;
+   - er komt **geen tweede vlotter** (v0.60). Later kan een waterdetector (probe) op een
+     digitale ingang komen → grootheid `bilge`. Zolang die er niet is, krijgt `bilge` geen
+     `bron` en wordt de grootheid niet geleverd.
 2. De bilge-Shelly wordt elke **2 s** gepolld.
 3. Een **pompbeurt** is een overgang van `bilgepomp` 0 → 1; de alarmlaag telt de beurten.
 4. **Sensortype `shelly-uni`** in de configuratie (v0.29). Het `id` is een vrij gekozen
@@ -477,9 +503,11 @@ er al.
    naam = "bilge"
    adres = "192.168.1.50"
    interval = 2
-   bron = { bilge = "input:0", bilgepomp = "voltmeter:100" }
+   bron = { bilgepomp = "voltmeter:100" }
    drempel = 6.0
    ```
+   Met een waterdetector erbij wordt het
+   `bron = { bilge = "input:0", bilgepomp = "voltmeter:100" }`.
    Het type levert `bilge`, `bilgepomp` (elk alleen met een `bron`) en `rssi` (de
    signaalsterkte van de wifi, zoals de Shelly die meldt). `check-config` controleert de
    velden.
@@ -849,6 +877,18 @@ letters, zonder eenheid in de naam. Enkele keuzes:
 **Specificatie.** Een reader kan alleen grootheden uit deze tabel publiceren. De tabel
 staat op één plek in de code (module `grootheden`); dit document bevat een kopie.
 
+**Decimalen (v0.61).** Elke grootheid heeft een vast aantal decimalen waarmee het web een
+waarde toont (§5.6 punt 4, legenda en aanwijzer van de grafieken). Een vast aantal houdt
+de getallen even breed, zodat de tekst niet verspringt. Het geldt alleen voor het tonen:
+de opslag en de alarmen rekenen met de volle waarde, en de assen van een grafiek kiezen
+hun eigen stappen.
+
+| Decimalen | Grootheden |
+|---|---|
+| 0 | `luchtdruk`, toestanden 0/1 (`walstroom`, `bilge`, `bilgepomp`, `relais`), `versnelling_x/y/z`, `rssi`, `beweging`, `resterende_tijd`, `helling` |
+| 1 | `temperatuur`, `vocht`, `soc`, `zonnevermogen`, `verbruikt` |
+| 2 | `spanning`, `batterijspanning`, `stroom`, `laadstroom_zon` |
+
 | Grootheid | Eenheid | Soort | Bron | Opmerking |
 |---|---|---|---|---|
 | `temperatuur` | °C | doorlopend | BTHome, Ruuvi | |
@@ -867,7 +907,7 @@ staat op één plek in de code (module `grootheden`); dit document bevat een kop
 | `zonnevermogen` | W | doorlopend | MPPT (3×) | vermogen van het paneel |
 | `laadstroom_zon` | A | doorlopend | MPPT (3×) | stroom van de MPPT naar de accu |
 | `walstroom` | 0/1 | toestand | MultiPlus | 1 = AC-ingang aanwezig |
-| `bilge` | 0/1 | toestand | Shelly Plus Uni | 1 = hoogwatervlotter actief (§5.2.4) |
+| `bilge` | 0/1 | toestand | Shelly Plus Uni | 1 = waterdetector actief; nu niet aangesloten (§5.2.4) |
 | `bilgepomp` | 0/1 | toestand | Shelly Plus Uni | 1 = bilgepomp krijgt spanning (§5.2.4) |
 | `relais` | 0/1 | toestand | Shelly-relais | 1 = relais aan (§5.2.6, v0.31) |
 
@@ -988,7 +1028,7 @@ gecontroleerd worden en kan de gebruiker het opzoeken.
 | Accu laag | SoC onder drempel, bijv. 50 % |
 | Vocht | Luchtvochtigheid langdurig > 80 % |
 | Vorst | Temperatuur < 2 °C |
-| Bilge | Hoogwatervlotter actief (§5.2.4) |
+| Bilge | Waterdetector actief; nu niet in gebruik, er is geen detector (§5.2.4) |
 | Bilgepomp lang | Pomp draait aan één stuk langer dan drempel |
 | Bilgepomp vaak | Aantal pompbeurten binnen een tijdvenster boven drempel |
 | Sensor stil | Sensor levert geen data meer |
@@ -1531,6 +1571,22 @@ schrijvers op dezelfde database en map.
      7 dagen of 30 dagen, met bladeren naar eerdere perioden. Een interval zonder rij
      blijft in de grafiek open.
 
+   **Legenda** (v0.61). Boven elke grafiek staat per reeks het kleurstreepje, de naam, de
+   laatste waarde en een kruisje om de reeks te verwijderen.
+   - De reeksen staan in **kolommen van gelijke breedte**, zoveel als er naast elkaar
+     passen; een te lange naam wordt afgekapt. Tot v0.60 stonden ze als doorlopende tekst
+     achter elkaar: veranderde een waarde van lengte, dan brak de regel op een andere
+     plaats af en versprongen alle teksten.
+   - Breed scherm: `sensor · grootheid`, de waarde met eenheid en het tijdstip met
+     seconden.
+   - Smal scherm (telefoon rechtop): alleen de **sensornaam, de waarde met eenheid en de
+     leeftijd** van de meting, bijvoorbeeld `buiten · 19,2 °C (-1m)`. De eenheid en de
+     kleur zeggen welke grootheid het is. De leeftijd staat in minuten; vanaf 100 minuten
+     in uren (`-5u`) en vanaf twee dagen in dagen (`-12d`), voor een oude meting uit de
+     database.
+   - Waarden staan met het **vaste aantal decimalen** van de grootheid (§5.3.3), in de
+     legenda en in de aanwijzer van de grafiek.
+
    Toestanden (0/1) worden als trap getekend. Tijden staan in de lokale tijd van de browser.
 5. **Server** (v0.22): de ingebouwde server van Flask (Werkzeug), één thread per aanvraag,
    als service `brms-web` (`brms web`). Adres en poort staan in de configuratie
@@ -1648,11 +1704,29 @@ het logboek nog niet getest op de Pi).** Van boven naar beneden:
      `NoNewPrivileges` kwijt moeten); een eigen root-service die op een opdracht over de
      bus herstart (een extra onderdeel, en het werkt niet als de broker de storing is).
    - Wie de pagina kan openen, kan herstarten (OPEN-15).
-3. **Logboek** (§5.5.5): de laatste 200 waarschuwingen en fouten, de nieuwste bovenaan,
-   met tijd, service, niveau en tekst. Te kiezen: de service, en alleen fouten of ook
-   waarschuwingen. De pagina opent op **alleen fouten** (v0.58; eerder op waarschuwingen
-   en fouten): waarschuwingen zijn er veel en zelden dringend. "ouder" bladert terug. Zolang de pagina open staat, ververst hij
-   elke 30 s.
+3. **Logboek** (§5.5.5): waarschuwingen en fouten, de nieuwste bovenaan, met tijd,
+   service, niveau en tekst.
+   - **Filters:** de service (standaard **alle**) en het niveau: alleen fouten of ook
+     waarschuwingen. De pagina opent op **alleen fouten** (v0.58; eerder op waarschuwingen
+     en fouten): waarschuwingen zijn er veel en zelden dringend.
+   - **Welk deel** (v0.61), met dezelfde opzet als de grafieken en de alarmen: een
+     keuzelijst met **laatste 10** (de standaard), **laatste 50**, **laatste 3 uur**,
+     **laatste 6 uur** en **vandaag**, en ernaast de knoppen **eerder**, **later** en
+     **nu** (dezelfde pictogrammen, punt 4 van de testpagina). "Eerder" geeft de 10 of 50
+     regels daarvoor, de 3 of 6 uur daarvoor, of gisteren; "nu" gaat terug naar de
+     nieuwste. "Eerder" is alleen actief als er nog oudere regels zijn. Achter de knoppen
+     staat welk deel er staat (de dag, de periode, of "regel 11 t/m 20").
+   - De filters gelden bovenop de keuze: "laatste 10" met "alleen fouten" zijn de laatste
+     10 fouten. Een ander filter of een andere keuze begint weer bij nu.
+   - Een periode toont hooguit 200 regels (de nieuwste); zijn er meer, dan staat dat
+     eronder.
+   - Niets wordt onthouden: na opnieuw laden gelden de standaarden. Zolang de pagina open
+     staat en er niet teruggebladerd is, ververst het logboek elke 30 s.
+
+   *Waarom (v0.61).* Tot v0.60 stonden de laatste 200 regels onder elkaar met een knop
+   "ouder". Met minder dan 200 regels deed die knop niets, en de lijst was lang. Een korte
+   lijst met dezelfde keuze en knoppen als elders in het web is overzichtelijker en hoeft
+   niet apart geleerd te worden.
 4. **Opslag:**
    - *Schijfruimte:* grootte, gebruikt en vrij van de schijf waarop `data/` staat, en
      daarvan de omvang van de database en van de opnames. De webservice vraagt dit zelf
@@ -2472,6 +2546,7 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 | 23 | ~~MQTT-topic-indeling en berichtformaat~~ – **besloten in v0.8**: `brms/meting`, `brms/opname`, `brms/opdracht`, complete JSON-berichten, geen retain | §3.3 |
 | 24 | ~~Opnamemethode camera~~ – **besloten in v0.37**: foto via het snapshot-adres, video via RTSP met `ffmpeg` zonder omrekenen; beide adressen per camera in de configuratie | §5.7 |
 | 25 | ~~Tabel van grootheden~~ – **besloten in v0.9** | §5.3.3 |
+| 26 | BLE passief scannen in plaats van actief (spaart een beetje sensorbatterij; vraagt extra BlueZ-instellingen) | §5.2.1 |
 
 Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/eSIM.
 
@@ -2499,7 +2574,10 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.58** | 2026-11-13 | Claude Code, Fable 5.2 | Systeempagina (§5.6): het logboek opent op "alleen fouten". Zijbalk: de naam in twee regels, "BRMS" met eronder "Boat Remote Monitoring System" (was "BRMS boot op afstand"). Gebouwd in code v0.21.1. |
+| **0.61** | 2026-11-14 | Claude Code, Fable 5.2 | Systeempagina (§5.6 punt 3): het logboek als keuze (laatste 10 als standaard, laatste 50, laatste 3 uur, laatste 6 uur, vandaag) met bladeren eerder / later / nu, in plaats van de laatste 200 met een knop "ouder"; de filters service en niveau blijven. Grafiekenpagina (§5.6 punt 4): de legenda in kolommen van gelijke breedte; op een smal scherm alleen sensornaam, waarde en leeftijd. Vast aantal decimalen per grootheid bij het tonen (§5.3.3). Gebouwd in code v0.22.0. |
+| 0.60 | 2026-11-14 | Claude Code, Fable 5.2 | Bilge herzien (§5.2.4): geen tweede vlotter voor hoogwater. De Shelly Plus Uni zit bij de bestaande vlotter van de bilgepomp: voeding van de kant met altijd 12 V, de geschakelde kant op de spanningsmeting → `bilgepomp`. Grootheid `bilge` en alarm "bilge" blijven bestaan voor een eventuele latere waterdetector, maar zijn nu niet in gebruik (§5.3.3, §5.5). Alleen tekst en voorbeeldconfiguratie; de code is niet gewijzigd. |
+| 0.59 | 2026-11-14 | Claude Code, Fable 5.2 | OPEN-26 toegevoegd (§5.2.1 punt 1, §11): de BLE-scanner scant nu actief (standaard van `bleak`), met de reden waarom `bleak` dat doet; open of dat passief moet worden om sensorbatterij te sparen. Alleen tekst; de code is niet gewijzigd. |
+| 0.58 | 2026-11-13 | Claude Code, Fable 5.2 | Systeempagina (§5.6): het logboek opent op "alleen fouten". Zijbalk: de naam in twee regels, "BRMS" met eronder "Boat Remote Monitoring System" (was "BRMS boot op afstand"). Gebouwd in code v0.21.1. |
 | 0.57 | 2026-11-13 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4): het live-geheugen van de webservice toegelicht: bewaart altijd (ook zonder open grafiek), waarom, alleen in RAM, 24 uur, en waarom het niet doorgroeit. Alleen tekst; de code is niet gewijzigd. |
 | 0.56 | 2026-11-13 | Claude Code, Fable 5.2 | Alarmenpagina (§5.6): de opgetreden alarmen als keuze (laatste 10 als standaard, vandaag, deze week, deze maand, dit jaar) met bladeren eerder / later / nu, in plaats van de nieuwste 200 onder elkaar. Grafiekenpagina (§5.6 punt 4): de knoppen eerder / later / nu als pictogram; op een smal scherm het kruisje van een grafiek rechtsboven. Gebouwd in code v0.21.0. |
 | 0.55 | 2026-11-12 | Claude Code, Fable 5.2 | Simulatie (§10.3): naast de test (duur opgegeven, hooguit 60 minuten, testreeks) een **demo** (alleen Enter): waarden rond normaal met dag- en nachtritme, elke sensor onafhankelijk, tot `brms sim stop`. Readers melden op `brms/simulatie/<dienst>` wat ze simuleren (§3.2); tegeltje Actief / Simulatie / Demo in de bovenbalk (§5.6). Gebouwd in code v0.20.0. |

@@ -38,7 +38,8 @@ Adressen:
     /api/alarmen/schakel     (POST) een alarmregel aan- of uitzetten; opdracht over de bus
     /systeem                 de pagina met services, herstarten, logboek en schijfruimte
     /api/systeem             status van de services en de schijfruimte
-    /api/logboek             ?fouten=1&service=<naam>&voor=<us>  regels uit journald (§5.5.5)
+    /api/logboek             ?fouten=1&service=<naam> en ?van=&tot= (periode) of
+                             ?aantal=&overslaan= (de laatste N): regels uit journald (§5.5.5)
     /api/systeem/herstart    (POST) {"wat": "brms"|"pi"}: de services of de Pi herstarten
     /api/status              kort: aantal actieve alarmen, services in orde, broker bereikbaar,
                              en of er gesimuleerd wordt (actief, simulatie of demo)
@@ -621,7 +622,8 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
                       for s in cfg.sensoren.values()],
             regels=_regels(cfg),
             # Naam -> eenheid en soort, voor de assen en de vorm van de lijnen.
-            grootheden={g.naam: {"eenheid": g.eenheid, "soort": g.soort}
+            # `decimalen`: met hoeveel decimalen de pagina een waarde toont (§5.3.3).
+            grootheden={g.naam: {"eenheid": g.eenheid, "soort": g.soort, "decimalen": g.decimalen}
                         for g in grootheden.GROOTHEDEN.values()})
 
     @app.post("/api/live")
@@ -886,13 +888,27 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
 
     @app.get("/api/logboek")
     def api_logboek():
+        """Het logboek voor de systeempagina (§5.6 systeempagina punt 3, v0.61).
+
+        Filters:   ?fouten=1 (geen waarschuwingen) en ?service=<naam>.
+        Welk deel: ?van=<ts>&tot=<ts>          de regels in die periode (Unix-seconden);
+                   ?aantal=<n>&overslaan=<m>   de laatste n regels, na de m nieuwste.
+        Zonder iets: de laatste 10. De pagina rekent de periode zelf uit (laatste 3 uur,
+        vandaag, ...), zoals bij de alarmen: een dag begint in de tijdzone van de kijker.
+        """
         service = request.args.get("service") or None
-        regels, meer, uitleg = systeem.logboek(
+        van = _getal(request.args.get("van"), laagste=0)
+        tot = _getal(request.args.get("tot"), laagste=0)
+        # Een halve of omgekeerde periode is geen periode: dan gelden aantal en overslaan.
+        if van is None or tot is None or tot <= van:
+            van = tot = None
+        regels, eerder, vol, uitleg = systeem.logboek(
             alleen_fouten=request.args.get("fouten") == "1", service=service,
-            voor=_getal(request.args.get("voor"), None, 0))
+            aantal=_getal(request.args.get("aantal"), systeem.STANDAARD_AANTAL, 1, systeem.PER_PAGINA),
+            overslaan=_getal(request.args.get("overslaan"), 0, 0), van=van, tot=tot)
         # De services voor de keuzelijst: alle van BRMS, Mosquitto en de kernel.
         namen = systeem.brms_services() + list(systeem.ANDERE_EENHEDEN) + [systeem.KERNEL]
-        return jsonify(regels=regels, meer=meer, uitleg=uitleg, services=namen)
+        return jsonify(regels=regels, eerder=eerder, vol=vol, uitleg=uitleg, services=namen)
 
     @app.post("/api/systeem/herstart")
     def api_herstart():

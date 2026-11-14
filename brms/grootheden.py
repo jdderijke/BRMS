@@ -19,30 +19,38 @@ class Grootheid:
     naam: str
     eenheid: str
     soort: str
+    # Het aantal decimalen waarmee het web een waarde van deze grootheid toont (§5.3.3,
+    # v0.61). Alleen voor het tonen: de opslag en de alarmen rekenen met de volle waarde.
+    # Een vast aantal per grootheid houdt de getallen op het scherm even breed, zodat de
+    # tekst niet verspringt als een waarde verandert.
+    decimalen: int
 
 
+# De decimalen (§5.3.3): 0 voor luchtdruk, toestanden (0/1), versnelling, rssi, beweging en
+# resterende tijd; 1 voor temperatuur, vocht, laadtoestand, zonnevermogen en verbruik;
+# 2 voor spanningen en stromen.
 GROOTHEDEN: dict[str, Grootheid] = {
     g.naam: g
     for g in (
-        Grootheid("temperatuur", "°C", DOORLOPEND),
-        Grootheid("vocht", "%", DOORLOPEND),
-        Grootheid("luchtdruk", "hPa", DOORLOPEND),
-        Grootheid("versnelling_x", "mG", DOORLOPEND),
-        Grootheid("versnelling_y", "mG", DOORLOPEND),
-        Grootheid("versnelling_z", "mG", DOORLOPEND),
-        Grootheid("beweging", "aantal", TOENAME),
-        Grootheid("batterijspanning", "V", DOORLOPEND),
-        Grootheid("rssi", "dBm", DOORLOPEND),
-        Grootheid("spanning", "V", DOORLOPEND),
-        Grootheid("stroom", "A", DOORLOPEND),
-        Grootheid("soc", "%", DOORLOPEND),
-        Grootheid("verbruikt", "Ah", DOORLOPEND),
-        Grootheid("resterende_tijd", "min", DOORLOPEND),
-        Grootheid("zonnevermogen", "W", DOORLOPEND),
-        Grootheid("laadstroom_zon", "A", DOORLOPEND),
-        Grootheid("walstroom", "0/1", TOESTAND),
-        Grootheid("bilge", "0/1", TOESTAND),
-        Grootheid("bilgepomp", "0/1", TOESTAND),
+        Grootheid("temperatuur", "°C", DOORLOPEND, 1),
+        Grootheid("vocht", "%", DOORLOPEND, 1),
+        Grootheid("luchtdruk", "hPa", DOORLOPEND, 0),
+        Grootheid("versnelling_x", "mG", DOORLOPEND, 0),
+        Grootheid("versnelling_y", "mG", DOORLOPEND, 0),
+        Grootheid("versnelling_z", "mG", DOORLOPEND, 0),
+        Grootheid("beweging", "aantal", TOENAME, 0),
+        Grootheid("batterijspanning", "V", DOORLOPEND, 2),
+        Grootheid("rssi", "dBm", DOORLOPEND, 0),
+        Grootheid("spanning", "V", DOORLOPEND, 2),
+        Grootheid("stroom", "A", DOORLOPEND, 2),
+        Grootheid("soc", "%", DOORLOPEND, 1),
+        Grootheid("verbruikt", "Ah", DOORLOPEND, 1),
+        Grootheid("resterende_tijd", "min", DOORLOPEND, 0),
+        Grootheid("zonnevermogen", "W", DOORLOPEND, 1),
+        Grootheid("laadstroom_zon", "A", DOORLOPEND, 2),
+        Grootheid("walstroom", "0/1", TOESTAND, 0),
+        Grootheid("bilge", "0/1", TOESTAND, 0),
+        Grootheid("bilgepomp", "0/1", TOESTAND, 0),
     )
 }
 

@@ -95,10 +95,11 @@ class TestLogboek(unittest.TestCase):
 
     def _lees(self, **keuze):
         with mock.patch.object(subprocess, "run", _journalctl(self.BERICHTEN)) as run:
-            regels, meer, uitleg = systeem.logboek(**keuze)
+            regels, eerder, vol, uitleg = systeem.logboek(**keuze)
         self.assertIsNone(uitleg)
         self.opdracht = run.call_args.args[0]
-        return [r["tekst"] for r in regels], meer
+        self.vol = vol
+        return [r["tekst"] for r in regels], eerder
 
     def test_alles_nieuwste_eerst(self):
         teksten, meer = self._lees()
@@ -115,25 +116,45 @@ class TestLogboek(unittest.TestCase):
         self.assertEqual(self._lees(service="kernel")[0], ["drie"])
         self.assertEqual(self._lees(service="brms-camera", alleen_fouten=True)[0], ["a: een"])
 
-    def test_bladeren_naar_ouder(self):
-        teksten, meer = self._lees(aantal=2)
-        self.assertEqual((teksten, meer), (["a: vijf", "a: vier"], True))
-        # De volgende bladzijde: alles van vóór de oudste getoonde regel.
-        teksten, meer = self._lees(aantal=2, voor=4_000_000)
-        self.assertEqual((teksten, meer), (["drie", "a: twee"], True))
-        teksten, meer = self._lees(aantal=2, voor=2_000_000)
-        self.assertEqual((teksten, meer), (["a: een"], False))
+    def test_bladeren_per_aantal(self):
+        # "Laatste 2", en dan telkens de 2 daarvoor (§5.6 systeempagina punt 3, v0.61).
+        teksten, eerder = self._lees(aantal=2)
+        self.assertEqual((teksten, eerder), (["a: vijf", "a: vier"], True))
+        teksten, eerder = self._lees(aantal=2, overslaan=2)
+        self.assertEqual((teksten, eerder), (["drie", "a: twee"], True))
+        # Het laatste blad: de rest, en verder terug is er niets meer.
+        teksten, eerder = self._lees(aantal=2, overslaan=4)
+        self.assertEqual((teksten, eerder), (["a: een"], False))
+        self.assertEqual(self._lees(aantal=2, overslaan=50), ([], False))
+        # Het overslaan telt ná de filters: de fout vóór de nieuwste fout.
+        self.assertEqual(self._lees(aantal=1, overslaan=1, alleen_fouten=True), (["a: een"], False))
+
+    def test_periode(self):
+        # Van (t/m) 2 s tot (niet t/m) 4 s: wat nieuwer is valt af, wat ouder is ook, maar
+        # dat er iets ouders is, zegt `eerder`.
+        self.assertEqual(self._lees(van=2, tot=4), (["drie", "a: twee"], True))
+        self.assertFalse(self.vol)
+        # Tot en met de oudste regel: verder terug is er niets.
+        self.assertEqual(self._lees(van=0, tot=3), (["a: twee", "a: een"], False))
+        # Een periode zonder regels.
+        self.assertEqual(self._lees(van=100, tot=200), ([], True))
+        # De filters gelden ook binnen een periode.
+        self.assertEqual(self._lees(van=0, tot=10, service="kernel"), (["drie"], False))
+        # Meer regels dan er passen: alleen de nieuwste, en `vol` meldt dat.
+        with mock.patch.object(systeem, "PER_PAGINA", 2):
+            self.assertEqual(self._lees(van=0, tot=10), (["a: vijf", "a: vier"], True))
+        self.assertTrue(self.vol)
 
     def test_zonder_journalctl_of_met_een_fout(self):
         with mock.patch.object(subprocess, "run", side_effect=FileNotFoundError):
-            regels, meer, uitleg = systeem.logboek()
-        self.assertEqual((regels, meer), ([], False))
+            regels, eerder, vol, uitleg = systeem.logboek()
+        self.assertEqual((regels, eerder, vol), ([], False, False))
         self.assertIn("alleen op de Pi", uitleg)
         mislukt = mock.Mock(return_value=subprocess.CompletedProcess([], 1, b"", b"No journal files"))
         with mock.patch.object(subprocess, "run", mislukt):
-            self.assertIn("No journal files", systeem.logboek()[2])
+            self.assertIn("No journal files", systeem.logboek()[3])
         with mock.patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("j", 10)):
-            self.assertIn("kon niet gelezen worden", systeem.logboek()[2])
+            self.assertIn("kon niet gelezen worden", systeem.logboek()[3])
 
 
 class TestFoutmelder(unittest.TestCase):

@@ -55,6 +55,8 @@ KERNEL = "kernel"
 # pagina per keer.
 MAX_TERUG = 5000
 PER_PAGINA = 200
+# Zoveel regels toont de pagina als ze opent ("laatste 10", §5.6 systeempagina punt 3).
+STANDAARD_AANTAL = 10
 # Langste tekst van één regel in het logboek en in een melding.
 MAX_TEKST = 500
 MAX_MELDING = 300
@@ -184,15 +186,28 @@ def lees_regel(d) -> dict | None:
             "tekst": tekst[:MAX_TEKST]}
 
 
-def logboek(alleen_fouten: bool = False, service: str | None = None, voor: int | None = None,
-            aantal: int = PER_PAGINA) -> tuple[list[dict], bool, str | None]:
+def logboek(alleen_fouten: bool = False, service: str | None = None, aantal: int = PER_PAGINA,
+            overslaan: int = 0, van: int | None = None, tot: int | None = None,
+            ) -> tuple[list[dict], bool, bool, str | None]:
     """Leest het logboek uit journald: de nieuwste regels eerst.
 
-    alleen_fouten  True = geen waarschuwingen
-    service        alleen deze service (bijv. "brms-camera" of "kernel")
-    voor           alleen regels van vóór dit tijdstip (microseconden): bladeren naar ouder
-    Geeft (regels, meer, uitleg): `meer` = er zijn nog oudere regels; `uitleg` is een
-    tekst als het logboek niet gelezen kon worden (dan zijn de regels leeg), anders None.
+    Twee filters, die altijd gelden:
+      alleen_fouten  True = geen waarschuwingen
+      service        alleen deze service (bijv. "brms-camera" of "kernel")
+    Welk deel (§5.6 systeempagina punt 3, v0.61; dezelfde opzet als de alarmenpagina):
+      van, tot       een periode in Unix-seconden: de regels van `van` tot (niet tot en
+                     met) `tot`, hooguit PER_PAGINA;
+      aantal, overslaan
+                     zonder periode: de laatste `aantal` regels, na het overslaan van de
+                     `overslaan` nieuwste (bladeren: 10 eerder, nog 10 eerder, ...).
+    Het overslaan en de periode tellen ná de filters: "de 10 daarvoor" zijn de 10 fouten
+    daarvoor als alleen fouten gekozen is.
+
+    Geeft (regels, eerder, vol, uitleg):
+      eerder  er zijn nog oudere regels dan de getoonde (voor de knop "eerder");
+      vol     de periode heeft meer regels dan er getoond worden;
+      uitleg  een tekst als het logboek niet gelezen kon worden (dan zijn de regels leeg),
+              anders None.
     """
     opdracht = ["journalctl", "--no-pager", "--reverse", "--output=json",
                 f"--output-fields={_VELDEN}", f"--priority={WAARSCHUWING}",
@@ -200,14 +215,19 @@ def logboek(alleen_fouten: bool = False, service: str | None = None, voor: int |
     try:
         r = subprocess.run(opdracht, capture_output=True, timeout=TIMEOUT)
     except FileNotFoundError:
-        return [], False, "journalctl is er niet op dit systeem; het logboek werkt alleen op de Pi"
+        return [], False, False, ("journalctl is er niet op dit systeem; het logboek werkt "
+                                  "alleen op de Pi")
     except (OSError, subprocess.SubprocessError) as e:
-        return [], False, f"het logboek kon niet gelezen worden: {e}"
+        return [], False, False, f"het logboek kon niet gelezen worden: {e}"
     if r.returncode != 0:
-        return [], False, ("het logboek kon niet gelezen worden: "
-                           + r.stderr.decode("utf-8", "replace").strip()[:200])
+        return [], False, False, ("het logboek kon niet gelezen worden: "
+                                  + r.stderr.decode("utf-8", "replace").strip()[:200])
+    periode = van is not None and tot is not None
     regels: list[dict] = []
-    meer = False
+    eerder = vol = False
+    overgeslagen = 0
+    # journalctl geeft de nieuwste regel eerst: de lus loopt dus terug in de tijd en kan
+    # stoppen zodra het gevraagde deel compleet is.
     for ruw in r.stdout.splitlines():
         try:
             regel = lees_regel(json.loads(ruw))
@@ -219,13 +239,25 @@ def logboek(alleen_fouten: bool = False, service: str | None = None, voor: int |
             continue
         if service is not None and regel["service"] != service:
             continue
-        if voor is not None and regel["us"] >= voor:
-            continue
-        if len(regels) >= aantal:
-            meer = True
-            break
+        if periode:
+            if regel["ts"] >= tot:
+                continue            # nieuwer dan de periode: nog verder terug zoeken
+            if regel["ts"] < van:
+                eerder = True       # ouder dan de periode: er valt terug te bladeren
+                break
+            if len(regels) >= PER_PAGINA:
+                # Meer dan er passen: alleen de nieuwste staan er. De rest is ouder.
+                vol = eerder = True
+                break
+        else:
+            if overgeslagen < overslaan:
+                overgeslagen += 1
+                continue
+            if len(regels) >= aantal:
+                eerder = True
+                break
         regels.append(regel)
-    return regels, meer, None
+    return regels, eerder, vol, None
 
 
 # =============================================================================
@@ -442,7 +474,7 @@ def herstart_pi() -> str | None:
 
 if __name__ == "__main__":
     # Hulpje bij het testen op de Pi: toont het logboek zoals de pagina het krijgt.
-    regels_, meer_, uitleg_ = logboek()
+    regels_, meer_, _vol, uitleg_ = logboek()
     for regel_ in regels_:
         print(time.strftime("%d-%m %H:%M:%S", time.localtime(regel_["ts"])),
               f"{regel_['service']:<18} {regel_['niveau']:<13} {regel_['tekst']}")

@@ -35,10 +35,19 @@
   .grafiek { background: var(--vlak); border: 1px solid var(--rand); border-radius: 12px;
              padding: 10px 12px; margin-bottom: 14px; box-shadow: var(--schaduw); }
   .bron { font-weight: 600; margin-right: 4px; }
-  .legenda { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 4px; min-height: 1.4em; }
-  .legenda .reeks { display: inline-flex; align-items: center; gap: 6px; }
-  .legenda i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
-  .legenda .waarde { color: var(--zacht); }
+  /* De legenda staat in kolommen van gelijke breedte (v0.61), niet als doorlopende tekst
+     die afbreekt: de plaats van een reeks hangt zo niet af van de lengte van de waarden,
+     en de teksten verspringen niet als een waarde of tijd verandert. Er passen zoveel
+     kolommen als de breedte toelaat; een te lange naam wordt afgekapt met "…". */
+  .legenda { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(330px, 100%), 1fr));
+             gap: 4px 14px; margin-bottom: 4px; min-height: 1.4em; }
+  .legenda .reeks { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; }
+  .legenda i { flex: none; width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+  .legenda .naam { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* Cijfers van gelijke breedte, zodat een waarde niet breder of smaller wordt. */
+  .legenda .waarde { flex: none; color: var(--zacht); font-variant-numeric: tabular-nums; }
+  /* De korte vorm van het tijdstip (de leeftijd) is er alleen op een smal scherm. */
+  .legenda .smal { display: none; }
   .melding, .uitleg { color: var(--zacht); font-size: 13px; min-height: 1.3em; }
   .uitleg { min-height: 0; }
   .uitleg i { display: inline-block; vertical-align: middle; margin: 0 5px 0 0; }
@@ -50,6 +59,14 @@
   /* Smal scherm: de keuzelijsten van een grafiek elk op de volle breedte, zodat ze met
      een vinger te bedienen zijn. */
   @media (max-width: 640px) {
+    /* De legenda op een smal scherm (telefoon rechtop, v0.61): alleen de sensornaam, de
+       waarde met eenheid en de leeftijd in minuten, bijvoorbeeld "buiten · 19,2 °C (-1m)".
+       De grootheid en het tijdstip met seconden vallen weg; de eenheid en de kleur van
+       het streepje zeggen welke grootheid het is. */
+    .legenda { grid-template-columns: repeat(auto-fill, minmax(min(165px, 100%), 1fr)); }
+    .legenda .grootheid, .legenda .breed { display: none; }
+    .legenda .smal { display: inline; }
+    .legenda .waarde::before { content: "· "; }
     .toevoegen label { flex: 1 1 100%; display: flex; align-items: center; gap: 8px; }
     .toevoegen label select { flex: 1 1 auto; min-width: 0; }
     .toevoegen .voegtoe { flex: 1 1 100%; }
@@ -198,7 +215,28 @@ function datum(ms) {
   const d = new Date(ms);
   return d.getDate() + "-" + (d.getMonth() + 1);
 }
+// Een getal op een as: hooguit drie decimalen, zonder overbodige nullen.
 const getal = w => Number(w).toLocaleString("nl-NL", {maximumFractionDigits: 3});
+// Een meetwaarde in de legenda en in de aanwijzer: met het vaste aantal decimalen van de
+// grootheid (§5.3.3, v0.61), bijvoorbeeld 19,0 °C en 12,60 V. Altijd even veel cijfers
+// achter de komma, zodat de tekst niet verspringt. Zonder punt tussen de duizendtallen:
+// "1.013 hPa" zou op drie decimalen lijken.
+function meetwaarde(grootheid, w) {
+  const d = (GROOTHEDEN[grootheid] || {}).decimalen;
+  if (d === undefined) return getal(w);
+  return Number(w).toLocaleString("nl-NL", {minimumFractionDigits: d, maximumFractionDigits: d,
+                                            useGrouping: false});
+}
+// De leeftijd van een meting, kort, voor de legenda op een smal scherm: "0m", "-3m";
+// vanaf 100 minuten in uren ("-5u") en vanaf twee dagen in dagen ("-12d"), zodat een
+// oude meting uit de database geen getal van vijf cijfers geeft.
+function leeftijd(ms) {
+  const min = Math.max(0, Math.round((Date.now() - ms) / 60000));
+  if (min === 0) return "0m";
+  if (min < 100) return "-" + min + "m";
+  if (min < 2880) return "-" + Math.round(min / 60) + "u";
+  return "-" + Math.round(min / 1440) + "d";
+}
 
 // De afstand tussen twee streepjes op de tijdas (in ms) bij een as van `breedte` ms: de
 // kleinste ronde stap waarmee er hooguit acht streepjes zijn.
@@ -473,7 +511,8 @@ function bouwChart(g) {
         legend: {display: false},   // de legenda staat boven de grafiek, met de laatste waarde
         tooltip: {callbacks: {
           title: items => datum(items[0].parsed.x) + "  " + klok(items[0].parsed.x, true),
-          label: item => item.dataset.label + ": " + getal(item.parsed.y) + " "
+          label: item => item.dataset.label + ": "
+                         + meetwaarde(g.reeksen[item.datasetIndex].grootheid, item.parsed.y) + " "
                          + eenheid(g.reeksen[item.datasetIndex].grootheid),
         }},
       },
@@ -492,8 +531,15 @@ function tekenLegenda(g) {
     item.className = "reeks";
     const streep = document.createElement("i");
     streep.style.background = kleur("--reeks-" + r.kleur);
+    // De naam: de sensor, met de grootheid erachter in een eigen vakje dat op een smal
+    // scherm verborgen wordt (zie de stijl bovenaan).
     const naam = document.createElement("span");
-    naam.textContent = sensor(r.sensor).naam + " · " + r.grootheid;
+    naam.className = "naam";
+    naam.title = sensor(r.sensor).naam + " · " + r.grootheid;
+    const grootheid = document.createElement("span");
+    grootheid.className = "grootheid";
+    grootheid.textContent = " · " + r.grootheid;
+    naam.append(sensor(r.sensor).naam, grootheid);
     const waarde = document.createElement("span");
     waarde.className = "waarde";
     r.waardeVak = waarde;   // toonWaarden vult dit bij elke verversing
@@ -514,12 +560,22 @@ function tekenLegenda(g) {
 
 // Zet bij elke reeks in de legenda de laatste waarde met het tijdstip. De legenda zelf
 // blijft staan (anders zou een knop onder de muis telkens vervangen worden).
+// Het tijdstip staat er in twee vormen, waarvan de stijl er één toont: op een breed scherm
+// de kloktijd met seconden, op een smal scherm de leeftijd in minuten (v0.61).
 function toonWaarden(g) {
   for (const r of g.reeksen) {
+    if (!r.waardeVak) continue;
     let laatste = null;
     for (let i = r.data.length - 1; i >= 0 && !laatste; i--) if (r.data[i].y !== null) laatste = r.data[i];
-    if (r.waardeVak) r.waardeVak.textContent = laatste
-      ? getal(laatste.y) + " " + eenheid(r.grootheid) + " (" + klok(laatste.x, true) + ")" : "–";
+    if (!laatste) { r.waardeVak.textContent = "–"; continue; }
+    const breed = document.createElement("span");
+    breed.className = "breed";
+    breed.textContent = "(" + klok(laatste.x, true) + ")";
+    const smal = document.createElement("span");
+    smal.className = "smal";
+    smal.textContent = "(" + leeftijd(laatste.x) + ")";
+    r.waardeVak.replaceChildren(meetwaarde(r.grootheid, laatste.y) + " " + eenheid(r.grootheid) + " ",
+                                breed, smal);
   }
 }
 

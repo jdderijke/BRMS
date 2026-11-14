@@ -304,17 +304,30 @@ class TestSysteem(Basis):
 
     def test_logboek(self):
         regels = [{"ts": 10, "us": 10_000_000, "service": "brms-camera", "niveau": "fout", "tekst": "mis"}]
-        with mock.patch.object(systeem, "logboek", return_value=(regels, True, None)) as lees:
-            d = self.client.get("/api/logboek?fouten=1&service=brms-camera&voor=20000000").get_json()
-        lees.assert_called_once_with(alleen_fouten=True, service="brms-camera", voor=20_000_000)
-        self.assertEqual((d["regels"], d["meer"], d["uitleg"]), (regels, True, None))
+        # De laatste N met bladeren (v0.61): aantal en overslaan gaan door naar het logboek.
+        with mock.patch.object(systeem, "logboek", return_value=(regels, True, False, None)) as lees:
+            d = self.client.get("/api/logboek?fouten=1&service=brms-camera&aantal=50&overslaan=100").get_json()
+        lees.assert_called_once_with(alleen_fouten=True, service="brms-camera", aantal=50,
+                                     overslaan=100, van=None, tot=None)
+        self.assertEqual((d["regels"], d["eerder"], d["vol"], d["uitleg"]), (regels, True, False, None))
         # De keuzelijst: alle services van BRMS, Mosquitto en de kernel.
         for naam in ("brms-opslag", "brms-web", "mosquitto", "kernel"):
             self.assertIn(naam, d["services"])
-        with mock.patch.object(systeem, "logboek", return_value=([], False, "geen journalctl")) as lees:
-            d = self.client.get("/api/logboek").get_json()
-        lees.assert_called_once_with(alleen_fouten=False, service=None, voor=None)
-        self.assertEqual(d["uitleg"], "geen journalctl")
+        # Een periode (laatste 3 uur, vandaag): van en tot.
+        with mock.patch.object(systeem, "logboek", return_value=(regels, False, True, None)) as lees:
+            d = self.client.get("/api/logboek?van=1000&tot=2000").get_json()
+        lees.assert_called_once_with(alleen_fouten=False, service=None, aantal=10, overslaan=0,
+                                     van=1000, tot=2000)
+        self.assertTrue(d["vol"])
+        # Zonder iets: de laatste 10. Onzin en een omgekeerde periode vallen daarop terug.
+        for vraag in ("", "?aantal=x&overslaan=-5&van=abc", "?van=2000&tot=1000", "?aantal=99999"):
+            with mock.patch.object(systeem, "logboek",
+                                   return_value=([], False, False, "geen journalctl")) as lees:
+                d = self.client.get("/api/logboek" + vraag).get_json()
+            verwacht = systeem.PER_PAGINA if "99999" in vraag else 10
+            lees.assert_called_once_with(alleen_fouten=False, service=None, aantal=verwacht,
+                                         overslaan=0, van=None, tot=None)
+            self.assertEqual(d["uitleg"], "geen journalctl")
 
     def test_pagina_vraagt_om_bevestiging(self):
         tekst = self.client.get("/systeem").get_data(as_text=True)
