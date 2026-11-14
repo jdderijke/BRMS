@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.63 – concept** · 14 november 2026
+**Versie 0.65 – concept** · 14 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -181,14 +181,30 @@ staat; daarom QoS 1.
 De actuele hardwarelijst en status staan in `CLAUDE.md` en `BRMS_componentenlijst.xlsx`.
 Architectuurrelevante keuzes:
 
-### 4.1 Bluetooth: USB-dongle met antenne
+### 4.1 Bluetooth: de ingebouwde Bluetooth van de Pi (v0.65)
 
-**Redenering.** De ingebouwde Bluetooth van de Pi 4 heeft beperkt bereik; sensoren
-zitten verspreid over hoofdkajuit, vooronder, twee achterkajuiten, motorruim en buiten
-(v0.46: RuuviTag 4-in-1 in de hoofdkajuit, RuuviTag Pro 3-in-1 in het motorruim en buiten,
-Xiaomi Monitor 3 in het vooronder en de twee achterkajuiten).
-**Verworpen.** Ingebouwde Bluetooth – bereik te beperkt (wel bruikbaar voor tests thuis).
-**Specificatie.** BLE via een USB-dongle met externe antenne. **[OPEN-2]** Welke dongle.
+**Aanleiding.** Tot v0.64 ging het ontwerp uit van een USB-dongle met externe antenne,
+omdat de ingebouwde Bluetooth van de Pi 4 een te klein bereik zou hebben. Open stond
+welke dongle (OPEN-2).
+
+**Redenering.** De sensoren zitten verspreid over hoofdkajuit, vooronder, twee
+achterkajuiten, motorruim en buiten (v0.46: RuuviTag 4-in-1 in de hoofdkajuit, RuuviTag
+Pro 3-in-1 in het motorruim en buiten, Xiaomi Monitor 3 in het vooronder en de twee
+achterkajuiten). Een test thuis (november 2026) met de Pi en de sensoren van Xiaomi en
+Ruuvi gaf met de ingebouwde Bluetooth ruim 20 meter bereik, ook door muren. Dat is meer
+dan de afstanden aan boord. Een dongle is dan een extra onderdeel zonder nut (P1).
+De test was thuis, niet op de boot: of het aan boord ook volstaat, blijkt daar. De
+`rssi` per sensor (§5.3.3) en het alarm "sensor stil" laten het zien als het bereik
+tekortschiet.
+
+**Verworpen alternatieven.**
+- *USB-dongle met externe antenne (ontwerp tot v0.64).* Voorlopig niet nodig; blijft de
+  uitwijk als het bereik aan boord tegenvalt. De code hoeft daarvoor niet te veranderen:
+  de BLE-reader gebruikt de adapter die het systeem aanbiedt.
+
+**Specificatie.** BLE via de **ingebouwde Bluetooth** van de Pi 4. OPEN-2 (welke dongle)
+is daarmee **voorlopig vervallen**; valt het bereik aan boord tegen, dan komt de vraag
+terug.
 
 ### 4.2 Klok en tijd (besluit OPEN-3)
 
@@ -665,6 +681,8 @@ thermostaat, omgevallen, defect).
   stoppen als de walstroom wegvalt, juist op het moment dat de melding ertoe doet. De
   voorwaarde hoort bij de actie, niet bij het alarm.
 - *Uitlezen of schakelen via Bluetooth.* Zie §5.2.4.
+- *De energieteller van de plug opslaan (OPEN-27).* Een teller past niet bij de soorten
+  van §5.3.2 en voegt niets toe aan `vermogen`.
 
 **Specificatie.**
 1. Sensortype **`shelly-relais`**: een aparte Shelly-schakelaar met de Gen2-API en één
@@ -681,9 +699,9 @@ thermostaat, omgevallen, defect).
    | `stroom` | A | de stroom door de plug |
    | `rssi` | dBm | signaalsterkte van de wifi |
 
-   **[OPEN-27]** Ook de energieteller van de plug (totaal verbruik in Wh) opslaan? Het is
-   een teller en geen meetwaarde; het verbruik is ook achteraf uit `vermogen` te
-   berekenen.
+   De **energieteller** van de plug (totaal verbruik in Wh) wordt niet opgeslagen
+   (besluit OPEN-27, v0.64): het is een teller en geen meetwaarde, en het verbruik is
+   achteraf uit `vermogen` te berekenen.
 3. **Schakelen:** opdracht `brms/opdracht/relais/zet` met
    `{"sensor_id": ..., "aan": true, "duur": 600}`. De Shelly-reader voert hem uit via de
    API van de Shelly (de uitschakeltijd gaat met de opdracht mee) en pollt direct daarna,
@@ -2588,7 +2606,7 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 | # | Vraag | Sectie |
 |---|---|---|
 | 1 | ~~Eén proces of aparte services~~ – **besloten in v0.4**: losse services, lokale Mosquitto ertussen | §3.1 |
-| 2 | Welke USB-BLE-dongle | §4.1 |
+| 2 | ~~Welke USB-BLE-dongle~~ – **voorlopig vervallen in v0.65**: de ingebouwde Bluetooth van de Pi haalt thuis ruim 20 m; komt terug als het bereik aan boord tegenvalt | §4.1 |
 | 3 | ~~Gedrag zolang de systeemtijd nog niet betrouwbaar is~~ – **besloten in v0.10**: router als tijdbron, alarmen op monotone klok, opslag wacht op synchronisatie | §4.2 |
 | 4 | ~~Interface van een reader~~ – **besloten in v0.4**: één BLE-reader met decoders, één Shelly-reader, push via MQTT | §5.2.1 |
 | 5 | ~~Ruuvi: `ruuvitag-sensor` of eigen decoder~~ – **besloten in v0.12**: eigen decoder (ook BTHome) | §5.2.3 |
@@ -2613,7 +2631,7 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 | 24 | ~~Opnamemethode camera~~ – **besloten in v0.37**: foto via het snapshot-adres, video via RTSP met `ffmpeg` zonder omrekenen; beide adressen per camera in de configuratie | §5.7 |
 | 25 | ~~Tabel van grootheden~~ – **besloten in v0.9** | §5.3.3 |
 | 26 | BLE passief scannen in plaats van actief (spaart een beetje sensorbatterij; vraagt extra BlueZ-instellingen) | §5.2.1 |
-| 27 | Energieteller van het Shelly-relais (Wh) ook opslaan, naast vermogen, spanning en stroom | §5.2.6 |
+| 27 | ~~Energieteller van het Shelly-relais (Wh) ook opslaan~~ – **besloten in v0.64**: niet opslaan; vermogen, spanning en stroom volstaan | §5.2.6 |
 
 Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/eSIM.
 
@@ -2641,7 +2659,9 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.63** | 2026-11-14 | Claude Code, Fable 5.2 | Relais uitgewerkt (§5.2.6): model Shelly Plug M Gen3 voor een kachel van 1500 W; één alarmregel als thermostaat; uitschakeltijd 10 minuten, herhalen elke 5 minuten; de actie `relais` schakelt alleen aan zolang `walstroom` = 1 (onbekend = uit); de plug levert ook `vermogen` (nieuwe grootheid, §5.3.3), `spanning` en `stroom`. OPEN-27 toegevoegd (energieteller). Ontwerp; nog niet gebouwd. |
+| **0.65** | 2026-11-14 | Claude Code, Fable 5.2 | Bluetooth (§4.1): de ingebouwde Bluetooth van de Pi in plaats van een USB-dongle met antenne; een test thuis gaf ruim 20 m bereik, ook door muren. OPEN-2 voorlopig vervallen; de dongle blijft de uitwijk als het bereik aan boord tegenvalt. |
+| 0.64 | 2026-11-14 | Claude Code, Fable 5.2 | OPEN-27 besloten (§5.2.6): de energieteller van het Shelly-relais wordt niet opgeslagen. |
+| 0.63 | 2026-11-14 | Claude Code, Fable 5.2 | Relais uitgewerkt (§5.2.6): model Shelly Plug M Gen3 voor een kachel van 1500 W; één alarmregel als thermostaat; uitschakeltijd 10 minuten, herhalen elke 5 minuten; de actie `relais` schakelt alleen aan zolang `walstroom` = 1 (onbekend = uit); de plug levert ook `vermogen` (nieuwe grootheid, §5.3.3), `spanning` en `stroom`. OPEN-27 toegevoegd (energieteller). Ontwerp; nog niet gebouwd. |
 | 0.62 | 2026-11-14 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4): één knop "+ Grafiek"; de bron (live of database) als keuzelijst linksboven in de grafiek, ook te wijzigen met reeksen erin (reeksen blijven, venster of periode terug naar de standaard). Legenda op de telefoon: rechtop één kolom, liggend twee kolommen, beide in de korte vorm. Systeempagina (§5.6 punt 3): logboek met "laatste 24 uur" en "laatste 48 uur" in plaats van "vandaag". Gebouwd in code v0.23.0. |
 | 0.61 | 2026-11-14 | Claude Code, Fable 5.2 | Systeempagina (§5.6 punt 3): het logboek als keuze (laatste 10 als standaard, laatste 50, laatste 3 uur, laatste 6 uur, vandaag) met bladeren eerder / later / nu, in plaats van de laatste 200 met een knop "ouder"; de filters service en niveau blijven. Grafiekenpagina (§5.6 punt 4): de legenda in kolommen van gelijke breedte; op een smal scherm alleen sensornaam, waarde en leeftijd. Vast aantal decimalen per grootheid bij het tonen (§5.3.3). Gebouwd in code v0.22.0. |
 | 0.60 | 2026-11-14 | Claude Code, Fable 5.2 | Bilge herzien (§5.2.4): geen tweede vlotter voor hoogwater. De Shelly Plus Uni zit bij de bestaande vlotter van de bilgepomp: voeding van de kant met altijd 12 V, de geschakelde kant op de spanningsmeting → `bilgepomp`. Grootheid `bilge` en alarm "bilge" blijven bestaan voor een eventuele latere waterdetector, maar zijn nu niet in gebruik (§5.3.3, §5.5). Alleen tekst en voorbeeldconfiguratie; de code is niet gewijzigd. |

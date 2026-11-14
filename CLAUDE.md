@@ -20,7 +20,7 @@ Het systeem draait maanden **onbeheerd**: betrouwbaarheid en eenvoud gaan boven 
 | Opslag | Raspberry Pi Flash Drive 256 GB (USB 3); tijdelijk SanDisk 32 GB USB-stick | Besteld |
 | Klok | Tijd via router (RUT241, operator time + NTP), zie ARCHITECTURE.md §4.2. DS3231 RTC-module optioneel (past niet zonder meer in behuizing) | DS3231 in bezit |
 | Router | Teltonika RUT241 eSIM (4G Cat 4, 9–30 VDC, RutOS, 1 DI/1 DO, wifi 2,4 GHz); "Ping Reboot" aan, RMS uit | In bezit |
-| Bluetooth | USB-BLE-dongle met antenne (ingebouwde BT Pi 4 heeft beperkt bereik) | Nog kopen |
+| Bluetooth | Ingebouwde BT van de Pi 4 (test thuis: ruim 20 m, ook door muren). USB-BLE-dongle met antenne alleen als het bereik aan boord tegenvalt | Voorlopig geen dongle |
 | Sensoren Xiaomi | 3× Xiaomi Monitor 3 (MJWSD05MMC), pvvx-firmware, advertising **BTHome v2**. Eerst test-sensoren, daarna vooronder + 2 achterkajuiten | Besteld |
 | Sensoren Ruuvi | 1× RuuviTag (4-in-1) hoofdkajuit; 2× RuuviTag Pro 3-in-1: motorruim en buiten (IP66: beschut ophangen) | Gepland |
 | Accu | Victron BMV-700 + VE.Direct Bluetooth Smart dongle (Instant Readout, `victron-ble`, encryptiesleutel uit VictronConnect) | In bezit |
