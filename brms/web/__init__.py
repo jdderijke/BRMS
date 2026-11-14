@@ -893,8 +893,8 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
         Filters:   ?fouten=1 (geen waarschuwingen) en ?service=<naam>.
         Welk deel: ?van=<ts>&tot=<ts>          de regels in die periode (Unix-seconden);
                    ?aantal=<n>&overslaan=<m>   de laatste n regels, na de m nieuwste.
-        Zonder iets: de laatste 10. De pagina rekent de periode zelf uit (laatste 3 uur,
-        vandaag, ...), zoals bij de alarmen: een dag begint in de tijdzone van de kijker.
+        Zonder iets: de laatste 10. De pagina rekent de periode zelf uit (laatste 3, 6, 24
+        of 48 uur, en bij het bladeren het venster daarvoor).
         """
         service = request.args.get("service") or None
         van = _getal(request.args.get("van"), laagste=0)

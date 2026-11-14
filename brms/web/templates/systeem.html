@@ -93,14 +93,15 @@
         <option value="1" selected>alleen fouten</option>
       </select></label>
       <span class="ruimte"></span>
-      {# n<aantal> = de laatste zoveel regels; t<seconden> = de laatste zoveel tijd;
-         dag = vandaag (zie logVenster in het script). #}
+      {# n<aantal> = de laatste zoveel regels; t<seconden> = de laatste zoveel tijd
+         (zie logVenster in het script). #}
       <select class="periode" title="Welk deel van het logboek de lijst toont" aria-label="Welk deel van het logboek de lijst toont">
         <option value="n10" selected>laatste 10</option>
         <option value="n50">laatste 50</option>
         <option value="t10800">laatste 3 uur</option>
         <option value="t21600">laatste 6 uur</option>
-        <option value="dag">vandaag</option>
+        <option value="t86400">laatste 24 uur</option>
+        <option value="t172800">laatste 48 uur</option>
       </select>
       {% include "_bladeren.html" %}
       <span class="welke"></span>
@@ -231,10 +232,10 @@ function toonSchijf(s) {
 // Welk deel van het logboek de lijst toont (v0.61, §5.6 systeempagina punt 3); dezelfde
 // opzet als bij de grafieken en de alarmen:
 //   logKeuze         "n10" / "n50"  de laatste 10 of 50 regels;
-//                    "t10800" / "t21600"  de laatste 3 of 6 uur;
-//                    "dag"  vandaag;
-//   logVerschuiving  0 = nu; N = N bladen of perioden eerder (de 10 regels daarvoor, de
-//                    3 uur daarvoor, gisteren);
+//                    "t10800" / "t21600" / "t86400" / "t172800"  de laatste 3, 6, 24 of
+//                    48 uur (v0.62; "vandaag" is vervallen);
+//   logVerschuiving  0 = nu; N = N bladen of vensters eerder (de 10 regels daarvoor, de
+//                    3 uur daarvoor);
 //   logAnker         bij een tijdvenster: het tijdstip (Unix-seconden) waarop het
 //                    terugbladeren begon. Eerdere vensters worden vanaf dat punt geteld,
 //                    zodat ze niet verschuiven terwijl de klok doorloopt.
@@ -244,15 +245,14 @@ let logKeuze = "n10", logVerschuiving = 0, logAnker = null;
 // Telt de aanvragen: een antwoord op een vraag van vóór de laatste klik wordt weggegooid.
 let logAanvraag = 0;
 let servicesGevuld = false;
-const LOG_DAGEN = ["zo", "ma", "di", "wo", "do", "vr", "za"];
 // Zoveel seconden loopt een venster "tot nu" door ná de klok van de browser: de tijden
 // in het logboek komen van de Pi, en die klok kan iets voorlopen.
 const LOG_MARGE = 300;
 const logQ = klasse => el("log-keuze").querySelector("." + klasse);
 
 // De gekozen keuze als {vraag: de velden voor /api/logboek, tekst: wat erachter staat}.
-// De grenzen van een periode worden hier uitgerekend en niet op de Pi: "vandaag" begint
-// in de tijdzone van de kijker.
+// De grenzen van een tijdvenster worden hier uitgerekend; de webservice krijgt alleen
+// `van` en `tot`.
 function logVenster() {
   const getal = Number(logKeuze.slice(1));
   if (logKeuze[0] === "n") {
@@ -261,15 +261,6 @@ function logVenster() {
     return {vraag: {aantal: getal, overslaan: logVerschuiving * getal},
             tekst: logVerschuiving ? "regel " + (logVerschuiving * getal + 1) + " t/m "
                                      + (logVerschuiving + 1) * getal : ""};
-  }
-  if (logKeuze === "dag") {
-    // `new Date(jaar, maand, dag)` rekent zelf door over maand- en jaargrenzen en volgt
-    // zomer- en wintertijd.
-    const nu = new Date(), j = nu.getFullYear(), m = nu.getMonth(), d = nu.getDate();
-    const van = new Date(j, m, d - logVerschuiving), tot = new Date(j, m, d - logVerschuiving + 1);
-    return {vraag: {van: Math.floor(van / 1000), tot: Math.floor(tot / 1000)},
-            tekst: LOG_DAGEN[van.getDay()] + " " + van.getDate() + "-" + (van.getMonth() + 1)
-                   + "-" + van.getFullYear()};
   }
   // Een tijdvenster van `getal` seconden. Niet teruggebladerd: tot nu (met wat marge).
   // Wel teruggebladerd: N vensters vóór het anker.
@@ -306,7 +297,7 @@ async function laadLogboek() {
       const td = tbody.insertRow().insertCell();
       td.colSpan = 4; td.className = "zacht";
       td.textContent = logVerschuiving === 0 ? "Geen waarschuwingen of fouten (met deze keuze)."
-                     : logKeuze[0] === "n" ? "Geen oudere regels." : "Geen regels in deze periode.";
+                     : logKeuze[0] === "n" ? "Geen oudere regels." : "Geen regels in dit venster.";
     }
     for (const r of d.regels) {
       const tr = tbody.insertRow();

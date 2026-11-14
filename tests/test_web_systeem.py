@@ -313,7 +313,7 @@ class TestSysteem(Basis):
         # De keuzelijst: alle services van BRMS, Mosquitto en de kernel.
         for naam in ("brms-opslag", "brms-web", "mosquitto", "kernel"):
             self.assertIn(naam, d["services"])
-        # Een periode (laatste 3 uur, vandaag): van en tot.
+        # Een periode (laatste 3 uur, laatste 24 uur): van en tot.
         with mock.patch.object(systeem, "logboek", return_value=(regels, False, True, None)) as lees:
             d = self.client.get("/api/logboek?van=1000&tot=2000").get_json()
         lees.assert_called_once_with(alleen_fouten=False, service=None, aantal=10, overslaan=0,

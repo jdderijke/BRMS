@@ -1,7 +1,8 @@
 {#
   Grafiekenpagina van BRMS (ARCHITECTURE.md §5.6 punt 4).
 
-  De gebruiker voegt zelf grafieken toe. Een grafiek heeft één bron:
+  De gebruiker voegt zelf grafieken toe met de knop "+ Grafiek". Een grafiek heeft één
+  bron, te kiezen (en later te wijzigen) met de keuzelijst linksboven in de grafiek (v0.62):
     live      /api/live      de metingen zoals ze nu over de MQTT-bus gaan
     database  /api/historie  wat de opslag heeft weggeschreven (per 5 minuten)
   Per grafiek kiest hij een sensor en een grootheid en voegt die als reeks toe; een grafiek
@@ -48,6 +49,25 @@
   .legenda .waarde { flex: none; color: var(--zacht); font-variant-numeric: tabular-nums; }
   /* De korte vorm van het tijdstip (de leeftijd) is er alleen op een smal scherm. */
   .legenda .smal { display: none; }
+  /* De legenda op een telefoon (v0.61, kolommen v0.62): de korte vorm, alleen de
+     sensornaam, de waarde met eenheid en de leeftijd, bijvoorbeeld "buiten · 19,2 °C (-1m)".
+     De grootheid en het tijdstip met seconden vallen weg; de eenheid en de kleur van het
+     streepje zeggen welke grootheid het is. Met de lange vorm past het niet op het scherm.
+     Een telefoon wordt op twee manieren herkend:
+       rechtop  het scherm is smal (hooguit 640 px breed, zoals elders in het web);
+       liggend  het scherm is breder dan 640 px maar laag (hooguit 500 px hoog).
+     Rechtop staat er één reeks per regel, liggend twee kolommen (de regel hieronder). */
+  @media (max-width: 640px), (orientation: landscape) and (max-height: 500px) {
+    .legenda { grid-template-columns: minmax(0, 1fr); }
+    .legenda .grootheid, .legenda .breed { display: none; }
+    .legenda .smal { display: inline; }
+    .legenda .waarde::before { content: "· "; }
+  }
+  /* Liggend: twee kolommen. Staat ná de regel hierboven, zodat hij ook wint op een kleine
+     telefoon die liggend smaller is dan 640 px. */
+  @media (orientation: landscape) and (max-height: 500px) {
+    .legenda { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
   .melding, .uitleg { color: var(--zacht); font-size: 13px; min-height: 1.3em; }
   .uitleg { min-height: 0; }
   .uitleg i { display: inline-block; vertical-align: middle; margin: 0 5px 0 0; }
@@ -59,14 +79,6 @@
   /* Smal scherm: de keuzelijsten van een grafiek elk op de volle breedte, zodat ze met
      een vinger te bedienen zijn. */
   @media (max-width: 640px) {
-    /* De legenda op een smal scherm (telefoon rechtop, v0.61): alleen de sensornaam, de
-       waarde met eenheid en de leeftijd in minuten, bijvoorbeeld "buiten · 19,2 °C (-1m)".
-       De grootheid en het tijdstip met seconden vallen weg; de eenheid en de kleur van
-       het streepje zeggen welke grootheid het is. */
-    .legenda { grid-template-columns: repeat(auto-fill, minmax(min(165px, 100%), 1fr)); }
-    .legenda .grootheid, .legenda .breed { display: none; }
-    .legenda .smal { display: inline; }
-    .legenda .waarde::before { content: "· "; }
     .toevoegen label { flex: 1 1 100%; display: flex; align-items: center; gap: 8px; }
     .toevoegen label select { flex: 1 1 auto; min-width: 0; }
     .toevoegen .voegtoe { flex: 1 1 100%; }
@@ -88,19 +100,24 @@
 
 {% block inhoud %}
   <div class="rij">
-    <button id="plus-live" class="hoofd">+ Live-grafiek</button>
-    <button id="plus-database">+ Database-grafiek</button>
+    {# Eén knop (v0.62); de bron (live of database) kiest de gebruiker in de grafiek zelf. #}
+    <button id="plus" class="hoofd">+ Grafiek</button>
   </div>
   <p id="status"></p>
-  <p id="leeg" hidden>Nog geen grafieken. Voeg er een toe met de knoppen hierboven: “live” toont de
-    metingen van de MQTT-bus, “database” de opgeslagen historie.</p>
+  <p id="leeg" hidden>Nog geen grafieken. Voeg er een toe met de knop hierboven en kies in de grafiek de
+    bron: “live” toont de metingen van de MQTT-bus, “database” de opgeslagen historie.</p>
   <div id="grafieken"></div>
 
 <!-- Sjabloon van één grafiek; wordt voor elke grafiek gekopieerd. -->
 <template id="sjabloon">
   <section class="grafiek">
     <div class="rij kop">
-      <span class="bron"></span>
+      {# De bron van de grafiek, linksboven (v0.62). Ook te wijzigen als er al reeksen in
+         de grafiek staan: die blijven staan en worden opnieuw getekend uit de nieuwe bron. #}
+      <select class="bron" title="Waar de grafiek zijn gegevens vandaan haalt" aria-label="Bron van de grafiek">
+        <option value="live">Live (MQTT-bus)</option>
+        <option value="database">Database</option>
+      </select>
       <select class="venster" title="Welk deel van de live-metingen de grafiek toont">
         <option value="n50">laatste 50 metingen</option>
         <option value="n100">laatste 100 metingen</option>
@@ -176,6 +193,10 @@ const GAT = 900;              // s; een groter gat in de historie wordt niet doo
 const MAX_REEKSEN = 8;        // per grafiek; er zijn acht goed te onderscheiden kleuren
 const STROOK = 220;           // px hoogte per eenheid in een grafiek
 const BEWAARSLEUTEL = "brms-grafieken";
+// Waar een nieuwe grafiek mee begint, en waar een grafiek naar terugvalt als zijn bron
+// verandert (v0.62): live de laatste 10 minuten, database de laatste 24 uur.
+const VENSTER_STANDAARD = "t600";
+const PERIODE_STANDAARD = "86400";
 const ALARM_INTERVAL = 30000; // ms tussen twee keer ophalen van de alarmperioden (live)
 
 // Live-vensters van een uur en langer worden samengevat per tijdvak (venster in s ->
@@ -265,16 +286,35 @@ function bewaard() {
 function nieuweGrafiek(bron, opgeslagen) {
   const vak = el("sjabloon").content.firstElementChild.cloneNode(true);
   const q = klasse => vak.querySelector("." + klasse);
-  const g = {bron, venster: "t600", periode: "86400", verschuiving: 0, anker: null, vak, chart: null, reeksen: []};
+  const g = {bron, venster: VENSTER_STANDAARD, periode: PERIODE_STANDAARD, verschuiving: 0, anker: null,
+             vak, chart: null, reeksen: []};
   if (opgeslagen) { g.venster = opgeslagen.venster || g.venster; g.periode = opgeslagen.periode || g.periode; }
   grafieken.push(g);
 
-  const live = bron === "live";
-  q("bron").textContent = live ? "Live (MQTT-bus)" : "Database";
-  q("venster").hidden = !live;
-  q("periode").hidden = live;
-  q("venster").value = g.venster;
-  q("periode").value = g.periode;
+  // Zet de kop van de grafiek naar de bron: de keuzelijst van de bron zelf, en van de twee
+  // keuzelijsten voor de tijd alleen die van deze bron (venster bij live, periode bij de
+  // database).
+  const toonBron = () => {
+    q("bron").value = g.bron;
+    q("venster").hidden = g.bron !== "live";
+    q("periode").hidden = g.bron === "live";
+    q("venster").value = g.venster;
+    q("periode").value = g.periode;
+  };
+  toonBron();
+  // Een andere bron (v0.62): de reeksen blijven staan, de tijd valt terug op de standaard
+  // van de nieuwe bron en begint bij nu. ververs() gooit de punten van de oude bron weg en
+  // haalt ze opnieuw op uit de nieuwe.
+  q("bron").addEventListener("change", () => {
+    g.bron = q("bron").value === "database" ? "database" : "live";
+    g.venster = VENSTER_STANDAARD;
+    g.periode = PERIODE_STANDAARD;
+    g.verschuiving = 0;
+    g.anker = null;
+    toonBron();
+    bewaar();
+    ververs(g);
+  });
 
   // Keuzelijsten: eerst de sensor, daarna de grootheden van díe sensor.
   for (const s of SENSOREN) q("sensor").add(new Option(s.naam + " (" + s.type + ")", s.id));
@@ -295,7 +335,7 @@ function nieuweGrafiek(bron, opgeslagen) {
   q("eerder").addEventListener("click", () => {
     // Live: bij de eerste stap terug het eindpunt vastleggen. Alle eerdere vensters worden
     // vanaf dat punt geteld, zodat ze niet verschuiven terwijl er metingen bij komen.
-    if (live && g.verschuiving === 0) g.anker = piTijd !== null ? piTijd : Math.floor(Date.now() / 1000);
+    if (g.bron === "live" && g.verschuiving === 0) g.anker = piTijd !== null ? piTijd : Math.floor(Date.now() / 1000);
     g.verschuiving += 1;
     ververs(g);
   });
@@ -739,9 +779,10 @@ async function laadHistorie(g) {
       if (!a.ok) throw new Error("fout " + a.status);
       return a.json();
     }));
-    // Is er intussen iets anders gekozen, dan vervalt dit antwoord.
-    if (g.reeksen.length !== reeksen.length || g.reeksen.some((r, i) => r !== reeksen[i])
-        || Number(g.periode) !== periode) return;
+    // Is er intussen iets anders gekozen (ook: de bron is live geworden), dan vervalt dit
+    // antwoord.
+    if (g.bron !== "database" || g.reeksen.length !== reeksen.length
+        || g.reeksen.some((r, i) => r !== reeksen[i]) || Number(g.periode) !== periode) return;
     let rijen = 0;
     reeksen.forEach((r, i) => {
       r.data.length = 0;
@@ -772,8 +813,8 @@ async function laadHistorie(g) {
 }
 
 // --- begin -----------------------------------------------------------------------------
-el("plus-live").addEventListener("click", () => { nieuweGrafiek("live"); bewaar(); });
-el("plus-database").addEventListener("click", () => { nieuweGrafiek("database"); bewaar(); });
+// Een nieuwe grafiek begint als live-grafiek; de bron is in de grafiek te wijzigen.
+el("plus").addEventListener("click", () => { nieuweGrafiek("live"); bewaar(); });
 
 const vorigeKeer = bewaard();
 if (Array.isArray(vorigeKeer)) {

@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.61 – concept** · 14 november 2026
+**Versie 0.62 – concept** · 14 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1499,9 +1499,16 @@ schrijvers op dezelfde database en map.
    schrijft niet zelf naar database of opnamemap.
 4. **Grafiekenpagina** (v0.22; indeling v0.25), de eerste pagina van het web. De
    gebruiker stelt zelf samen wat hij ziet (v0.25):
-   - Met **"+ Live-grafiek"** en **"+ Database-grafiek"** voegt hij een grafiek toe; er
-     kunnen meerdere grafieken op de pagina staan. Elke grafiek heeft één bron en een
-     eigen venster of periode.
+   - Met **"+ Grafiek"** voegt hij een grafiek toe; er kunnen meerdere grafieken op de
+     pagina staan. Elke grafiek heeft één bron en een eigen venster of periode.
+   - De **bron** kiest hij met een keuzelijst linksboven in de grafiek (v0.62): **Live
+     (MQTT-bus)** of **Database**. Een nieuwe grafiek begint als live. De bron is ook te
+     wijzigen als er al reeksen in de grafiek staan: de reeksen blijven staan, het venster
+     of de periode valt terug op de standaard van de nieuwe bron (live: laatste 10
+     minuten; database: 24 uur) en de grafiek wordt opnieuw getekend uit de nieuwe bron.
+     Tot v0.61 waren er twee knoppen ("+ Live-grafiek" en "+ Database-grafiek") en lag de
+     bron daarna vast: wie dezelfde sensoren in de historie wilde zien, moest een tweede
+     grafiek opbouwen.
    - Per grafiek kiest hij een **sensor**, daarna een **grootheid** van die sensor (wat
      het sensortype levert, beperkt tot de lijst `grootheden` uit de configuratie, §5.4.2),
      en voegt die met **"Toevoegen"** als reeks toe. Een grafiek kan reeksen van meerdere
@@ -1573,17 +1580,19 @@ schrijvers op dezelfde database en map.
 
    **Legenda** (v0.61). Boven elke grafiek staat per reeks het kleurstreepje, de naam, de
    laatste waarde en een kruisje om de reeks te verwijderen.
-   - De reeksen staan in **kolommen van gelijke breedte**, zoveel als er naast elkaar
-     passen; een te lange naam wordt afgekapt. Tot v0.60 stonden ze als doorlopende tekst
-     achter elkaar: veranderde een waarde van lengte, dan brak de regel op een andere
-     plaats af en versprongen alle teksten.
-   - Breed scherm: `sensor · grootheid`, de waarde met eenheid en het tijdstip met
-     seconden.
-   - Smal scherm (telefoon rechtop): alleen de **sensornaam, de waarde met eenheid en de
-     leeftijd** van de meting, bijvoorbeeld `buiten · 19,2 °C (-1m)`. De eenheid en de
-     kleur zeggen welke grootheid het is. De leeftijd staat in minuten; vanaf 100 minuten
-     in uren (`-5u`) en vanaf twee dagen in dagen (`-12d`), voor een oude meting uit de
-     database.
+   - De reeksen staan in **kolommen van gelijke breedte**; een te lange naam wordt
+     afgekapt. Tot v0.60 stonden ze als doorlopende tekst achter elkaar: veranderde een
+     waarde van lengte, dan brak de regel op een andere plaats af en versprongen alle
+     teksten.
+   - Breed scherm (pc, laptop): zoveel kolommen als er passen, met `sensor · grootheid`,
+     de waarde met eenheid en het tijdstip met seconden.
+   - Telefoon: de korte vorm, alleen de **sensornaam, de waarde met eenheid en de
+     leeftijd** van de meting, bijvoorbeeld `buiten · 19,2 °C (-1m)`; met de lange vorm
+     past het niet op het scherm. De eenheid en de kleur zeggen welke grootheid het is.
+     **Rechtop één kolom, liggend twee kolommen** (v0.62). Een telefoon wordt herkend aan
+     het scherm: rechtop hooguit 640 px breed, liggend hooguit 500 px hoog. De leeftijd
+     staat in minuten; vanaf 100 minuten in uren (`-5u`) en vanaf twee dagen in dagen
+     (`-12d`), voor een oude meting uit de database.
    - Waarden staan met het **vaste aantal decimalen** van de grootheid (§5.3.3), in de
      legenda en in de aanwijzer van de grafiek.
 
@@ -1711,11 +1720,12 @@ het logboek nog niet getest op de Pi).** Van boven naar beneden:
      en fouten): waarschuwingen zijn er veel en zelden dringend.
    - **Welk deel** (v0.61), met dezelfde opzet als de grafieken en de alarmen: een
      keuzelijst met **laatste 10** (de standaard), **laatste 50**, **laatste 3 uur**,
-     **laatste 6 uur** en **vandaag**, en ernaast de knoppen **eerder**, **later** en
+     **laatste 6 uur**, **laatste 24 uur** en **laatste 48 uur** (v0.62; "vandaag" uit
+     v0.61 is vervallen), en ernaast de knoppen **eerder**, **later** en
      **nu** (dezelfde pictogrammen, punt 4 van de testpagina). "Eerder" geeft de 10 of 50
-     regels daarvoor, de 3 of 6 uur daarvoor, of gisteren; "nu" gaat terug naar de
-     nieuwste. "Eerder" is alleen actief als er nog oudere regels zijn. Achter de knoppen
-     staat welk deel er staat (de dag, de periode, of "regel 11 t/m 20").
+     regels daarvoor, of het venster van 3, 6, 24 of 48 uur daarvoor; "nu" gaat terug naar
+     de nieuwste. "Eerder" is alleen actief als er nog oudere regels zijn. Achter de
+     knoppen staat welk deel er staat (de periode, of "regel 11 t/m 20").
    - De filters gelden bovenop de keuze: "laatste 10" met "alleen fouten" zijn de laatste
      10 fouten. Een ander filter of een andere keuze begint weer bij nu.
    - Een periode toont hooguit 200 regels (de nieuwste); zijn er meer, dan staat dat
@@ -2574,7 +2584,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.61** | 2026-11-14 | Claude Code, Fable 5.2 | Systeempagina (§5.6 punt 3): het logboek als keuze (laatste 10 als standaard, laatste 50, laatste 3 uur, laatste 6 uur, vandaag) met bladeren eerder / later / nu, in plaats van de laatste 200 met een knop "ouder"; de filters service en niveau blijven. Grafiekenpagina (§5.6 punt 4): de legenda in kolommen van gelijke breedte; op een smal scherm alleen sensornaam, waarde en leeftijd. Vast aantal decimalen per grootheid bij het tonen (§5.3.3). Gebouwd in code v0.22.0. |
+| **0.62** | 2026-11-14 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4): één knop "+ Grafiek"; de bron (live of database) als keuzelijst linksboven in de grafiek, ook te wijzigen met reeksen erin (reeksen blijven, venster of periode terug naar de standaard). Legenda op de telefoon: rechtop één kolom, liggend twee kolommen, beide in de korte vorm. Systeempagina (§5.6 punt 3): logboek met "laatste 24 uur" en "laatste 48 uur" in plaats van "vandaag". Gebouwd in code v0.23.0. |
+| 0.61 | 2026-11-14 | Claude Code, Fable 5.2 | Systeempagina (§5.6 punt 3): het logboek als keuze (laatste 10 als standaard, laatste 50, laatste 3 uur, laatste 6 uur, vandaag) met bladeren eerder / later / nu, in plaats van de laatste 200 met een knop "ouder"; de filters service en niveau blijven. Grafiekenpagina (§5.6 punt 4): de legenda in kolommen van gelijke breedte; op een smal scherm alleen sensornaam, waarde en leeftijd. Vast aantal decimalen per grootheid bij het tonen (§5.3.3). Gebouwd in code v0.22.0. |
 | 0.60 | 2026-11-14 | Claude Code, Fable 5.2 | Bilge herzien (§5.2.4): geen tweede vlotter voor hoogwater. De Shelly Plus Uni zit bij de bestaande vlotter van de bilgepomp: voeding van de kant met altijd 12 V, de geschakelde kant op de spanningsmeting → `bilgepomp`. Grootheid `bilge` en alarm "bilge" blijven bestaan voor een eventuele latere waterdetector, maar zijn nu niet in gebruik (§5.3.3, §5.5). Alleen tekst en voorbeeldconfiguratie; de code is niet gewijzigd. |
 | 0.59 | 2026-11-14 | Claude Code, Fable 5.2 | OPEN-26 toegevoegd (§5.2.1 punt 1, §11): de BLE-scanner scant nu actief (standaard van `bleak`), met de reden waarom `bleak` dat doet; open of dat passief moet worden om sensorbatterij te sparen. Alleen tekst; de code is niet gewijzigd. |
 | 0.58 | 2026-11-13 | Claude Code, Fable 5.2 | Systeempagina (§5.6): het logboek opent op "alleen fouten". Zijbalk: de naam in twee regels, "BRMS" met eronder "Boat Remote Monitoring System" (was "BRMS boot op afstand"). Gebouwd in code v0.21.1. |
