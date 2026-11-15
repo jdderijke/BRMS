@@ -22,17 +22,23 @@ Zonder deze stap maakt de sensor wel verbinding, maar blijft de pagina hangen op
 "Activating now, please wait...".
 
 1. Houd **beide knoppen tegelijk** ingedrukt tot het scherm knippert; laat los.
-2. Druk **kort op de bovenste knop**, daarna **kort op de onderste knop**.
-3. Druk nogmaals op bovenste knop
+2. Knippert het bluetooth-icoontje nu al, dan staat de sensor in koppelmodus en kun je
+   door naar stap 2.
+3. Knippert het niet: druk **kort op de bovenste knop**, daarna **kort op de onderste knop**
+   en nogmaals op de bovenste knop.
 4. Het bluetooth-icoontje **knippert** nu: de sensor staat in koppelmodus.
    (Een icoontje dat stil aan staat betekent alleen "verbonden".)
 
+Niet elke sensor gedraagt zich hetzelfde: de ene komt na de reset vanzelf in koppelmodus,
+de andere pas na de knoppenreeks.
+
 ## Stap 2 – Verbinden
 
-1. Open de flasher-pagina (of ververs hem met F5).
-2. Vul bij **BLE device name prefix filter(s)** in: `BLE`
+1. Open de flasher-pagina in Chrome of Edge browser...(of ververs hem met F5).
+2. Vul bij **BLE device name prefix filter(s)** in: `MJWSD05`
    Dan staat alleen de sensor in de lijst, niet alle bluetooth-apparaten uit de buurt.
-3. Klik **Connect**, kies de BLE sensor en klik **Koppelen**.
+   (Met de fabrieksfirmware heet de sensor nog `MJWSD05MMC`.)
+3. Klik **Connect**, wacht even tot de sensor in het venster verschijnt, kies de sensor en klik **Koppelen**.
    Staat er "Gekoppeld" achter de naam, dan kent Chrome hem van een eerdere poging;
    je moet hem toch aanklikken en koppelen.
 4. De statusregel bovenaan meldt dat de sensor verbonden is.
@@ -58,18 +64,21 @@ laatste helft van het MAC-adres.
 5. Klik **Get MAC**. In het veld *Device MAC [+ 2 Rand]* staan 16 tekens; alleen de
    **eerste 12** zijn het MAC-adres. Voorbeeld: `A4C13812ABCD5F3E` → `A4:C1:38:12:AB:CD`.
 6. Noteer het MAC-adres met de plek aan boord en plak een sticker op de sensor.
+7. Naam instellen (optioneel): vul een korte naam in, bijvoorbeeld `Vooronder`, en klik
+   **Set New Name**. Gebruik alleen letters, cijfers en een streepje. Voor BRMS maakt de
+   naam niets uit: BRMS herkent de sensor aan het MAC-adres en de plek aan boord staat in
+   de configuratie van BRMS. Bij een volgende verbinding filter je op de nieuwe naam, of
+   laat je het filter leeg.
 
 Niet aankomen:
 
 - **!Set MAC!** en **!Clean MAC!** – die wijzigen het adres van de sensor.
-- De naam van de sensor. BRMS herkent de sensor aan het MAC-adres; de plek aan boord staat
-  in de configuratie van BRMS.
 
 ## Als het niet lukt
 
 | Wat je ziet | Oorzaak en oplossing |
 |---|---|
 | `TypeError: Cannot read properties of null (reading 'substr')`, status "disconnected" | Er is een apparaat zonder naam gekozen. Vul het filter `MJWSD05` in en probeer opnieuw. Er is niets geflasht. |
-| Blijft staan op "Activating now, please wait..." | De sensor stond niet in koppelmodus. Klik **Disconnect**, doe stap 1 opnieuw en verbind daarna. |
+| Blijft staan op "Activating now, please wait..." | De sensor stond niet in koppelmodus. Klik **Disconnect**, doe stap 1 opnieuw en verbind daarna. Helpt dat niet: batterij eruit, 20 seconden wachten, batterij erin en de hele procedure opnieuw. |
 | Sensor staat niet in de lijst | Dichter bij de laptop leggen; batterij eruit en erin; controleren of Bluetooth in Windows aan staat. |
 | Geen verbinding met de geflashte sensor | Reset met beide knoppen (stap 1.1) en opnieuw verbinden. |
