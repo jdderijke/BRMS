@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.65 – concept** · 14 november 2026
+**Versie 0.66 – concept** · 15 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -577,24 +577,59 @@ recordtypes; daar is een bestaande bibliotheek de veiligere keuze.
    het geheugen: bij de eerste ontvangst na een (her)start is de toename onbekend en wordt
    er geen `beweging` gepubliceerd (v0.19).
 
-#### 5.2.5 Afgeleide grootheden (v0.31)
+#### 5.2.5 Afgeleide grootheden (v0.31, slagzij in v0.66)
 
 *Ontworpen; nog niet gebouwd.*
 
 **Aanleiding.** Sommige gewenste waarden worden niet gemeten maar uit metingen berekend:
-de helling van de boot uit de drie versnellingen van een Ruuvi, later bijvoorbeeld een
+de slagzij van de boot uit de versnellingen van een Ruuvi, later bijvoorbeeld een
 aantal Ah als tijdintegraal van een gemeten stroom. Daarvoor moest één vaste plek komen.
 
 **Redenering.** Decoderen (bytes naar getallen) en afleiden (uit getallen nieuwe getallen
 berekenen) zijn twee verschillende bezigheden en blijven gescheiden. Een afgeleide waarde
-moet uit de **gecorrigeerde** meting komen: de offset op de versnelling zet de montagestand
-van de sensor op nul, en pas daarna zegt de helling iets. De plek is dus ná de correctie
+moet uit de **gecorrigeerde** meting komen: een correctie op de invoer moet in de
+afgeleide waarde doorwerken. De plek is dus ná de correctie
 en vóór het publiceren. Een afleiding hangt af van haar invoer, niet van een sensortype:
 elke sensor die de invoer levert, kan de afgeleide waarde leveren, zonder de berekening te
 kopiëren. Een afgeleide waarde is daarna een gewone meting: zelfde bus, opslag, alarmen en
 grafieken.
 
+*Slagzij (v0.66).* Een Ruuvi die stil ligt meet alleen de zwaartekracht, ongeveer 1000 mG,
+verdeeld over zijn drie assen. Helt de boot, dan verschuift die over de assen: bij een
+kleine hoek ongeveer 17 mG per graad. De Ruuvi levert de versnelling in stappen van 1 mG;
+met de ruis en het temperatuurverloop van de sensor is de hoek op 1 à 2 graden
+nauwkeurig. Dat is genoeg om te zien dat de boot scheef komt te liggen. Golven en schokken
+vallen weg in het gemiddelde over 5 minuten (§5.3.2).
+
+Gevraagd is alleen de slagzij (dwarsscheeps), niet de trim. De sensor wordt plat
+gemonteerd, met één zijde in de lengterichting van de boot; op het oog recht is genoeg.
+Welke as van de sensor dan dwars ligt en welke kant stuurboord is, hangt af van hoe hij
+wordt neergelegd en is daarom een instelling. Die is zo gekozen dat de gebruiker de assen
+van de sensor niet hoeft te kennen: hij kantelt de sensor naar stuurboord en kijkt welke
+versnelling positief wordt.
+
+De kalibratie is de gewone correctie (§5.4.2) op de afgeleide grootheid: een offset in
+graden vangt in één keer de scheve montage en de afwijking van de sensor op.
+
+De gebruiker rekent met stuurboord (sb) en bakboord (bb), niet met plus en min. Het is
+toch één getal met een teken: dat geeft één lijn in de grafiek en één correctie. Het teken
+is alleen in `brms.toml` te zien; overal waar de waarde getoond wordt staat sb of bb.
+
 **Verworpen alternatieven.**
+- *Eén hoek `helling`, ongeacht de richting (v0.31): de hoek tussen de z-as van de sensor
+  en de zwaartekracht, met offsets op de versnellingen voor de montagestand.* Zegt niet
+  naar welke kant de boot helt, en een offset op een versnelling is geen draaiing: het
+  klopt alleen bij een platte montage en kleine hoeken.
+- *De stand bij een rechte boot vastleggen als drie versnellingen en de hoek daarmee
+  vergelijken.* Werkt in elke montagestand, maar geeft één hoek zonder richting en vraagt
+  drie getallen in de configuratie waar één offset volstaat.
+- *Slagzij en trim allebei.* Trim is niet gevraagd.
+- *Twee grootheden, `slagzij_sb` en `slagzij_bb`, elk nul of positief.* Nergens een
+  minteken, maar twee lijnen in de grafiek, en de correctie moet dan vóór het splitsen.
+- *Eén vaste montagestand afspreken.* Bij het monteren moet dan op de stand van de sensor
+  worden gelet, en de assen staan niet op de behuizing.
+- *Een knop "nu op nul zetten" in de webinterface.* Een tweede plek voor een instelling
+  naast `brms.toml`, voor iets dat één keer gebeurt.
 - *Afleiden in de decoder.* Mengt twee bezigheden, en de decoder krijgt de correctie niet
   te zien.
 - *De correctie naar de decoder verplaatsen, zodat die ook kan afleiden.* Dezelfde
@@ -613,16 +648,16 @@ grafieken.
 
    | Afgeleide grootheid | Invoer | Berekening |
    |---|---|---|
-   | `helling` (graden) | `versnelling_x`, `versnelling_y`, `versnelling_z` | hoek tussen de z-as van de sensor en de zwaartekracht: atan2(√(x² + y²), z) |
+   | `slagzij` (graden) | de dwarsscheepse versnelling (`versnelling_x` of `versnelling_y`, punt 10) en `versnelling_z` | atan2(dwars, \|z\|), omgerekend naar graden; positief = stuurboord, negatief = bakboord |
 
-   Met de correcties op de versnellingen (§5.4.2) wordt de montagestand van de sensor op
-   nul gezet.
 3. Een sensortype **levert** een afgeleide grootheid als het alle invoer daarvoor levert
    (§5.4.2 punt 3). Dat volgt uit wat de decoder levert; `brms grootheden <type>`,
-   `check-config` en de keuzelijst in de grafieken nemen het vanzelf mee.
+   `check-config` en de keuzelijst in de grafieken nemen het vanzelf mee. Heeft een
+   afleiding een instelling nodig (`slagzij`, punt 10), dan levert een sensor haar alleen
+   als die instelling er staat.
 4. **Volgorde in de reader:** decoderen → corrigeren → afleiden → lijst `grootheden`
-   toepassen → publiceren. De lijst `grootheden` komt dus ná het afleiden: `helling` kan
-   worden opgeslagen zonder de drie versnellingen.
+   toepassen → publiceren. De lijst `grootheden` komt dus ná het afleiden: `slagzij` kan
+   worden opgeslagen zonder de versnellingen.
 5. Ontbreekt een invoerwaarde (ongeldig, §5.2.3 punt 4), dan is er voor die ontvangst geen
    afgeleide waarde.
 6. **Geheugen:** een afleiding over de tijd (een integraal) heeft de vorige ontvangst
@@ -635,6 +670,58 @@ grafieken.
    regel in `brms/afleiden.py`, en de tabellen in dit document.
 9. Afgeleide waarden worden **niet apart gesimuleerd** (§10.3): ze volgen uit de
    gesimuleerde meting. In de **trace** (§10.2) krijgen ze een eigen stap `afgeleid`.
+10. **Slagzij (v0.66).**
+    - *Montage:* de sensor ligt plat, met één zijde in de lengterichting van de boot.
+      Onderste boven mag ook: de berekening gebruikt de grootte van `versnelling_z`.
+    - *Instelling:* per sensor het veld **`stuurboord`** in `brms.toml`, met als waarde
+      `"x"`, `"-x"`, `"y"` of `"-y"`: de versnelling die **positief** wordt als de boot
+      over stuurboord helt. Zo vind je de waarde: leg de sensor neer zoals hij aan boord
+      komt, kantel hem naar stuurboord (de stuurboordkant omlaag) en kijk op de
+      webpagina welke van `versnelling_x` en `versnelling_y` duidelijk verandert. Wordt
+      die positief, dan is het `"x"` of `"y"`; wordt die negatief, dan `"-x"` of `"-y"`.
+    - Zonder het veld `stuurboord` levert de sensor geen `slagzij`. `check-config` meldt
+      een andere waarde dan de vier genoemde, het veld bij een sensor die geen
+      versnellingen levert, en `slagzij` in `grootheden`, `correctie` of een alarmregel
+      bij een sensor zonder het veld.
+    - *Kalibratie:* met de boot recht de waarde van `slagzij` aflezen en het
+      tegengestelde als correctie invullen. Staat er 1,8° sb, dan wordt het
+      `correctie = { slagzij = -1.8 }`; staat er 1,8° bb, dan `slagzij = 1.8`. Na
+      verplaatsen van de sensor opnieuw.
+    - *Tonen:* op de webpagina, in meldingen en in het logboek staat de waarde zonder
+      teken, met `sb` of `bb` erachter: "3,2° sb", "1,0° bb". In een grafiek staan de
+      waarden langs de as op dezelfde manier. Het teken staat alleen in `brms.toml`
+      (correctie en alarmgrenzen) en in de database.
+    - *Alarm:* twee regels van de soort `grens` (§5.5.3), één per kant. De grenzen
+      hieronder zijn een voorbeeld.
+
+    ```toml
+    [[sensor]]
+    id = "C1:00:00:00:00:01"
+    type = "ruuvi"
+    naam = "hoofdkajuit"
+    stuurboord = "-y"
+    correctie = { slagzij = -1.8 }
+
+    [[alarm]]
+    id = "slagzij-sb"
+    naam = "Slagzij stuurboord"
+    sensoren = ["hoofdkajuit"]
+    grootheid = "slagzij"
+    soort = "grens"
+    boven = 5.0
+    duur = "15m"
+    herstel = 4.0
+
+    [[alarm]]
+    id = "slagzij-bb"
+    naam = "Slagzij bakboord"
+    sensoren = ["hoofdkajuit"]
+    grootheid = "slagzij"
+    soort = "grens"
+    onder = -5.0
+    duur = "15m"
+    herstel = -4.0
+    ```
 
 #### 5.2.6 Relais (v0.31, uitgewerkt in v0.63)
 
@@ -958,8 +1045,8 @@ hun eigen stappen.
 
 | Decimalen | Grootheden |
 |---|---|
-| 0 | `luchtdruk`, toestanden 0/1 (`walstroom`, `bilge`, `bilgepomp`, `relais`), `versnelling_x/y/z`, `rssi`, `beweging`, `resterende_tijd`, `helling` |
-| 1 | `temperatuur`, `vocht`, `soc`, `zonnevermogen`, `vermogen`, `verbruikt` |
+| 0 | `luchtdruk`, toestanden 0/1 (`walstroom`, `bilge`, `bilgepomp`, `relais`), `versnelling_x/y/z`, `rssi`, `beweging`, `resterende_tijd` |
+| 1 | `temperatuur`, `vocht`, `soc`, `zonnevermogen`, `vermogen`, `verbruikt`, `slagzij` |
 | 2 | `spanning`, `batterijspanning`, `stroom`, `laadstroom_zon` |
 
 | Grootheid | Eenheid | Soort | Bron | Opmerking |
@@ -967,8 +1054,8 @@ hun eigen stappen.
 | `temperatuur` | °C | doorlopend | BTHome, Ruuvi | |
 | `vocht` | % | doorlopend | BTHome, Ruuvi | relatieve luchtvochtigheid |
 | `luchtdruk` | hPa | doorlopend | Ruuvi (4-in-1) | |
-| `versnelling_x`, `versnelling_y`, `versnelling_z` | mG | doorlopend | Ruuvi | invoer voor `helling` |
-| `helling` | graden | doorlopend | afgeleid (§5.2.5) | hoek van de sensor met waterpas (v0.31) |
+| `versnelling_x`, `versnelling_y`, `versnelling_z` | mG | doorlopend | Ruuvi | invoer voor `slagzij` |
+| `slagzij` | graden | doorlopend | afgeleid (§5.2.5) | positief = stuurboord, negatief = bakboord; getoond als "3,2° sb" (v0.66, vervangt `helling`) |
 | `beweging` | aantal | toename | Ruuvi | toename van de bewegingsteller |
 | `batterijspanning` | V | doorlopend | BTHome, Ruuvi | batterij van de sensor zelf |
 | `rssi` | dBm | doorlopend | alle BLE-apparaten | signaalsterkte, gemeten door de scanner |
@@ -1108,7 +1195,7 @@ gecontroleerd worden en kan de gebruiker het opzoeken.
 | Sensor stil | Sensor levert geen data meer |
 | Sensorbatterij laag | `batterijspanning` onder drempel |
 | Beweging | Toename van de Ruuvi-bewegingsteller ≥ N binnen T seconden (instelbaar) |
-| Helling (v0.31) | `helling` boven drempel (§5.2.5); bedoeld met een video als actie |
+| Slagzij (v0.66) | `slagzij` voorbij de drempel, een regel voor stuurboord en een voor bakboord (§5.2.5 punt 10); bedoeld met een video als actie |
 
 Alle drempels en instellingen staan in het configuratiebestand (§5.4). Een alarm hoeft
 niet tot een melding te leiden en kan een actie uitvoeren; zie §5.5.3.
@@ -1203,7 +1290,7 @@ worden, en hoe een verkeerd ingesteld alarm snel te stoppen is.
 vast dat een voorwaarde geldt; of daar een melding of een actie op volgt, is per regel in
 te stellen. Zo is dezelfde werking bruikbaar voor een melding ("walstroom weg"), voor een
 regeling zonder melding (verwarming aan bij vorst) en voor het vastleggen van een
-gebeurtenis (video bij helling).
+gebeurtenis (video bij slagzij).
 
 De regels blijven in `brms.toml` (§5.4): de enige reden om ze via het web te willen
 wijzigen was het stoppen van een lawine aan notificaties door een verkeerde grens.
@@ -2659,7 +2746,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.65** | 2026-11-14 | Claude Code, Fable 5.2 | Bluetooth (§4.1): de ingebouwde Bluetooth van de Pi in plaats van een USB-dongle met antenne; een test thuis gaf ruim 20 m bereik, ook door muren. OPEN-2 voorlopig vervallen; de dongle blijft de uitwijk als het bereik aan boord tegenvalt. |
+| **0.66** | 2026-11-15 | Claude Code, Fable 5.2 | Slagzij in plaats van helling (§5.2.5): afgeleide grootheid `slagzij` in graden, positief = stuurboord, negatief = bakboord, getoond als "3,2° sb"; sensor plat gemonteerd; nieuw veld `stuurboord` per sensor (`x`, `-x`, `y`, `-y`); kalibratie met de gewone correctie op `slagzij`; twee alarmregels, één per kant. `helling` vervalt (§5.3.3, §5.5). Ontwerp; nog niet gebouwd. |
+| 0.65 | 2026-11-14 | Claude Code, Fable 5.2 | Bluetooth (§4.1): de ingebouwde Bluetooth van de Pi in plaats van een USB-dongle met antenne; een test thuis gaf ruim 20 m bereik, ook door muren. OPEN-2 voorlopig vervallen; de dongle blijft de uitwijk als het bereik aan boord tegenvalt. |
 | 0.64 | 2026-11-14 | Claude Code, Fable 5.2 | OPEN-27 besloten (§5.2.6): de energieteller van het Shelly-relais wordt niet opgeslagen. |
 | 0.63 | 2026-11-14 | Claude Code, Fable 5.2 | Relais uitgewerkt (§5.2.6): model Shelly Plug M Gen3 voor een kachel van 1500 W; één alarmregel als thermostaat; uitschakeltijd 10 minuten, herhalen elke 5 minuten; de actie `relais` schakelt alleen aan zolang `walstroom` = 1 (onbekend = uit); de plug levert ook `vermogen` (nieuwe grootheid, §5.3.3), `spanning` en `stroom`. OPEN-27 toegevoegd (energieteller). Ontwerp; nog niet gebouwd. |
 | 0.62 | 2026-11-14 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4): één knop "+ Grafiek"; de bron (live of database) als keuzelijst linksboven in de grafiek, ook te wijzigen met reeksen erin (reeksen blijven, venster of periode terug naar de standaard). Legenda op de telefoon: rechtop één kolom, liggend twee kolommen, beide in de korte vorm. Systeempagina (§5.6 punt 3): logboek met "laatste 24 uur" en "laatste 48 uur" in plaats van "vandaag". Gebouwd in code v0.23.0. |
