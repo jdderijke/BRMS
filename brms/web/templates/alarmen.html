@@ -34,10 +34,14 @@
   .regel .naam { font-weight: 600; }
   .regel.uit .tekst { opacity: .55; }
   .regel .bij { color: var(--zacht); font-size: 13px; }
-  /* Een actief alarm valt op door een gekleurde rand links. */
-  .actief { border-left: 4px solid var(--let-op); padding: 6px 0 6px 12px; margin-bottom: 10px; }
-  .actief:last-child { margin-bottom: 0; }
-  .actief .naam { font-weight: 600; }
+  /* Een actief alarm valt op door een gekleurde rand links.
+     De regels gelden alleen binnen het vak "Nu actief" (#actief). Het tegeltje "Actief" in
+     de bovenbalk (basis.html) heeft ook de klasse 'actief'; zonder deze beperking kreeg
+     dat tegeltje op deze pagina dezelfde rand en ruimte, en zag de kopregel er hier
+     anders uit dan op de andere pagina's. */
+  #actief .actief { border-left: 4px solid var(--let-op); padding: 6px 0 6px 12px; margin-bottom: 10px; }
+  #actief .actief:last-child { margin-bottom: 0; }
+  #actief .actief .naam { font-weight: 600; }
   /* De keuze van de historie: keuzelijst, bladerknoppen en erachter welk deel er staat. */
   .historiekeuze { margin-bottom: 10px; }
   .historiekeuze .welke { color: var(--zacht); font-size: 13px; }
