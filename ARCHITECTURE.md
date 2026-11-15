@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.67 – concept** · 15 november 2026
+**Versie 0.68 – concept** · 15 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -674,11 +674,20 @@ is alleen in `brms.toml` te zien; overal waar de waarde getoond wordt staat sb o
    gesimuleerde meting. In de **trace** (§10.2) krijgen ze een eigen stap `afgeleid`.
 10. **Slagzij (v0.66).**
     - *Montage:* de sensor ligt plat, met één zijde in de lengterichting van de boot.
-      Onderste boven mag ook: de berekening gebruikt de grootte van `versnelling_z`.
+    - *Onderste boven monteren* (bijvoorbeeld tegen een plafond) mag ook:
+      - De hoek blijft kloppen. `versnelling_z` wordt dan negatief (ongeveer −1000 mG in
+        plaats van +1000), maar de berekening gebruikt alleen de grootte van z.
+      - De kant kan omdraaien: door het omkeren kan de dwarsas van de sensor naar de
+        andere kant van de boot wijzen. Het veld `stuurboord` vangt dat op, mits de
+        kanteltest hieronder gedaan wordt in de stand waarin de sensor uiteindelijk
+        hangt. Was het rechtop `"y"`, dan kan het onderste boven `"-y"` zijn.
+      - Wordt een al ingestelde sensor later omgedraaid of verplaatst, dan moeten de
+        kanteltest (`stuurboord`) en de kalibratie (correctie op `slagzij`) opnieuw.
     - *Instelling:* per sensor het veld **`stuurboord`** in `brms.toml`, met als waarde
       `"x"`, `"-x"`, `"y"` of `"-y"`: de versnelling die **positief** wordt als de boot
-      over stuurboord helt. Zo vind je de waarde: leg de sensor neer zoals hij aan boord
-      komt, kantel hem naar stuurboord (de stuurboordkant omlaag) en kijk op de
+      over stuurboord helt. Zo vind je de waarde (de kanteltest): houd de sensor in de
+      stand waarin hij aan boord komt, dus ook onderste boven als hij zo gemonteerd
+      wordt, kantel hem naar stuurboord (de stuurboordkant omlaag) en kijk op de
       webpagina welke van `versnelling_x` en `versnelling_y` duidelijk verandert. Wordt
       die positief, dan is het `"x"` of `"y"`; wordt die negatief, dan `"-x"` of `"-y"`.
     - Zonder het veld `stuurboord` levert de sensor geen `slagzij`. `check-config` meldt
@@ -2748,7 +2757,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.67** | 2026-11-15 | Claude Code, Fable 5.2 | Slagzij gebouwd (§5.2.5) in code v0.24.0: module `brms/afleiden.py`, veld `stuurboord`, grootheid `slagzij`, de stap `afgeleid` in de trace, en sb/bb op de webpagina en in meldingen. Alleen de status in §5.2.5 is gewijzigd; het ontwerp niet. |
+| **0.68** | 2026-11-15 | Claude Code, Fable 5.2 | Slagzij (§5.2.5 punt 10): uitgeschreven wat er gebeurt bij onderste boven monteren: de hoek blijft kloppen, de kant kan omdraaien, en de kanteltest en de kalibratie horen in de definitieve stand; na omdraaien of verplaatsen beide opnieuw. Alleen tekst; de code is niet gewijzigd. |
+| 0.67 | 2026-11-15 | Claude Code, Fable 5.2 | Slagzij gebouwd (§5.2.5) in code v0.24.0: module `brms/afleiden.py`, veld `stuurboord`, grootheid `slagzij`, de stap `afgeleid` in de trace, en sb/bb op de webpagina en in meldingen. Alleen de status in §5.2.5 is gewijzigd; het ontwerp niet. |
 | 0.66 | 2026-11-15 | Claude Code, Fable 5.2 | Slagzij in plaats van helling (§5.2.5): afgeleide grootheid `slagzij` in graden, positief = stuurboord, negatief = bakboord, getoond als "3,2° sb"; sensor plat gemonteerd; nieuw veld `stuurboord` per sensor (`x`, `-x`, `y`, `-y`); kalibratie met de gewone correctie op `slagzij`; twee alarmregels, één per kant. `helling` vervalt (§5.3.3, §5.5). Ontwerp; nog niet gebouwd. |
 | 0.65 | 2026-11-14 | Claude Code, Fable 5.2 | Bluetooth (§4.1): de ingebouwde Bluetooth van de Pi in plaats van een USB-dongle met antenne; een test thuis gaf ruim 20 m bereik, ook door muren. OPEN-2 voorlopig vervallen; de dongle blijft de uitwijk als het bereik aan boord tegenvalt. |
 | 0.64 | 2026-11-14 | Claude Code, Fable 5.2 | OPEN-27 besloten (§5.2.6): de energieteller van het Shelly-relais wordt niet opgeslagen. |

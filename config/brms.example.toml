@@ -72,6 +72,12 @@ naam = "motorruim"
 #               tegengestelde in: staat er 1,8° sb, dan slagzij = -1.8; staat er 1,8° bb,
 #               dan slagzij = 1.8. In dit bestand is stuurboord positief en bakboord
 #               negatief; op de webpagina en in meldingen staat altijd sb of bb.
+#
+# Onderste boven monteren (bijvoorbeeld tegen een plafond) mag ook:
+#   - De hoek blijft kloppen: versnelling_z wordt negatief, maar alleen de grootte telt.
+#   - De kant kan omdraaien. Doe de kanteltest voor 'stuurboord' daarom in de stand waarin
+#     de sensor uiteindelijk hangt; was het rechtop "y", dan kan het nu "-y" zijn.
+#   - Draai of verplaats je de sensor later, doe dan de kanteltest en de kalibratie opnieuw.
 # [[sensor]]
 # id = "C1:00:00:00:00:01"
 # type = "ruuvi"
