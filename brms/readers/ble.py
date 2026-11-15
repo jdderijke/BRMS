@@ -9,7 +9,9 @@ Werking:
    BTHome (Xiaomi met pvvx), Ruuvi (formaat 5) of Victron (Instant Readout, versleuteld;
    §5.2.2, §5.2.3).
    Bij een Ruuvi wordt de bewegingsteller hier omgezet in een toename (§5.2.3 punt 5).
-4. De correcties uit de configuratie (offsets) worden toegepast.
+4. De correcties uit de configuratie (offsets) worden toegepast. Daarna worden de
+   afgeleide grootheden berekend (brms/afleiden.py, §5.2.5), bijv. de slagzij uit de
+   versnellingen van een Ruuvi.
 5. De signaalsterkte (RSSI) gaat mee als eigen grootheid: handig om het bereik van de
    Bluetooth-ontvangst aan boord te beoordelen (OPEN-2).
 6. Elke waarde gaat als Meting naar de MQTT-bus; de alarmlaag en de opslag luisteren mee.
@@ -26,7 +28,7 @@ import asyncio
 import logging
 import time
 
-from brms import meting
+from brms import afleiden, meting
 from brms.config import Config, Sensor
 from brms.meting import Meting
 from brms.readers import bthome, ruuvi, victron
@@ -170,25 +172,48 @@ def verwerk(adres: str, service_data: dict[str, bytes], fabrikant_data: dict[int
     if rssi is not None:
         waarden["rssi"] = rssi
 
-    # Alleen de grootheden uit de lijst van de sensor (§5.4.2 punt 1); de rest wordt hier
-    # weggegooid en komt niet op de bus. Zonder lijst gaat alles door.
-    regels = []
-    if sensor.grootheden is not None:
-        weg = [g for g in waarden if g not in sensor.grootheden]
-        for g in weg:
-            del waarden[g]
-        if weg:
-            regels.append(f"weggelaten (niet in 'grootheden'): {', '.join(weg)}")
+    # De volgorde hieronder ligt vast (§5.2.5 punt 4):
+    #   corrigeren -> afleiden -> lijst 'grootheden' toepassen -> publiceren.
+    # Een afgeleide waarde komt zo uit de gecorrigeerde meting, en kan in de lijst
+    # 'grootheden' staan zonder haar invoer (slagzij zonder de versnellingen).
 
-    # Correcties uit de configuratie: gemeten × factor + offset (§5.4.2 punt 2),
-    # bijv. temperatuur − 0,3 °C.
+    # 1. Correcties op de gemeten waarden: gemeten × factor + offset (§5.4.2 punt 2),
+    #    bijv. temperatuur − 0,3 °C. Een correctie op een afgeleide grootheid komt pas in
+    #    stap 2: die waarde bestaat hier nog niet.
+    regels = []
     for g, c in sensor.correctie.items():
         if g in waarden:
             nieuw = c.toepassen(waarden[g])
             regels.append(f"{g:<17} {waarden[g]:g} {c} = {nieuw:g}")
             waarden[g] = nieuw
+
+    # 2. Afleiden (§5.2.5): uit de gecorrigeerde waarden nieuwe waarden berekenen, bijv.
+    #    de slagzij uit de versnellingen. Op de uitkomst is een eigen correctie mogelijk
+    #    (§5.2.5 punt 7); bij de slagzij is dat de kalibratie (punt 10).
+    afgeleid, afgeleid_regels = afleiden.leid_af(waarden, sensor)
+    for g, w in afgeleid.items():
+        c = sensor.correctie.get(g)
+        if c is not None:
+            nieuw = c.toepassen(w)
+            afgeleid_regels.append(f"{g:<17} correctie: {w:g} {c} = {nieuw:g}")
+            w = nieuw
+        waarden[g] = w
+
+    # 3. Alleen de grootheden uit de lijst van de sensor (§5.4.2 punt 1); de rest wordt
+    #    hier weggegooid en komt niet op de bus. Zonder lijst gaat alles door.
+    if sensor.grootheden is not None:
+        weg = [g for g in waarden if g not in sensor.grootheden]
+        for g in weg:
+            del waarden[g]
+        if weg:
+            # Vooraan, zoals het in de trace altijd stond (§5.4.2 punt 7).
+            regels.insert(0, f"weggelaten (niet in 'grootheden'): {', '.join(weg)}")
     if stap:
         stap("gecorrigeerd", "\n".join(regels) or "geen correcties ingesteld")
+        # De stap 'afgeleid' (§5.2.5 punt 9) alleen als deze sensor iets afleidt; bij de
+        # andere sensoren zou het een lege regel in de trace zijn.
+        if afgeleid_regels:
+            stap("afgeleid", "\n".join(afgeleid_regels))
 
     # meting.maak controleert de grootheid en zet de vaste soort erbij (§5.3.3).
     return [meting.maak(ts, sensor.id, g, w) for g, w in waarden.items()]

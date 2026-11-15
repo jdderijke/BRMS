@@ -120,7 +120,15 @@ def getal(w: float) -> str:
 
 
 def waardetekst(grootheid: str, w: float) -> str:
-    """Waarde met eenheid, bijv. '1,8 °C'. Een toestand (0/1) heeft geen eenheid."""
+    """Waarde met eenheid, bijv. '1,8 °C'. Een toestand (0/1) heeft geen eenheid.
+
+    De slagzij staat er zonder teken, met de kant erachter: '3,2° sb' of '1° bb'
+    (§5.2.5 punt 10). Het teken (positief = stuurboord) staat alleen in brms.toml en in
+    de database.
+    """
+    zijde = grootheden.zijde(grootheid, w)
+    if zijde is not None:
+        return f"{getal(abs(w))}°" + (f" {zijde}" if zijde else "")
     eenheid = grootheden.GROOTHEDEN[grootheid].eenheid
     return getal(w) if eenheid in ("0/1", "aantal") else f"{getal(w)} {eenheid}"
 
@@ -142,6 +150,11 @@ def duurtekst(seconden: float) -> str:
 def voorwaardetekst(regel: Alarmregel) -> str:
     """De voorwaarde van een regel in woorden, bijv. 'onder 2 °C'."""
     if regel.soort == config.GRENS:
+        # Slagzij (§5.2.5 punt 10): 'onder −5' betekent "meer dan 5 graden over bakboord".
+        # In woorden is dat 'boven 5° bb'; 'onder 5° bb' zou het omgekeerde zeggen.
+        if (regel.onder is not None and regel.onder < 0
+                and grootheden.zijde(regel.grootheid, regel.onder)):
+            return f"boven {waardetekst(regel.grootheid, regel.onder)}"
         if regel.onder is not None:
             return f"onder {waardetekst(regel.grootheid, regel.onder)}"
         return f"boven {waardetekst(regel.grootheid, regel.boven)}"

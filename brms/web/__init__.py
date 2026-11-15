@@ -623,7 +623,10 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
             regels=_regels(cfg),
             # Naam -> eenheid en soort, voor de assen en de vorm van de lijnen.
             # `decimalen`: met hoeveel decimalen de pagina een waarde toont (§5.3.3).
-            grootheden={g.naam: {"eenheid": g.eenheid, "soort": g.soort, "decimalen": g.decimalen}
+            # `zijden`: alleen bij een grootheid die met een kant getoond wordt in plaats
+            # van een teken, bijv. ["sb", "bb"] bij de slagzij (§5.2.5 punt 10); anders null.
+            grootheden={g.naam: {"eenheid": g.eenheid, "soort": g.soort, "decimalen": g.decimalen,
+                                 "zijden": grootheden.ZIJDEN.get(g.naam)}
                         for g in grootheden.GROOTHEDEN.values()})
 
     @app.post("/api/live")

@@ -39,6 +39,9 @@ port = 8080
 #                 een getal = offset             temperatuur = -0.3
 #                 of factor en/of offset         vocht = { factor = 1.02, offset = -1.5 }
 #               gecorrigeerd = gemeten × factor + offset
+#   stuurboord  alleen bij een Ruuvi, en alleen als je de slagzij wilt (§5.2.5 punt 10):
+#               "x", "-x", "y" of "-y" = de versnelling die positief wordt als de boot
+#               over stuurboord helt. Zie het voorbeeld bij de Ruuvi hieronder.
 
 [[sensor]]
 id = "A4:C1:38:00:00:01"
@@ -56,6 +59,25 @@ grootheden = ["temperatuur", "vocht", "batterijspanning", "rssi"]
 id = "A4:C1:38:00:00:03"
 type = "bthome"
 naam = "motorruim"
+
+# RuuviTag met slagzij (ARCHITECTURE.md §5.2.5 punt 10). De sensor ligt plat, met één zijde
+# in de lengterichting van de boot. Uit de versnellingen berekent BRMS de slagzij in graden.
+#
+#   stuurboord  Zo vind je de waarde: zet de sensor eerst zonder 'stuurboord' in dit
+#               bestand, leg hem neer zoals hij aan boord komt en kantel hem naar stuurboord
+#               (de stuurboordkant omlaag). Kijk in een grafiek welke van versnelling_x en
+#               versnelling_y duidelijk verandert. Wordt die positief: "x" of "y". Wordt
+#               die negatief: "-x" of "-y".
+#   correctie   De kalibratie. Lees met de boot recht de slagzij af en vul het
+#               tegengestelde in: staat er 1,8° sb, dan slagzij = -1.8; staat er 1,8° bb,
+#               dan slagzij = 1.8. In dit bestand is stuurboord positief en bakboord
+#               negatief; op de webpagina en in meldingen staat altijd sb of bb.
+# [[sensor]]
+# id = "C1:00:00:00:00:01"
+# type = "ruuvi"
+# naam = "hoofdkajuit"
+# stuurboord = "-y"
+# correctie = { slagzij = -1.8 }
 
 # Victron-apparaten (ARCHITECTURE.md §5.2.2). Haal het # weg en vul MAC-adres en sleutel in.
 # [[sensor]]
@@ -321,6 +343,29 @@ herhaling = "7d"
 # herstelmelding = false
 # foto = "begin"
 # actie = [{ type = "video" }]
+#
+# Slagzij (§5.2.5 punt 10): alleen bij een Ruuvi met het veld 'stuurboord'. Twee regels,
+# één per kant: stuurboord is positief ('boven'), bakboord negatief ('onder', met een min).
+# De grenzen zijn een voorbeeld; kies ze zelf.
+# [[alarm]]
+# id = "slagzij-sb"
+# naam = "Slagzij stuurboord"
+# sensoren = ["hoofdkajuit"]
+# grootheid = "slagzij"
+# soort = "grens"
+# boven = 5.0
+# duur = "15m"
+# herstel = 4.0
+#
+# [[alarm]]
+# id = "slagzij-bb"
+# naam = "Slagzij bakboord"
+# sensoren = ["hoofdkajuit"]
+# grootheid = "slagzij"
+# soort = "grens"
+# onder = -5.0
+# duur = "15m"
+# herstel = -4.0
 #
 # Camera stil (§5.5.3 punt 2): een camera is geen sensor, maar mag wel in een regel van
 # soort "stil" staan. Elke geslaagde opname telt als levensteken: valt de camera uit (of

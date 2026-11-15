@@ -1,3 +1,3 @@
 """BRMS - Boot Remote Monitoring Systeem."""
 
-VERSION = "0.23.0"
+VERSION = "0.24.0"

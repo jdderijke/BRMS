@@ -18,6 +18,8 @@ Opbouw van het bestand (zie config/brms.example.toml):
     [web]       host, port              – waar de webinterface luistert (§5.6)
     [[sensor]]  id, type, naam, grootheden, correctie – één blok per sensor (§5.4.2);
                 bij een Victron-apparaat ook 'sleutel' (§5.2.2);
+                bij een sensor met versnellingen (Ruuvi) eventueel 'stuurboord', voor de
+                slagzij (§5.2.5 punt 10);
                 bij een Shelly ook 'adres', 'interval', 'bron', 'drempel', 'omgekeerd'
                 (§5.2.4)
     [melding.telegram]  token, chat     – meldingen via een Telegram-bot (§5.5.4)
@@ -30,7 +32,7 @@ import re
 import tomllib
 from dataclasses import dataclass, field
 
-from brms import grootheden
+from brms import afleiden, grootheden
 from brms.readers import bthome, ruuvi, shelly_uni, victron
 
 # Projectmap: de map waarin de map 'brms' (dit pakket) staat. Op de Pi ~/BRMS.
@@ -56,11 +58,18 @@ MIN_INTERVAL, MAX_INTERVAL = 1.0, 3600.0
 # Welke grootheden elk sensortype kan leveren (§5.4.2 punt 3). De decoder legt dat vast;
 # BLE-readers voegen zelf de signaalsterkte (rssi) toe. Gebruikt voor de controle van
 # 'grootheden' en 'correctie', en door `brms grootheden <type>`.
+#
+# Daar komen de afgeleide grootheden bij waarvoor het type alle invoer levert (§5.2.5
+# punt 3), bijv. 'slagzij' bij een Ruuvi (die levert de versnellingen). Of een bepaalde
+# sensor zo'n grootheid ook echt levert, hangt nog af van zijn instelling: zie levert().
 LEVERT: dict[str, tuple[str, ...]] = {
-    "bthome": bthome.LEVERT + ("rssi",),
-    "ruuvi": ruuvi.LEVERT + ("rssi",),
-    **{type_: levert + ("rssi",) for type_, levert in victron.LEVERT.items()},
-    "shelly-uni": shelly_uni.LEVERT + ("rssi",),   # rssi = signaalsterkte van de wifi
+    type_: decoder + afleiden.voor_type(decoder) + ("rssi",)
+    for type_, decoder in {
+        "bthome": bthome.LEVERT,
+        "ruuvi": ruuvi.LEVERT,
+        **victron.LEVERT,
+        "shelly-uni": shelly_uni.LEVERT,   # rssi = hier de signaalsterkte van de wifi
+    }.items()
 }
 
 # Versleutelingssleutel van een Victron-apparaat: 32 hexadecimale tekens.
@@ -153,6 +162,11 @@ class Sensor:
     drempel: float | None = None
     # Grootheden waarvan 0 en 1 verwisseld worden (een contact dat opent in plaats van sluit).
     omgekeerd: tuple[str, ...] = ()
+    # --- alleen bij een sensor die versnellingen levert (Ruuvi; §5.2.5 punt 10) ---
+    # De versnelling die positief wordt als de boot over stuurboord helt: "x", "-x", "y"
+    # of "-y". Nodig voor de afgeleide grootheid 'slagzij'; zonder dit veld (None) levert
+    # de sensor geen slagzij.
+    stuurboord: str | None = None
 
 
 @dataclass(frozen=True)
@@ -288,11 +302,14 @@ class Config:
 
 def levert(sensor: Sensor) -> tuple[str, ...]:
     """De grootheden die deze sensor kan publiceren: wat zijn type levert, bij een Shelly
-    beperkt tot wat een 'bron' heeft, en verder beperkt tot de lijst 'grootheden' als die
-    er is (§5.4.2). Gebruikt door de webpagina voor de keuzelijst."""
+    beperkt tot wat een 'bron' heeft, een afgeleide grootheid alleen als de instelling
+    ervoor er staat (bijv. 'stuurboord' voor de slagzij, §5.2.5 punt 3), en verder beperkt
+    tot de lijst 'grootheden' als die er is (§5.4.2). Gebruikt door de webpagina voor de
+    keuzelijst en door de controle van de alarmregels."""
     alles = LEVERT.get(sensor.type, ())
     if sensor.type in SHELLY_TYPES:
         alles = tuple(g for g in alles if g in sensor.bron or g == "rssi")
+    alles = tuple(g for g in alles if afleiden.ontbreekt(g, sensor) is None)
     return tuple(g for g in alles if sensor.grootheden is None or g in sensor.grootheden)
 
 
@@ -757,8 +774,15 @@ def _alarmen(fouten, data: dict, sensoren: dict[str, Sensor],
         else:
             for sensor in gekozen:
                 if grootheid not in levert(sensor):
-                    fouten.append(f"{plek}: sensor '{sensor.naam}' levert geen '{grootheid}'  "
-                                  f"(zie: brms grootheden {sensor.type})")
+                    # Een afgeleide grootheid waarvoor de sensor alleen de instelling
+                    # mist: dan zeggen wat er moet komen (§5.2.5 punt 10).
+                    veld = afleiden.ontbreekt(grootheid, sensor)
+                    if veld and grootheid in LEVERT.get(sensor.type, ()):
+                        fouten.append(f"{plek}: sensor '{sensor.naam}' levert geen '{grootheid}' "
+                                      f"zolang het veld '{veld}' bij die sensor ontbreekt")
+                    else:
+                        fouten.append(f"{plek}: sensor '{sensor.naam}' levert geen '{grootheid}'  "
+                                      f"(zie: brms grootheden {sensor.type})")
 
         def tijd(sleutel, standaard=0.0, verplicht=False):
             """Een tijdsduur uit de regel, in seconden."""
@@ -903,7 +927,8 @@ def controleer(data: dict) -> Config:
             fouten.append(f"{plek}: moet een tabel zijn")
             continue
         _onbekend(fouten, plek, s, ("id", "type", "naam", "grootheden", "correctie", "sleutel",
-                                    "adres", "interval", "bron", "drempel", "omgekeerd"))
+                                    "adres", "interval", "bron", "drempel", "omgekeerd",
+                                    "stuurboord"))
         sid, stype, snaam = s.get("id"), s.get("type"), s.get("naam")
         if not isinstance(snaam, str) or not snaam:
             fouten.append(f"{plek}: 'naam' ontbreekt of is leeg")
@@ -929,6 +954,29 @@ def controleer(data: dict) -> Config:
         levert = LEVERT.get(stype, ())
         tip = f"; {stype} levert: {', '.join(levert)}  (zie: brms grootheden {stype})" if levert else ""
 
+        # --- stuurboord: de versnelling die positief wordt als de boot over stuurboord
+        # helt (§5.2.5 punt 10). Alleen bij een sensor die de versnellingen levert; nodig
+        # voor de afgeleide grootheid 'slagzij'. ---
+        stuurboord = s.get("stuurboord")
+        if stuurboord is not None:
+            if stuurboord not in afleiden.STUURBOORD:
+                fouten.append(f"{plek}: 'stuurboord' moet een van "
+                              f"{', '.join(repr(w) for w in afleiden.STUURBOORD)} zijn "
+                              f"(als tekst, tussen aanhalingstekens), niet {stuurboord!r}")
+                stuurboord = None
+            elif levert and "slagzij" not in levert:
+                fouten.append(f"{plek}: 'stuurboord' hoort alleen bij een sensor die "
+                              f"versnellingen levert (type ruuvi), niet bij type {stype}")
+                stuurboord = None
+
+        def mist_instelling(g: str) -> str | None:
+            """Het veld dat deze sensor mist om de afgeleide grootheid g te leveren (bijv.
+            'stuurboord' voor 'slagzij'), of None als er niets ontbreekt."""
+            a = afleiden.AFLEIDINGEN.get(g)
+            if a is None or a.instelling is None or g not in levert:
+                return None
+            return a.instelling if {"stuurboord": stuurboord}.get(a.instelling) is None else None
+
         # --- grootheden: optionele lijst van wat wél mee moet (§5.4.2 punt 1) ---
         lijst_g = s.get("grootheden")
         if lijst_g is not None:
@@ -942,6 +990,9 @@ def controleer(data: dict) -> Config:
                         fouten.append(f"{plek}: onbekende grootheid '{g}' in 'grootheden'{tip}")
                     elif levert and g not in levert:
                         fouten.append(f"{plek}: '{g}' wordt door type {stype} niet geleverd{tip}")
+                    elif mist_instelling(g):
+                        fouten.append(f"{plek}: '{g}' staat in 'grootheden', maar het veld "
+                                      f"'{mist_instelling(g)}' ontbreekt")
                 if len(set(lijst_g)) != len(lijst_g):
                     fouten.append(f"{plek}: 'grootheden' bevat een naam meer dan eens")
 
@@ -962,6 +1013,9 @@ def controleer(data: dict) -> Config:
                 continue
             if levert and g not in levert:
                 fouten.append(f"{plek}: correctie voor '{g}', maar type {stype} levert die niet{tip}")
+            elif mist_instelling(g):
+                fouten.append(f"{plek}: correctie voor '{g}', maar het veld "
+                              f"'{mist_instelling(g)}' ontbreekt")
             if lijst_g is not None and g not in lijst_g:
                 fouten.append(f"{plek}: correctie voor '{g}', maar '{g}' staat niet in 'grootheden'")
             c = _correctie(fouten, f"{plek}: correctie voor '{g}'", w)
@@ -990,7 +1044,8 @@ def controleer(data: dict) -> Config:
                     fouten.append(f"{plek}: '{k}' hoort alleen bij een Shelly")
 
         sensoren[sid] = Sensor(sid, stype, snaam if isinstance(snaam, str) else "", correcties,
-                               tuple(lijst_g) if lijst_g is not None else None, sleutel, **shelly)
+                               tuple(lijst_g) if lijst_g is not None else None, sleutel, **shelly,
+                               stuurboord=stuurboord)
 
     # --- [[camera]] en [opnames] (§5.7) ---
     waarschuwingen: list[str] = []

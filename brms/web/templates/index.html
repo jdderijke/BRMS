@@ -248,6 +248,21 @@ function meetwaarde(grootheid, w) {
   return Number(w).toLocaleString("nl-NL", {minimumFractionDigits: d, maximumFractionDigits: d,
                                             useGrouping: false});
 }
+// Een meetwaarde met haar eenheid, zoals hij in de legenda en in de aanwijzer staat:
+// "19,0 °C". Een grootheid met kanten (de slagzij, §5.2.5 punt 10) staat er zonder teken,
+// met de kant erachter: "3,2° sb" of "1,0° bb". Positief is de eerste kant (stuurboord),
+// negatief de tweede (bakboord); bij precies 0 staat er geen kant.
+function waardeTekst(grootheid, w) {
+  const zijden = (GROOTHEDEN[grootheid] || {}).zijden;
+  if (!zijden) return meetwaarde(grootheid, w) + " " + eenheid(grootheid);
+  return meetwaarde(grootheid, Math.abs(w)) + "°" + (w > 0 ? " " + zijden[0] : w < 0 ? " " + zijden[1] : "");
+}
+// De kanten die bij een eenheid horen (voor de getallen langs de as), of undefined. Een as
+// is er per eenheid; de eenheid "graden" wordt alleen door de slagzij gebruikt.
+function zijdenVanEenheid(e) {
+  for (const naam in GROOTHEDEN)
+    if (GROOTHEDEN[naam].zijden && GROOTHEDEN[naam].eenheid === e) return GROOTHEDEN[naam].zijden;
+}
 // De leeftijd van een meting, kort, voor de legenda op een smal scherm: "0m", "-3m";
 // vanaf 100 minuten in uren ("-5u") en vanaf twee dagen in dagen ("-12d"), zodat een
 // oude meting uit de database geen getal van vijf cijfers geeft.
@@ -509,9 +524,15 @@ function bouwChart(g) {
   // Chart.js stapelt de assen van onder naar boven; daarom in omgekeerde volgorde, zodat de
   // eenheid van de eerste reeks bovenaan staat.
   for (let i = eenheden.length - 1; i >= 0; i--) {
+    // Bij de slagzij staan de getallen langs de as zonder teken, met de kant erachter:
+    // "5 sb" boven de nul, "5 bb" eronder (§5.2.5 punt 10).
+    const zijden = zijdenVanEenheid(eenheden[i]);
+    const langsAs = zijden
+      ? v => getal(Math.abs(v)) + (v > 0 ? " " + zijden[0] : v < 0 ? " " + zijden[1] : "")
+      : v => getal(v);
     schalen["y" + i] = {stack: "eenheden", stackWeight: 1, offset: eenheden.length > 1,
                         grace: "8%",   // wat lucht, zodat een lijn niet tegen de rand van zijn strook ligt
-                        grid: {color: raster}, ticks: {color: as, callback: v => getal(v)},
+                        grid: {color: raster}, ticks: {color: as, callback: langsAs},
                         title: {display: true, text: eenheden[i], color: as}};
   }
   if (!eenheden.length) schalen.y0 = {display: false};
@@ -552,8 +573,7 @@ function bouwChart(g) {
         tooltip: {callbacks: {
           title: items => datum(items[0].parsed.x) + "  " + klok(items[0].parsed.x, true),
           label: item => item.dataset.label + ": "
-                         + meetwaarde(g.reeksen[item.datasetIndex].grootheid, item.parsed.y) + " "
-                         + eenheid(g.reeksen[item.datasetIndex].grootheid),
+                         + waardeTekst(g.reeksen[item.datasetIndex].grootheid, item.parsed.y),
         }},
       },
     },
@@ -614,7 +634,7 @@ function toonWaarden(g) {
     const smal = document.createElement("span");
     smal.className = "smal";
     smal.textContent = "(" + leeftijd(laatste.x) + ")";
-    r.waardeVak.replaceChildren(meetwaarde(r.grootheid, laatste.y) + " " + eenheid(r.grootheid) + " ",
+    r.waardeVak.replaceChildren(waardeTekst(r.grootheid, laatste.y) + " ",
                                 breed, smal);
   }
 }

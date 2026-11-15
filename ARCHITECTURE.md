@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.66 – concept** · 15 november 2026
+**Versie 0.67 – concept** · 15 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -579,7 +579,9 @@ recordtypes; daar is een bestaande bibliotheek de veiligere keuze.
 
 #### 5.2.5 Afgeleide grootheden (v0.31, slagzij in v0.66)
 
-*Ontworpen; nog niet gebouwd.*
+*Gebouwd in code v0.24.0 (`brms/afleiden.py`), aangeroepen door de BLE-reader. De
+Shelly-reader roept de module nog niet aan: een Shelly levert geen invoer voor een
+afleiding. Getest op de pc; nog niet met een echte Ruuvi aan boord.*
 
 **Aanleiding.** Sommige gewenste waarden worden niet gemeten maar uit metingen berekend:
 de slagzij van de boot uit de versnellingen van een Ruuvi, later bijvoorbeeld een
@@ -2746,7 +2748,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.66** | 2026-11-15 | Claude Code, Fable 5.2 | Slagzij in plaats van helling (§5.2.5): afgeleide grootheid `slagzij` in graden, positief = stuurboord, negatief = bakboord, getoond als "3,2° sb"; sensor plat gemonteerd; nieuw veld `stuurboord` per sensor (`x`, `-x`, `y`, `-y`); kalibratie met de gewone correctie op `slagzij`; twee alarmregels, één per kant. `helling` vervalt (§5.3.3, §5.5). Ontwerp; nog niet gebouwd. |
+| **0.67** | 2026-11-15 | Claude Code, Fable 5.2 | Slagzij gebouwd (§5.2.5) in code v0.24.0: module `brms/afleiden.py`, veld `stuurboord`, grootheid `slagzij`, de stap `afgeleid` in de trace, en sb/bb op de webpagina en in meldingen. Alleen de status in §5.2.5 is gewijzigd; het ontwerp niet. |
+| 0.66 | 2026-11-15 | Claude Code, Fable 5.2 | Slagzij in plaats van helling (§5.2.5): afgeleide grootheid `slagzij` in graden, positief = stuurboord, negatief = bakboord, getoond als "3,2° sb"; sensor plat gemonteerd; nieuw veld `stuurboord` per sensor (`x`, `-x`, `y`, `-y`); kalibratie met de gewone correctie op `slagzij`; twee alarmregels, één per kant. `helling` vervalt (§5.3.3, §5.5). Ontwerp; nog niet gebouwd. |
 | 0.65 | 2026-11-14 | Claude Code, Fable 5.2 | Bluetooth (§4.1): de ingebouwde Bluetooth van de Pi in plaats van een USB-dongle met antenne; een test thuis gaf ruim 20 m bereik, ook door muren. OPEN-2 voorlopig vervallen; de dongle blijft de uitwijk als het bereik aan boord tegenvalt. |
 | 0.64 | 2026-11-14 | Claude Code, Fable 5.2 | OPEN-27 besloten (§5.2.6): de energieteller van het Shelly-relais wordt niet opgeslagen. |
 | 0.63 | 2026-11-14 | Claude Code, Fable 5.2 | Relais uitgewerkt (§5.2.6): model Shelly Plug M Gen3 voor een kachel van 1500 W; één alarmregel als thermostaat; uitschakeltijd 10 minuten, herhalen elke 5 minuten; de actie `relais` schakelt alleen aan zolang `walstroom` = 1 (onbekend = uit); de plug levert ook `vermogen` (nieuwe grootheid, §5.3.3), `spanning` en `stroom`. OPEN-27 toegevoegd (energieteller). Ontwerp; nog niet gebouwd. |

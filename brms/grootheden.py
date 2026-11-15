@@ -28,7 +28,8 @@ class Grootheid:
 
 # De decimalen (§5.3.3): 0 voor luchtdruk, toestanden (0/1), versnelling, rssi, beweging en
 # resterende tijd; 1 voor temperatuur, vocht, laadtoestand, zonnevermogen en verbruik;
-# 2 voor spanningen en stromen.
+# 2 voor spanningen en stromen. Slagzij 1: op een tiende graad af te lezen voor de
+# kalibratie (§5.2.5 punt 10).
 GROOTHEDEN: dict[str, Grootheid] = {
     g.naam: g
     for g in (
@@ -38,6 +39,9 @@ GROOTHEDEN: dict[str, Grootheid] = {
         Grootheid("versnelling_x", "mG", DOORLOPEND, 0),
         Grootheid("versnelling_y", "mG", DOORLOPEND, 0),
         Grootheid("versnelling_z", "mG", DOORLOPEND, 0),
+        # Afgeleid uit de versnellingen (§5.2.5, brms/afleiden.py). Het getal heeft een
+        # teken: positief = stuurboord, negatief = bakboord. Zie `zijde` hieronder.
+        Grootheid("slagzij", "graden", DOORLOPEND, 1),
         Grootheid("beweging", "aantal", TOENAME, 0),
         Grootheid("batterijspanning", "V", DOORLOPEND, 2),
         Grootheid("rssi", "dBm", DOORLOPEND, 0),
@@ -58,3 +62,22 @@ GROOTHEDEN: dict[str, Grootheid] = {
 def soort(naam: str) -> str:
     """Soort van een grootheid; KeyError bij een onbekende grootheid."""
     return GROOTHEDEN[naam].soort
+
+
+# Grootheden die getoond worden met een kant in plaats van een teken (§5.2.5 punt 10):
+# naam -> (kant bij een positieve waarde, kant bij een negatieve waarde). De gebruiker
+# rekent met stuurboord en bakboord, niet met plus en min; het teken staat alleen in
+# brms.toml en in de database. De webpagina krijgt deze tabel mee (brms/web).
+ZIJDEN: dict[str, tuple[str, str]] = {"slagzij": ("sb", "bb")}
+
+
+def zijde(naam: str, waarde: float) -> str | None:
+    """De kant waarmee een waarde getoond wordt ('sb' of 'bb'), of None als de grootheid
+    gewoon met haar eenheid getoond wordt. Bij precies 0 is er geen kant: dan "" (leeg).
+
+    Voorbeeld: zijde("slagzij", -1.8) -> "bb";  zijde("temperatuur", -1.8) -> None.
+    """
+    if naam not in ZIJDEN:
+        return None
+    positief, negatief = ZIJDEN[naam]
+    return positief if waarde > 0 else negatief if waarde < 0 else ""

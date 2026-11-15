@@ -141,7 +141,9 @@ class Tabel:
 
 
 # De stappen van een keten, in de volgorde waarin ze op het scherm staan (§10.2 punt 4).
-STAPPEN = ("ruw", "gedecodeerd", "gecorrigeerd", "gepubliceerd", "opgenomen", "opgeslagen")
+# 'afgeleid' (§5.2.5 punt 9) komt alleen van een sensor die iets afleidt, bijv. de slagzij.
+STAPPEN = ("ruw", "gedecodeerd", "gecorrigeerd", "afgeleid", "gepubliceerd", "opgenomen",
+           "opgeslagen")
 
 
 class Ketens:

@@ -13,8 +13,8 @@ Trace gaat na `duur` seconden vanzelf uit (de monitor vernieuwt de opdracht zola
 draait), of direct met brms/opdracht/trace/uit. Zo kan trace nooit per ongeluk blijven
 aanstaan.
 
-Stappen (§10.2 punt 4): ruw, gedecodeerd, gecorrigeerd, gepubliceerd (readers),
-opgenomen, opgeslagen (opslag).
+Stappen (§10.2 punt 4): ruw, gedecodeerd, gecorrigeerd, afgeleid (alleen bij een sensor
+die iets afleidt, §5.2.5 punt 9), gepubliceerd (readers), opgenomen, opgeslagen (opslag).
 """
 
 import json
