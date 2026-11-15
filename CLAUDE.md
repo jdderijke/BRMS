@@ -93,5 +93,8 @@ SQLite (tabel `meting`): temperatuur, vocht, batterijspanning, RSSI.
 Daarna: Ruuvi- en Victron-decoder, Shelly-reader (bilge), alarmlaag met Telegram en e-mail, web, camera.
 
 ## Open punten
-- Accutype (bij LiFePO4: niet laden onder 0 °C – BMS/lader regelt dit; geen eigen accutemperatuurmeting gepland).
+- Accu: nu 4× Victron AGM 12 V 110 Ah (440 Ah). Later deze winter vervangen door LiFePO4, 2× 300 Ah
+  (600 Ah). Bij LiFePO4: niet laden onder 0 °C – BMS/lader regelt dit; geen eigen accutemperatuurmeting
+  gepland. Bij de wissel de instellingen van de BMV (capaciteit, laadparameters) en de grens van het
+  alarm "accu laag" opnieuw bekijken.
 - Data-abonnement voor de router: 40 GB per maand (afgesloten november 2026). eSIM-profiel thuis installeren (RutOS-app of WAN-kabel).

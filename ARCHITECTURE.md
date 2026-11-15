@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.68 – concept** · 15 november 2026
+**Versie 0.69 – concept** · 15 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1925,8 +1925,15 @@ De gebruiker waaronder de services draaien moet journald mogen lezen (groep `adm
 `systemd-journal`); `install.sh` en `update.sh` controleren dat (`deploy/rechten.sh`). Op
 de Pi is `jandirk` al lid van `adm`.
 
-**[OPEN-15]** Is authenticatie nodig naast Tailscale? Met de schakelaar (v0.31) kan iemand
-met toegang tot het web een alarmregel uitzetten.
+**Aanmelding (besluit OPEN-15, v0.69).** Er komt voorlopig geen aanmelding op de
+webinterface. Van buitenaf is Tailscale de enige ingang (§9); aan boord luistert de
+webinterface op alle netwerkaansluitingen van de Pi, en is het wifi-wachtwoord van de
+router de beveiliging. Wie op het netwerk aan boord zit, kan dus alarmregels uitzetten,
+opnames verwijderen en herstarten.
+
+*Verworpen:* de webinterface alleen op het Tailscale-adres laten luisteren. Sluit het
+netwerk aan boord uit, maar dan is de pagina aan boord ook alleen via Tailscale te
+bereiken; het wifi-wachtwoord is voor nu genoeg.
 
 ### 5.7 Camera
 
@@ -2717,7 +2724,7 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 | 12 | ~~Formaat configuratiebestand~~ – **besloten in v0.7**: TOML, één bestand `config/brms.toml` (sinds v0.15 in `~/BRMS`), herstart bij wijziging, controle bij start | §5.4.1 |
 | 13 | ~~Alarmdetails: drempels, duur, hysterese, herhaling, herstel~~ – **besloten in v0.13**: één werking voor alle alarmen met duur, herstel-drempel, herinnering en herstelmelding; alarm "sensorbatterij laag" toegevoegd | §5.5.2 |
 | 14 | ~~ntfy.sh of zelf gehost~~ – **besloten in v0.32**: geen ntfy; meldingen via Telegram, met e-mail als tweede kanaal | §5.5.4 |
-| 15 | Authenticatie op webinterface (weegt zwaarder sinds de alarmschakelaar, v0.31) | §5.6 |
+| 15 | ~~Authenticatie op webinterface~~ – **voorlopig besloten in v0.69**: geen aanmelding; Tailscale van buitenaf, het wifi-wachtwoord van de router aan boord | §5.6 |
 | 16 | ~~Back-up~~ – **besloten in v0.6**: wekelijks naar OneDrive met `rclone copy` | §7.1 |
 | 17 | Reikwijdte van de watchdog | §7 |
 | 18 | Detectie thuis als BRMS zelf uitvalt | §8 |
@@ -2731,7 +2738,10 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 | 26 | BLE passief scannen in plaats van actief (spaart een beetje sensorbatterij; vraagt extra BlueZ-instellingen) | §5.2.1 |
 | 27 | ~~Energieteller van het Shelly-relais (Wh) ook opslaan~~ – **besloten in v0.64**: niet opslaan; vermogen, spanning en stroom volstaan | §5.2.6 |
 
-Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/eSIM.
+Daarnaast uit `CLAUDE.md`: de accu is nu 4× Victron AGM 12 V 110 Ah en wordt later deze
+winter vervangen door LiFePO4 (2× 300 Ah); bij die wissel de BMV-instellingen en de grens
+van het alarm "accu laag" opnieuw bekijken. Het data-abonnement is afgesloten (40 GB per
+maand).
 
 ---
 
@@ -2757,7 +2767,8 @@ Daarnaast uit `CLAUDE.md`: accutype (LiFePO4 of niet) en keuze data-abonnement/e
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.68** | 2026-11-15 | Claude Code, Fable 5.2 | Slagzij (§5.2.5 punt 10): uitgeschreven wat er gebeurt bij onderste boven monteren: de hoek blijft kloppen, de kant kan omdraaien, en de kanteltest en de kalibratie horen in de definitieve stand; na omdraaien of verplaatsen beide opnieuw. Alleen tekst; de code is niet gewijzigd. |
+| **0.69** | 2026-11-15 | Claude Code, Fable 5.2 | OPEN-15 voorlopig besloten (§5.6): geen aanmelding op de webinterface; Tailscale van buitenaf en het wifi-wachtwoord van de router aan boord. §11: accutype (nu AGM 4× 110 Ah, later LiFePO4 2× 300 Ah) en het afgesloten data-abonnement bijgewerkt. Alleen tekst; de code is niet gewijzigd. |
+| 0.68 | 2026-11-15 | Claude Code, Fable 5.2 | Slagzij (§5.2.5 punt 10): uitgeschreven wat er gebeurt bij onderste boven monteren: de hoek blijft kloppen, de kant kan omdraaien, en de kanteltest en de kalibratie horen in de definitieve stand; na omdraaien of verplaatsen beide opnieuw. Alleen tekst; de code is niet gewijzigd. |
 | 0.67 | 2026-11-15 | Claude Code, Fable 5.2 | Slagzij gebouwd (§5.2.5) in code v0.24.0: module `brms/afleiden.py`, veld `stuurboord`, grootheid `slagzij`, de stap `afgeleid` in de trace, en sb/bb op de webpagina en in meldingen. Alleen de status in §5.2.5 is gewijzigd; het ontwerp niet. |
 | 0.66 | 2026-11-15 | Claude Code, Fable 5.2 | Slagzij in plaats van helling (§5.2.5): afgeleide grootheid `slagzij` in graden, positief = stuurboord, negatief = bakboord, getoond als "3,2° sb"; sensor plat gemonteerd; nieuw veld `stuurboord` per sensor (`x`, `-x`, `y`, `-y`); kalibratie met de gewone correctie op `slagzij`; twee alarmregels, één per kant. `helling` vervalt (§5.3.3, §5.5). Ontwerp; nog niet gebouwd. |
 | 0.65 | 2026-11-14 | Claude Code, Fable 5.2 | Bluetooth (§4.1): de ingebouwde Bluetooth van de Pi in plaats van een USB-dongle met antenne; een test thuis gaf ruim 20 m bereik, ook door muren. OPEN-2 voorlopig vervallen; de dongle blijft de uitwijk als het bereik aan boord tegenvalt. |
