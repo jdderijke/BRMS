@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.69 – concept** · 15 november 2026
+**Versie 0.71 – concept** · 16 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -161,7 +161,7 @@ staat; daarom QoS 1.
 |---|---|---|---|
 | Meting | `brms/meting/<sensor_id>/<grootheid>` | `{"ts", "sensor_id", "grootheid", "waarde", "soort"}` | 1 voor toestand, 0 voor doorlopend en toename |
 | Opname | `brms/opname/<camera_id>` | `{"ts", "camera_id", "type", "duur", "bestand", "bytes", "aanleiding"}` | 1 |
-| Opdracht | `brms/opdracht/<doel>/<actie>`, bijv. `brms/opdracht/camera/poll-nu`, `brms/opdracht/shelly/poll-nu`, `brms/opdracht/opslag/verwijder`, `brms/opdracht/trace/aan`, `brms/opdracht/simulatie/aan` (§10.3), `brms/opdracht/relais/zet` (§5.2.6), `brms/opdracht/alarm/schakel` (§5.5.3) | afhankelijk van de actie, bijv. `{"type": "video", "aanleiding": "alarm:beweging"}` | 1 |
+| Opdracht | `brms/opdracht/<doel>/<actie>`, bijv. `brms/opdracht/camera/poll-nu`, `brms/opdracht/camera/richt` (§5.7 punt 19), `brms/opdracht/shelly/poll-nu`, `brms/opdracht/opslag/verwijder`, `brms/opdracht/trace/aan`, `brms/opdracht/simulatie/aan` (§10.3), `brms/opdracht/relais/zet` (§5.2.6), `brms/opdracht/alarm/schakel` (§5.5.3) | afhankelijk van de actie, bijv. `{"type": "video", "aanleiding": "alarm:beweging"}` | 1 |
 | Alarm (v0.31) | `brms/alarm/<alarm_id>` | `{"ts", "alarm_id", "sensor_id", "grootheid", "gebeurtenis", "waarde"}`; `gebeurtenis` is `begin`, `herstel` of `uitgezet` (§5.5.3). De alarmlaag meldt bij zijn start en daarna elke minuut op `brms/alarm/herstart` welke alarmen actief zijn: `{"ts", "actief": [[alarm_id, sensor_id], ...]}` (v0.34, §5.5.3 punt 8). | 1 |
 | Simulatie (v0.55) | `brms/simulatie/<dienst>` | `{"ts", "dienst", "sensoren": [{"sensor_id", "soort", "einde"}, ...]}`: welke sensoren een reader simuleert; `soort` is `test` of `demo`, `einde` in Unix-seconden (leeg bij een demo). Bij de start van de reader, bij elke verandering en elke 30 s (§10.3 punt 10). | 1 |
 | Trace (v0.16) | `brms/trace/<sensor_id>` | `{"ts", "sensor_id", "dienst", "stap", "tekst"}`, optioneel `"deel"` – alleen zolang trace voor die sensor aanstaat (§10.2) | 0 |
@@ -1613,6 +1613,10 @@ schrijvers op dezelfde database en map.
      doorloopt (v0.50; eerder pas na het stoppen van het live-beeld). Een camera
      zonder live-beeld (tot v0.48: zonder `live_url`; daarna: zonder `video_url`) heeft
      geen live-knop, en dus ook geen opname op verzoek vanuit de pagina.
+     Kan de camera bewegen (veld `richten` in `brms.toml`), dan staan er tijdens het
+     live-beeld ook **vier richtknoppen**: op, neer, links, rechts; elke klik beweegt de
+     camera een korte stap (§5.7 punt 19; v0.71, nog niet gebouwd). Een vaste camera
+     heeft deze knoppen niet.
    - Onderaan staan de totalen: aantal en omvang van de foto's en video's, de
      bewaartermijn en de maximale ruimte.
    - De bestanden zelf levert de webservice uit op `/opname/<pad>`, alleen voor een pad
@@ -1942,7 +1946,7 @@ verzoek (poll-nu), de tabel `opname` en het opruimen van oude foto's (v0.38), vi
 verzoek met de maximale ruimte (v0.39), foto en video bij een alarm (v0.40, punt 15), en
 bekijken en verwijderen in het web (v0.41, §5.6 punt 2). Foto's, video's en de foto bij
 een alarm zijn getest met de testcamera (Foscam) en Telegram; de opnamepagina alleen op
-de pc.*
+de pc. Het richten van de camera (punt 19, v0.71) is ontworpen en nog niet gebouwd.*
 
 **Redenering.** De camera bekijkt het dek. Een regelmatige foto toont de toestand van de
 boot; een video legt een gebeurtenis vast (iemand stapt aan boord, storm). Een IP-camera
@@ -1978,9 +1982,50 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
 - ~~*Een aparte streamingdienst (bijv. go2rtc, MediaMTX)* (v0.44). Een extra programma om
   te installeren en bij te houden (P3).~~ **Herzien in v0.48:** go2rtc is alsnog gekozen,
   nadat de MJPEG-stroom in de praktijk niet voldeed (punt 18).
+- *Een video-deurbel op batterij als camera* (v0.70). Aantrekkelijk omdat hij waterdicht
+  is, een groothoeklens heeft en geen kabel vraagt. Maar hij slaapt om de batterij te
+  sparen en wordt alleen wakker bij beweging of een druk op de knop: de Pi kan geen foto
+  of stroom opvragen wanneer hij dat wil (punt 2). De gangbare modellen (Ring, Eufy, Arlo,
+  Nest, Reolink Battery) werken bovendien via de cloud en de app van de fabrikant, zonder
+  lokaal snapshot- of RTSP-adres (P2, punt 6). Kou kost capaciteit en na enkele maanden
+  moet de batterij geladen worden, terwijl er niemand aan boord is.
+- *Een wifi-camera met een eigen zonnepaneel, zonder 12V-aansluiting* (v0.70). Dit is
+  dezelfde batterijcamera met een paneeltje van 3–6 W erbij: hij slaapt ook en heeft
+  vrijwel nooit een lokaal adres (Reolink Argus, Eufy SoloCam, Tapo, Arlo). De winter is
+  juist het slechtste seizoen: weinig opbrengst in december en januari, zeker laag tussen
+  masten en steigers, en een lithium-accu laadt niet onder 0 °C. Lokaal uitlezen kan bij
+  Reolink alleen met een omweg (een Reolink Home Hub of de brug `neolink`): een extra
+  apparaat of een extra afhankelijkheid (P3), en elke opvraging kost batterij.
+
+De eis achter beide afwijzingen: de camera staat altijd aan, heeft vaste voeding en geeft
+de Pi op elk moment een foto (snapshot-adres) en een H.264-stroom over RTSP (punt 1, 6 en
+18). Een **bedrade** video-deurbel voldoet daar wel aan en is dus niet afgewezen,
+bijvoorbeeld de Reolink Video Doorbell WiFi (RTSP, ONVIF en een snapshot-adres; voeding
+12–24 VAC of 24 VDC, aan boord dus met een omvormer 12→24 V). Een gewone
+wifi-buitencamera op 12 VDC is eenvoudiger: rechtstreeks op het boordnet, één dun
+tweeaderig draadje, ongeveer 3–5 W. Is de kabeldoorvoer naar buiten het bezwaar, dan kan
+de camera binnen achter een raam of in de kuip onder de buiskap; achter glas gaat de
+infraroodverlichting uit, want die spiegelt in het raam. Het model is nog niet gekozen.
+De gegevens van de genoemde modellen zijn niet nagezocht: controleren voor aankoop.
+
+Verworpen bij het richten van de camera (punt 19, v0.71):
+- *Een adres per richting in `brms.toml`* (zoals `foto_url`). Werkt alleen bij merken met
+  een eenvoudig HTTP-adres per commando (Foscam, Dahua/Amcrest, Axis); Hikvision, Reolink
+  en Tapo vragen een bericht met inhoud of een eigen protocol. Een ander merk vraagt dus
+  toch nieuwe code, en dan is één veld met het merk korter en minder foutgevoelig.
+- *ONVIF.* De enige standaard die vrijwel elke beweegbare camera ondersteunt, maar een
+  zwaar protocol (SOAP/XML) voor vier knoppen bij één camera. Het blijft de uitwijk als er
+  later een beweegbare camera van een ander merk komt.
+- *Bewegen zolang de knop ingedrukt is.* Het live-beeld loopt tot 2 s achter, dus de
+  camera schiet door; en een stopcommando dat verloren gaat, laat hem doorlopen tot zijn
+  eindstand.
+- *Na het live-beeld vanzelf terug naar een vaste stand, of een knop daarvoor.* Niet
+  gewenst: de camera blijft staan waar de gebruiker hem laat.
 
 **Specificatie.**
-1. IP-camera (wifi 2,4 GHz, RTSP/ONVIF, 12V), **altijd aan**.
+1. IP-camera (wifi 2,4 GHz, RTSP/ONVIF, 12V), **altijd aan**. Voorlopig (v0.71) is dat
+   een **binnencamera**, de Foscam FI9826W, die kan draaien en kantelen (punt 19). Een
+   buitencamera en de voeding daarvoor komen later.
 2. De camera-reader is een pollende reader (§5.2.1) met twee soorten opname:
 
    | | Foto | Video |
@@ -2013,6 +2058,8 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
    | `gebruiker`, `wachtwoord` | het account op de camera |
    | `foto_interval` | standaard `"3m"` |
    | `video_duur` | standaard `"60s"` (v0.47; was `"120s"`) |
+   | `richten` | het merk van een camera die kan bewegen, nu alleen `"foscam"`; zonder dit veld kan de camera niet gericht worden (punt 19, v0.71) |
+   | `richt_stap` | hoe lang de camera per klik beweegt; standaard `"0.5s"` (punt 19) |
 
    | Veld van `[opnames]` | Betekenis |
    |---|---|
@@ -2086,7 +2133,7 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
     - `foto` kan niet samen met `melding = "uit"`; een losse foto is een actie.
     - De alarmlaag leest alleen een pad van de vaste vorm van punt 10.
 16. De camera wordt **niet gesimuleerd** (§10.3): de reader is te testen met een echte
-    camera. De testcamera thuis is een Foscam HD-camera (192.168.178.202, webpoort 89),
+    camera. De testcamera thuis is een Foscam FI9826W (192.168.178.202, webpoort 89),
     met deze adressen (beide beproefd, v0.39):
 
     ```toml
@@ -2101,7 +2148,7 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
 17. **Bouwvolgorde:** (a) camera-reader met foto per interval en poll-nu, tabel `opname`
     en het opruimen van foto's; (b) video en de maximale ruimte; (c) foto en video bij
     een alarm (alarmlaag en meldingskanalen); (d) bekijken en verwijderen in het web
-    (§5.6); (e) het live-beeld (punt 18).
+    (§5.6); (e) het live-beeld (punt 18); (f) het richten van de camera (punt 19).
 18. **Live-beeld** (herzien in v0.48; zo gebouwd in v0.49, code v0.18.0. De versie van
     v0.44/v0.45 met de MJPEG-stroom van de camera is vervallen). Kijken en opnemen zijn los van
     elkaar: "Live camera" toont wat de camera nu ziet; "Foto" en "Video" leggen iets vast
@@ -2233,6 +2280,44 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
     - **Eerste update naar deze versie:** de update wordt nog uitgevoerd door het oude
       `update.sh`, dat go2rtc niet kent. Daarna is één keer extra `brms update` nodig: die
       haalt go2rtc op en start de service.
+19. **Richten van de camera** (v0.71; ontwerp, nog niet gebouwd).
+
+    **Redenering.** De binnencamera (Foscam FI9826W) kan draaien en kantelen. Tijdens het
+    live kijken wil de gebruiker hem kunnen richten. Een vaste camera kan dat niet en
+    krijgt de knoppen dus niet; welke camera het kan, staat in `brms.toml`. De
+    verworpen alternatieven staan bovenaan deze paragraaf.
+
+    **Specificatie.**
+    - **Configuratie.** Het veld `richten` van `[[camera]]` (punt 7) noemt het merk; nu
+      bestaat alleen `"foscam"`. Zonder het veld is het een vaste camera. `check-config`
+      weigert een onbekend merk, en `richten` bij een camera zonder `video_url` (zonder
+      live-beeld zijn er geen knoppen). `richt_stap`: 0,1 s tot 5 s.
+    - **Knoppen.** Zolang het live-beeld loopt van een camera met `richten`, toont de
+      pagina vier knoppen: op, neer, links, rechts (§5.6 punt 2). Bij een camera zonder
+      `richten` staan ze er niet.
+    - **Stap per klik.** Eén klik beweegt de camera gedurende `richt_stap` en stopt hem
+      dan. Het stopcommando komt van de camera-reader op de Pi, niet van de browser: valt
+      de verbinding met de browser weg, dan stopt de camera toch.
+    - **De weg van een klik.** De pagina stuurt de richting naar de webservice
+      (`/richt/<camera_id>`); die geeft de opdracht `brms/opdracht/camera/richt` met
+      `{"camera_id": ..., "richting": "op"|"neer"|"links"|"rechts"}` (§3.3). De
+      camera-reader voert hem uit. De webservice praat zo niet zelf met de camera en het
+      wachtwoord blijft bij de camera-reader (punt 8 en 18).
+    - **Tijdens een lopende stap** wordt een nieuwe opdracht voor die camera genegeerd
+      (zoals bij video, punt 3).
+    - **Geen vaste stand.** De camera blijft staan waar hij gelaten is. De intervalfoto's
+      en de foto of video bij een alarm tonen dus wat de camera op dat moment ziet.
+    - **Foscam.** De commando's gaan naar hetzelfde adres als de foto: schema, host en
+      poort komen uit `foto_url`, het account uit `gebruiker` en `wachtwoord`. Bewegen:
+      `cmd=ptzMoveUp`, `ptzMoveDown`, `ptzMoveLeft`, `ptzMoveRight`; stoppen:
+      `cmd=ptzStopRun` (op `/cgi-bin/CGIProxy.fcgi`). Nog te beproeven met de testcamera.
+    - **Fouten.** Mislukt een commando (camera onbereikbaar, afgewezen), dan komt er één
+      waarschuwing in het log, zonder het wachtwoord (punt 8). Mislukt het bewegen, dan
+      volgt geen stop; mislukt het stoppen, dan probeert de reader het één keer opnieuw.
+      De pagina toont geen bevestiging: het live-beeld laat zien of de camera beweegt.
+    - **Een ander merk** vraagt nieuwe code in de camera-reader en een nieuwe waarde voor
+      `richten`; de rest (knoppen, opdracht, stap) blijft gelijk.
+    - Zoomen en opgeslagen standen (presets) horen er niet bij.
 
 ---
 
@@ -2767,7 +2852,9 @@ maand).
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.69** | 2026-11-15 | Claude Code, Fable 5.2 | OPEN-15 voorlopig besloten (§5.6): geen aanmelding op de webinterface; Tailscale van buitenaf en het wifi-wachtwoord van de router aan boord. §11: accutype (nu AGM 4× 110 Ah, later LiFePO4 2× 300 Ah) en het afgesloten data-abonnement bijgewerkt. Alleen tekst; de code is niet gewijzigd. |
+| **0.71** | 2026-11-16 | Claude Code, Fable 5.2 | Camera (§5.7): voorlopig een binnencamera, de Foscam FI9826W; buitencamera en voeding later. Richten van de camera ontworpen (§5.7 punt 19, §5.6 punt 2, §3.3): veld `richten` (merk, nu alleen `"foscam"`) en `richt_stap` per camera; vier richtknoppen tijdens het live-beeld, alleen bij een camera met `richten`; stap per klik, het stoppen door de camera-reader; opdracht `brms/opdracht/camera/richt`; geen vaste stand. Verworpen: adressen per richting, ONVIF, ingedrukt houden, terug naar een vaste stand. Ontwerp; nog niet gebouwd. |
+| 0.70 | 2026-11-16 | Claude Code, Fable 5.2 | Camera (§5.7): twee verworpen alternatieven vastgelegd: een video-deurbel op batterij en een wifi-camera met eigen zonnepaneel (slapen, geen lokaal adres, batterij in de winter). Een bedrade deurbel met RTSP en snapshot-adres voldoet wel; een gewone 12V-buitencamera is eenvoudiger. Het model is nog niet gekozen. Alleen tekst; de code is niet gewijzigd. |
+| 0.69 | 2026-11-15 | Claude Code, Fable 5.2 | OPEN-15 voorlopig besloten (§5.6): geen aanmelding op de webinterface; Tailscale van buitenaf en het wifi-wachtwoord van de router aan boord. §11: accutype (nu AGM 4× 110 Ah, later LiFePO4 2× 300 Ah) en het afgesloten data-abonnement bijgewerkt. Alleen tekst; de code is niet gewijzigd. |
 | 0.68 | 2026-11-15 | Claude Code, Fable 5.2 | Slagzij (§5.2.5 punt 10): uitgeschreven wat er gebeurt bij onderste boven monteren: de hoek blijft kloppen, de kant kan omdraaien, en de kanteltest en de kalibratie horen in de definitieve stand; na omdraaien of verplaatsen beide opnieuw. Alleen tekst; de code is niet gewijzigd. |
 | 0.67 | 2026-11-15 | Claude Code, Fable 5.2 | Slagzij gebouwd (§5.2.5) in code v0.24.0: module `brms/afleiden.py`, veld `stuurboord`, grootheid `slagzij`, de stap `afgeleid` in de trace, en sb/bb op de webpagina en in meldingen. Alleen de status in §5.2.5 is gewijzigd; het ontwerp niet. |
 | 0.66 | 2026-11-15 | Claude Code, Fable 5.2 | Slagzij in plaats van helling (§5.2.5): afgeleide grootheid `slagzij` in graden, positief = stuurboord, negatief = bakboord, getoond als "3,2° sb"; sensor plat gemonteerd; nieuw veld `stuurboord` per sensor (`x`, `-x`, `y`, `-y`); kalibratie met de gewone correctie op `slagzij`; twee alarmregels, één per kant. `helling` vervalt (§5.3.3, §5.5). Ontwerp; nog niet gebouwd. |
