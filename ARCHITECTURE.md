@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.71 – concept** · 16 november 2026
+**Versie 0.72 – concept** · 16 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1615,7 +1615,7 @@ schrijvers op dezelfde database en map.
      geen live-knop, en dus ook geen opname op verzoek vanuit de pagina.
      Kan de camera bewegen (veld `richten` in `brms.toml`), dan staan er tijdens het
      live-beeld ook **vier richtknoppen**: op, neer, links, rechts; elke klik beweegt de
-     camera een korte stap (§5.7 punt 19; v0.71, nog niet gebouwd). Een vaste camera
+     camera een korte stap (§5.7 punt 19; gebouwd in v0.72). Een vaste camera
      heeft deze knoppen niet.
    - Onderaan staan de totalen: aantal en omvang van de foto's en video's, de
      bewaartermijn en de maximale ruimte.
@@ -1946,7 +1946,8 @@ verzoek (poll-nu), de tabel `opname` en het opruimen van oude foto's (v0.38), vi
 verzoek met de maximale ruimte (v0.39), foto en video bij een alarm (v0.40, punt 15), en
 bekijken en verwijderen in het web (v0.41, §5.6 punt 2). Foto's, video's en de foto bij
 een alarm zijn getest met de testcamera (Foscam) en Telegram; de opnamepagina alleen op
-de pc. Het richten van de camera (punt 19, v0.71) is ontworpen en nog niet gebouwd.*
+de pc. Het richten van de camera (punt 19) is gebouwd in code v0.25.0 en nog niet beproefd
+met de camera zelf.*
 
 **Redenering.** De camera bekijkt het dek. Een regelmatige foto toont de toestand van de
 boot; een video legt een gebeurtenis vast (iemand stapt aan boord, storm). Een IP-camera
@@ -2280,7 +2281,8 @@ Verworpen bij het richten van de camera (punt 19, v0.71):
     - **Eerste update naar deze versie:** de update wordt nog uitgevoerd door het oude
       `update.sh`, dat go2rtc niet kent. Daarna is één keer extra `brms update` nodig: die
       haalt go2rtc op en start de service.
-19. **Richten van de camera** (v0.71; ontwerp, nog niet gebouwd).
+19. **Richten van de camera** (ontwerp v0.71; gebouwd in v0.72, code v0.25.0; nog niet
+    beproefd met de camera zelf).
 
     **Redenering.** De binnencamera (Foscam FI9826W) kan draaien en kantelen. Tijdens het
     live kijken wil de gebruiker hem kunnen richten. Een vaste camera kan dat niet en
@@ -2318,6 +2320,26 @@ Verworpen bij het richten van de camera (punt 19, v0.71):
     - **Een ander merk** vraagt nieuwe code in de camera-reader en een nieuwe waarde voor
       `richten`; de rest (knoppen, opdracht, stap) blijft gelijk.
     - Zoomen en opgeslagen standen (presets) horen er niet bij.
+
+    **Invulling bij het bouwen** (v0.72):
+    - **Het antwoord van de camera wordt gecontroleerd.** Een Foscam antwoordt ook bij een
+      verkeerd wachtwoord of te weinig rechten gewoon (HTTP 200); alleen `<result>0</result>`
+      in het antwoord betekent "gelukt". Al het andere is een mislukt commando, met de
+      reden in het log.
+    - **Rechten van het account.** Het account van de camera moet hem mogen bewegen: bij
+      een Foscam een "operator"; een "visitor" (alleen kijken) wordt afgewezen. Het
+      voorbeeldbestand vermeldt dit.
+    - **Los van de foto's.** Een richtopdracht gaat niet door de wachtrij van de opnames
+      maar start direct: een klik wacht niet op een foto die net wordt opgehaald.
+    - **Stopt de service tijdens een stap**, dan maakt de reader de stap eerst af, zodat
+      de camera zijn stopcommando krijgt.
+    - **De pagina** schakelt de vier knoppen uit zolang een stap loopt (de duur van
+      `richt_stap`); zo stapelen klikken zich niet op. De pagina krijgt niet het merk van
+      de camera, alleen of hij gericht kan worden.
+    - **Wachttijd** op het antwoord van de camera: 5 s per commando.
+    - `richt_stap` zonder `richten` is een fout in `check-config`.
+    - **Niet beproefd met de camera:** de commando's van de Foscam, de rechten van het
+      account en of 0,5 s een prettige stap is.
 
 ---
 
@@ -2852,7 +2874,8 @@ maand).
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.71** | 2026-11-16 | Claude Code, Fable 5.2 | Camera (§5.7): voorlopig een binnencamera, de Foscam FI9826W; buitencamera en voeding later. Richten van de camera ontworpen (§5.7 punt 19, §5.6 punt 2, §3.3): veld `richten` (merk, nu alleen `"foscam"`) en `richt_stap` per camera; vier richtknoppen tijdens het live-beeld, alleen bij een camera met `richten`; stap per klik, het stoppen door de camera-reader; opdracht `brms/opdracht/camera/richt`; geen vaste stand. Verworpen: adressen per richting, ONVIF, ingedrukt houden, terug naar een vaste stand. Ontwerp; nog niet gebouwd. |
+| **0.72** | 2026-11-16 | Claude Code, Fable 5.2 | Richten van de camera gebouwd (§5.7 punt 19, met de invulling bij het bouwen) in code v0.25.0: velden `richten` en `richt_stap`, opdracht `brms/opdracht/camera/richt`, de commando's van Foscam met controle van het antwoord, `/richt/<camera_id>` in de webservice en vier richtknoppen in het live-beeld. Nog niet beproefd met de camera zelf. |
+| 0.71 | 2026-11-16 | Claude Code, Fable 5.2 | Camera (§5.7): voorlopig een binnencamera, de Foscam FI9826W; buitencamera en voeding later. Richten van de camera ontworpen (§5.7 punt 19, §5.6 punt 2, §3.3): veld `richten` (merk, nu alleen `"foscam"`) en `richt_stap` per camera; vier richtknoppen tijdens het live-beeld, alleen bij een camera met `richten`; stap per klik, het stoppen door de camera-reader; opdracht `brms/opdracht/camera/richt`; geen vaste stand. Verworpen: adressen per richting, ONVIF, ingedrukt houden, terug naar een vaste stand. Ontwerp; nog niet gebouwd. |
 | 0.70 | 2026-11-16 | Claude Code, Fable 5.2 | Camera (§5.7): twee verworpen alternatieven vastgelegd: een video-deurbel op batterij en een wifi-camera met eigen zonnepaneel (slapen, geen lokaal adres, batterij in de winter). Een bedrade deurbel met RTSP en snapshot-adres voldoet wel; een gewone 12V-buitencamera is eenvoudiger. Het model is nog niet gekozen. Alleen tekst; de code is niet gewijzigd. |
 | 0.69 | 2026-11-15 | Claude Code, Fable 5.2 | OPEN-15 voorlopig besloten (§5.6): geen aanmelding op de webinterface; Tailscale van buitenaf en het wifi-wachtwoord van de router aan boord. §11: accutype (nu AGM 4× 110 Ah, later LiFePO4 2× 300 Ah) en het afgesloten data-abonnement bijgewerkt. Alleen tekst; de code is niet gewijzigd. |
 | 0.68 | 2026-11-15 | Claude Code, Fable 5.2 | Slagzij (§5.2.5 punt 10): uitgeschreven wat er gebeurt bij onderste boven monteren: de hoek blijft kloppen, de kant kan omdraaien, en de kanteltest en de kalibratie horen in de definitieve stand; na omdraaien of verplaatsen beide opnieuw. Alleen tekst; de code is niet gewijzigd. |

@@ -491,6 +491,47 @@ class TestConfig(unittest.TestCase):
         # De standaardlengte van een video is één minuut (v0.47).
         self.assertEqual(cfg.cameras["dek"].video_duur, 60.0)
 
+    def test_camera_die_kan_bewegen(self):
+        # Richten (§5.7 punt 19): 'richten' noemt het merk; zonder het veld is het een
+        # vaste camera, die de richtknoppen niet krijgt.
+        cfg = _toml("""
+            [[camera]]
+            id = "kajuit-cam"
+            foto_url = "http://camera/snap.jpg"
+            video_url = "rtsp://camera/video"
+            richten = "foscam"
+            richt_stap = "0,3s"
+
+            [[camera]]
+            id = "salon"
+            foto_url = "http://camera2/snap.jpg"
+            video_url = "rtsp://camera2/video"
+            richten = "foscam"
+
+            [[camera]]
+            id = "dek"
+            foto_url = "http://camera3/snap.jpg"
+            video_url = "rtsp://camera3/video"
+        """)
+        self.assertEqual([(c.richten, c.richt_stap) for c in cfg.cameras.values()],
+                         [("foscam", 0.3), ("foscam", 0.5), (None, 0.5)])
+
+    def test_fouten_in_richten(self):
+        basis = '[[camera]]\nid = "dek"\nfoto_url = "http://camera/snap.jpg"\n'
+        video = 'video_url = "rtsp://camera/video"\n'
+        for regels, verwacht in [
+                # Een merk waarvan BRMS de commando's niet kent.
+                (video + 'richten = "reolink"', "'richten' moet het merk van de camera zijn; bekend: foscam"),
+                (video + 'richten = true', "'richten' moet het merk"),
+                # De richtknoppen staan in het live-beeld; dat is er niet zonder video_url.
+                ('richten = "foscam"', "'richten' zonder 'video_url' doet niets"),
+                (video + 'richt_stap = "1s"', "'richt_stap' zonder 'richten' doet niets"),
+                (video + 'richten = "foscam"\nricht_stap = "10s"', "'richt_stap' moet tussen 0.1 en 5 seconden"),
+                (video + 'richten = "foscam"\nricht_stap = 1', "'richt_stap' moet een tijdsduur")]:
+            with self.assertRaises(config.ConfigFout, msg=regels) as ctx:
+                _toml(basis + regels)
+            self.assertIn(verwacht, "\n".join(ctx.exception.fouten))
+
     def test_zonder_camera(self):
         cfg = _toml("")
         self.assertEqual(cfg.cameras, {})

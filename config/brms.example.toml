@@ -148,6 +148,15 @@ naam = "motorruim"
 #                  geen video's en is er geen live-beeld.
 #   foto_interval  tijd tussen twee foto's; standaard "3m"
 #   video_duur     lengte van een video; standaard "60s"
+#   richten        alleen bij een camera die kan bewegen (draaien en kantelen): het merk,
+#                  nu alleen "foscam". Tijdens "Live camera" staan er dan vier knoppen
+#                  (links, omhoog, omlaag, rechts); elke klik beweegt de camera een korte
+#                  stap (§5.7 punt 19). Laat het veld weg bij een vaste camera: die krijgt
+#                  de knoppen niet. De camera blijft staan waar je hem laat; ook de foto's
+#                  elke 'foto_interval' en bij een alarm tonen dan die richting.
+#                  Het account moet de camera mogen bewegen: bij een Foscam is dat een
+#                  'operator'; een 'visitor' mag alleen kijken.
+#   richt_stap     hoe lang de camera per klik beweegt; standaard "0.5s" (0,1 s tot 5 s)
 #
 # Het voorbeeld is een Foscam HD-camera. Het snapshot-adres van een ander merk staat in de
 # handleiding van de camera (zoek op "snapshot URL").
@@ -160,6 +169,8 @@ naam = "motorruim"
 # video_url = "rtsp://{gebruiker}:{wachtwoord}@192.168.1.20:88/videoMain"
 # foto_interval = "3m"
 # video_duur = "60s"
+# richten = "foscam"       # weglaten bij een camera die niet kan bewegen
+# richt_stap = "0.5s"
 #
 # Waar de opnames staan en hoe lang ze blijven. Zonder dit blok gelden deze waarden. Laat
 # de map binnen data/ staan: alleen daar mogen de services schrijven.

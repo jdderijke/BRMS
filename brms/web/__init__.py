@@ -32,7 +32,10 @@ Adressen:
     /api/opnames/nu          (POST) nu een foto of video laten maken (poll-nu)
     /live/<camera_id>        (POST) het live-beeld van een camera aanvragen (WebRTC via
                              go2rtc, §5.7 punt 18)
-    /alarmen                 de pagina met de alarmregels, hun schakelaars en de historie
+    /richt/<camera_id>       (POST) {"richting": "op"|"neer"|"links"|"rechts"}: een camera
+                             die kan bewegen één stap richten; opdracht over de bus
+                             (§5.7 punt 19)
+    /alarmen               de pagina met de alarmregels, hun schakelaars en de historie
     /api/alarmen/overzicht   regels (met aan/uit), actieve en opgetreden alarmen;
                              ?van=&tot= (periode) of ?aantal=&overslaan= (de laatste N)
     /api/alarmen/schakel     (POST) een alarmregel aan- of uitzetten; opdracht over de bus
@@ -70,6 +73,7 @@ log = logging.getLogger(__name__)
 # brms/readers/camera.py.
 TOPIC_VERWIJDER = "brms/opdracht/opslag/verwijder"
 TOPIC_POLL_NU = "brms/opdracht/camera/poll-nu"
+TOPIC_RICHT = "brms/opdracht/camera/richt"
 TOPIC_SCHAKEL = "brms/opdracht/alarm/schakel"
 # Hierop melden de readers welke sensoren ze simuleren (§10.3 punt 10); zie
 # brms/simulatie.py. Elke reader meldt zich elke 30 s; een melding die ouder is dan
@@ -708,7 +712,11 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
             cameras=[{"id": c.id, "naam": c.naam, "video": c.video_url is not None,
                       "video_duur": c.video_duur,
                       # Live-beeld heeft elke camera met een videostroom (§5.7 punt 18).
-                      "live": c.video_url is not None}
+                      "live": c.video_url is not None,
+                      # Richtknoppen alleen bij een camera die kan bewegen (§5.7 punt 19).
+                      # De pagina krijgt niet het merk, alleen of het kan, en de duur van
+                      # een stap: zo lang zijn de knoppen na een klik uitgeschakeld.
+                      "richten": c.richten is not None, "richt_stap": c.richt_stap}
                      for c in cfg.cameras.values()],
             max_live=MAX_LIVE,
             video_ruimte=cfg.opnames.video_ruimte, foto_bewaren=cfg.opnames.foto_bewaren)
@@ -799,6 +807,26 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
             return jsonify(fout=str(e)), 502
         return Response(antwoord, mimetype="application/sdp",
                         headers={"Cache-Control": "no-store"})
+
+    # --- richten van de camera (§5.7 punt 19) -----------------------------------------
+    @app.post("/richt/<camera_id>")
+    def richt(camera_id):
+        """Eén klik op een richtknop in het live-beeld: de camera één stap bewegen.
+
+        De webservice praat niet zelf met de camera: de opdracht gaat over de bus naar de
+        camera-reader, die het commando stuurt en de camera na de stap weer stopt. Het
+        wachtwoord van de camera blijft zo bij de camera-reader. Het antwoord zegt alleen
+        dat de opdracht verstuurd is; of de camera beweegt, laat het live-beeld zien.
+        """
+        camera = cfg.cameras.get(camera_id)
+        if camera is None or camera.richten is None:
+            return jsonify(fout="deze camera kan niet gericht worden (geen 'richten' in brms.toml)"), 404
+        inhoud = request.get_json(silent=True)
+        richting = inhoud.get("richting") if isinstance(inhoud, dict) else None
+        if richting not in config.RICHTINGEN:
+            return jsonify(fout=f"'richting' moet een van {', '.join(config.RICHTINGEN)} zijn"), 400
+        return (_opdracht(TOPIC_RICHT, {"camera_id": camera.id, "richting": richting})
+                or jsonify(gevraagd=richting))
 
     # --- alarmen (§5.6 alarmenpagina, §5.5.3 punt 7) -----------------------------------
     @app.get("/alarmen")

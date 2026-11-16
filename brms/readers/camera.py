@@ -47,6 +47,17 @@ wie op de Pi is ingelogd.
 
 Het ophalen gebeurt met urllib uit de standaardbibliotheek (geen extra afhankelijkheid,
 P3), in een thread: urllib blokkeert, en de asyncio-loop moet door kunnen lopen.
+
+Richten (§5.7 punt 19): een camera die kan bewegen (veld `richten` in [[camera]], met het
+merk) is vanuit het live-beeld te richten. De opdracht
+
+    brms/opdracht/camera/richt   {"camera_id": "dek", "richting": "op"}
+
+(op, neer, links of rechts) beweegt de camera één stap: de reader stuurt het commando
+"bewegen", wacht `richt_stap` seconden en stuurt dan "stop". Het stoppen gebeurt dus hier
+op de Pi en niet in de browser: valt de verbinding met de browser weg, dan stopt de camera
+toch. Een opdracht tijdens een lopende stap wordt genegeerd. De commando's verschillen per
+merk; nu is er alleen Foscam (zie foscam_adres).
 """
 
 import asyncio
@@ -54,17 +65,26 @@ import http.client
 import json
 import logging
 import os
+import re
 import time
 import urllib.parse
 import urllib.request
 
 from brms import go2rtc
-from brms.config import PLAATS_GEBRUIKER, PLAATS_WACHTWOORD, Camera, Config
+from brms.config import PLAATS_GEBRUIKER, PLAATS_WACHTWOORD, RICHTINGEN, Camera, Config
 
 log = logging.getLogger(__name__)
 
 TOPIC_OPNAME = "brms/opname"
 TOPIC_POLL_NU = "brms/opdracht/camera/poll-nu"
+TOPIC_RICHT = "brms/opdracht/camera/richt"
+
+# Langste wachttijd op het antwoord van de camera op een richtcommando, in seconden. Korter
+# dan bij een foto: het antwoord is een paar regels tekst, en een stopcommando dat blijft
+# hangen laat de camera doorlopen.
+TIMEOUT_RICHT = 5.0
+# Het antwoord op een richtcommando is een paar regels; meer dan dit lezen we niet.
+MAX_ANTWOORD = 4096
 
 FOTO, VIDEO = "foto", "video"
 # Aanleidingen van een opname (kolom `aanleiding` in de tabel opname, §5.3.1).
@@ -145,6 +165,67 @@ def haal_foto(adres: str, timeout: float = TIMEOUT) -> bytes:
     return data
 
 
+# --- richten (§5.7 punt 19) ---------------------------------------------------------------
+
+def haal_antwoord(adres: str, timeout: float = TIMEOUT_RICHT) -> bytes:
+    """Stuurt één richtcommando (een HTTP-aanvraag) en geeft het antwoord van de camera.
+
+    Blokkeert tot het antwoord er is (of de timeout); de reader voert dit in een thread
+    uit. OSError of http.client.HTTPException als de camera niet (goed) antwoordt.
+    """
+    with urllib.request.urlopen(adres, timeout=timeout) as r:
+        return r.read(MAX_ANTWOORD)
+
+
+# De commando's van een Foscam HD-camera voor de vier richtingen; None is stoppen.
+_FOSCAM = {"op": "ptzMoveUp", "neer": "ptzMoveDown", "links": "ptzMoveLeft",
+           "rechts": "ptzMoveRight", None: "ptzStopRun"}
+# Een Foscam antwoordt met een stukje XML waarin <result>0</result> "gelukt" betekent.
+_FOSCAM_RESULTAAT = re.compile(rb"<result>\s*(-?\d+)\s*</result>")
+
+
+def foscam_adres(camera: Camera, richting: str | None) -> str:
+    """Het adres van een richtcommando voor een Foscam HD-camera; `richting` None = stoppen.
+
+    De commando's gaan naar dezelfde camera als de foto: schema, host en poort komen uit
+    `foto_url`, zodat er geen extra adres in brms.toml hoeft. Het account gaat mee in het
+    adres (zo werkt de Foscam), gecodeerd zoals in vul_in.
+    """
+    d = urllib.parse.urlsplit(camera.foto_url)
+    adres = (f"{d.scheme}://{d.hostname}" + (f":{d.port}" if d.port else "")
+             + f"/cgi-bin/CGIProxy.fcgi?cmd={_FOSCAM[richting]}")
+    if camera.gebruiker is not None:
+        adres += (f"&usr={urllib.parse.quote(camera.gebruiker, safe='')}"
+                  f"&pwd={urllib.parse.quote(camera.wachtwoord, safe='')}")
+    return adres
+
+
+def foscam_controleer(antwoord: bytes) -> None:
+    """Controleert het antwoord van een Foscam op een richtcommando; ValueError als de
+    camera het commando niet heeft uitgevoerd.
+
+    Een Foscam geeft ook bij een verkeerd wachtwoord of te weinig rechten gewoon een
+    antwoord (HTTP 200); alleen het getal in <result> zegt of het gelukt is.
+    """
+    m = _FOSCAM_RESULTAAT.search(antwoord)
+    if m is None:
+        begin = antwoord[:80].decode("ascii", "replace").replace("\n", " ").replace("\r", "")
+        raise ValueError(f"onverwacht antwoord van de camera; het begint met: {begin!r}")
+    resultaat = int(m.group(1))
+    if resultaat != 0:
+        # -2 is bij een Foscam een verkeerde naam of wachtwoord, -3 te weinig rechten: een
+        # account met alleen kijkrechten (visitor) mag de camera niet bewegen.
+        uitleg = {-2: "; naam of wachtwoord klopt niet",
+                  -3: "; het account mag de camera niet bewegen (bij een Foscam is daarvoor "
+                      "een 'operator' nodig, geen 'visitor')"}.get(resultaat, "")
+        raise ValueError(f"de camera heeft het commando afgewezen (result {resultaat}){uitleg}")
+
+
+# Per merk (het veld 'richten', zie config.RICHT_MERKEN): hoe het adres van een commando
+# eruitziet en hoe het antwoord gecontroleerd wordt. Een ander merk komt hier bij.
+_MERKEN = {"foscam": (foscam_adres, foscam_controleer)}
+
+
 def bestandsnaam(camera_id: str, ts: int, extensie: str) -> str:
     """Het pad van een opname binnen de opnamemap (§5.7 punt 10), met '/' als scheiding:
     zo staat het ook in de database. De tijd is UTC."""
@@ -211,11 +292,16 @@ class Opnemer:
     """
 
     def __init__(self, camera: Camera, map_: str, bus, haal=haal_foto, klok_ok=_klok_ok,
-                 tijd=time.time, ffmpeg=FFMPEG, via_go2rtc=go2rtc.bereikbaar):
-        """haal, klok_ok, tijd, ffmpeg (het programma, als lijst) en via_go2rtc (een
-        functie die zegt of go2rtc draait) zijn te vervangen in tests."""
+                 tijd=time.time, ffmpeg=FFMPEG, via_go2rtc=go2rtc.bereikbaar,
+                 stuur=haal_antwoord):
+        """haal, klok_ok, tijd, ffmpeg (het programma, als lijst), via_go2rtc (een
+        functie die zegt of go2rtc draait) en stuur (verstuurt een richtcommando) zijn te
+        vervangen in tests."""
         self._ffmpeg = tuple(ffmpeg)
         self._via_go2rtc = via_go2rtc
+        self._stuur = stuur
+        # De taak van de lopende richtstap (§5.7 punt 19), of None.
+        self._richttaak: asyncio.Task | None = None
         # De taak van de lopende video, of None.
         self._videotaak: asyncio.Task | None = None
         self.camera = camera
@@ -390,12 +476,77 @@ class Opnemer:
 
         self._videotaak = asyncio.create_task(veilig())
 
+    # --- richten (§5.7 punt 19) ---
+    async def _commando(self, richting: str | None) -> None:
+        """Stuurt één richtcommando naar de camera (`richting` None = stoppen) en
+        controleert het antwoord. OSError, http.client.HTTPException of ValueError als het
+        niet gelukt is."""
+        adres_van, controleer = _MERKEN[self.camera.richten]
+        # urllib blokkeert; in een thread, zodat foto's en andere camera's doorlopen.
+        antwoord = await asyncio.to_thread(self._stuur, adres_van(self.camera, richting),
+                                           TIMEOUT_RICHT)
+        controleer(antwoord)
+
+    async def richt(self, richting: str) -> bool:
+        """Beweegt de camera één stap in `richting`: bewegen, `richt_stap` seconden
+        wachten, stoppen. Geeft True als beide commando's gelukt zijn; anders staat de
+        reden in het log (zonder het wachtwoord, §5.7 punt 8)."""
+        camera = self.camera
+        fouten = (OSError, ValueError, http.client.HTTPException)
+        try:
+            await self._commando(richting)
+        except fouten as e:
+            # Het bewegen is niet begonnen (of we weten het niet): geen stop sturen.
+            log.warning("richten van %s (%s) naar %s mislukt op %s: %s", camera.naam, camera.id,
+                        richting, toon(camera.foto_url), schoon(str(e), camera))
+            return False
+        await asyncio.sleep(camera.richt_stap)
+        # Stoppen. Mislukt dat, dan loopt de camera door tot zijn eindstand: daarom één
+        # keer opnieuw proberen voor het gemeld wordt.
+        for poging in (1, 2):
+            try:
+                await self._commando(None)
+                break
+            except fouten as e:
+                if poging == 2:
+                    log.warning("%s (%s) stoppen na het richten naar %s mislukt op %s: %s; "
+                                "de camera loopt mogelijk door tot zijn eindstand", camera.naam,
+                                camera.id, richting, toon(camera.foto_url), schoon(str(e), camera))
+                    return False
+        log.debug("%s (%s) gericht: %s, %g s", camera.naam, camera.id, richting, camera.richt_stap)
+        return True
+
+    def start_richten(self, richting: str) -> None:
+        """Start één richtstap als eigen taak, los van de foto's: een klik moet niet
+        wachten op een foto die net wordt opgehaald. Loopt er al een stap, dan wordt de
+        opdracht genegeerd (§5.7 punt 19), zodat klikken zich niet opstapelen."""
+        if self.camera.richten is None:
+            log.warning("richten van %s (%s) gevraagd, maar de camera heeft geen 'richten' "
+                        "in brms.toml", self.camera.naam, self.camera.id)
+            return
+        if self._richttaak is not None and not self._richttaak.done():
+            log.debug("richten van %s (%s) gevraagd tijdens een lopende stap; genegeerd",
+                      self.camera.naam, self.camera.id)
+            return
+
+        async def veilig():
+            try:
+                await self.richt(richting)
+            except Exception:
+                log.exception("fout bij richten van %s (%s)", self.camera.naam, self.camera.id)
+
+        self._richttaak = asyncio.create_task(veilig())
+
     async def draai(self, stop: asyncio.Event) -> None:
         """Maakt opnames tot `stop` gezet wordt: een foto elke `foto_interval` seconden, en
         direct een foto of video bij een opdracht van poll-nu."""
         try:
             await self._lus(stop)
         finally:
+            # Een lopende richtstap afmaken en niet afbreken: anders krijgt de camera geen
+            # stopcommando en loopt hij door. Dat duurt hooguit de stap plus het antwoord.
+            if self._richttaak is not None and not self._richttaak.done():
+                await self._richttaak
             # Een lopende video afbreken; video() ruimt dan zelf op.
             if self._videotaak is not None and not self._videotaak.done():
                 self._videotaak.cancel()
@@ -458,6 +609,24 @@ def lees_opdracht(payload: bytes) -> tuple[str | None, str, str]:
     return camera_id, type_, aanleiding
 
 
+def lees_richtopdracht(payload: bytes) -> tuple[str, str]:
+    """Leest een richtopdracht (§5.7 punt 19): (camera_id, richting). ValueError bij een
+    ongeldige opdracht. Anders dan bij poll-nu is de camera verplicht: "alle camera's een
+    stap naar links" is nooit de bedoeling."""
+    try:
+        d = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise ValueError(f"geen geldige JSON: {e}") from None
+    if not isinstance(d, dict):
+        raise ValueError("opdracht is geen JSON-object")
+    camera_id, richting = d.get("camera_id"), d.get("richting")
+    if not isinstance(camera_id, str):
+        raise ValueError("camera_id ontbreekt of is geen tekst")
+    if richting not in RICHTINGEN:
+        raise ValueError(f"richting moet een van {', '.join(RICHTINGEN)} zijn, niet {richting!r}")
+    return camera_id, richting
+
+
 async def draai(config: Config, bus, stop: asyncio.Event) -> None:
     """Maakt opnames van alle camera's tot `stop` gezet wordt (bij SIGTERM van systemd)."""
     cameras = config.cameras
@@ -487,9 +656,26 @@ async def draai(config: Config, bus, stop: asyncio.Event) -> None:
 
     bus.abonneer(TOPIC_POLL_NU, 1, bij_poll_nu)
 
+    # Richten (§5.7 punt 19). Ook deze opdracht komt binnen in paho's netwerkthread. Hij
+    # gaat niet via de wachtrij van de opnames maar start direct een eigen taak: een klik
+    # op een richtknop moet niet wachten op een foto die net wordt opgehaald.
+    def bij_richt(topic: str, payload: bytes) -> None:
+        try:
+            camera_id, richting = lees_richtopdracht(payload)
+        except ValueError as e:
+            log.warning("ongeldige opdracht op %s: %s", topic, e)
+            return
+        if camera_id not in opnemers:
+            log.warning("opdracht op %s voor onbekende camera %r genegeerd", topic, camera_id)
+            return
+        loop.call_soon_threadsafe(opnemers[camera_id].start_richten, richting)
+
+    bus.abonneer(TOPIC_RICHT, 1, bij_richt)
+
     log.info("camera-reader gestart; %d camera's: %s; opnamemap %s", len(cameras),
              ", ".join(f"{c.naam} ({c.id}) op {toon(c.foto_url)} elke {c.foto_interval:g} s"
                        + (f", video {c.video_duur:g} s" if c.video_url else ", geen video")
+                       + (f", richten ({c.richten}, stap {c.richt_stap:g} s)" if c.richten else "")
                        for c in cameras.values()) or "geen", config.opnames.map)
     taken = [asyncio.create_task(o.draai(stop)) for o in opnemers.values()]
     await stop.wait()

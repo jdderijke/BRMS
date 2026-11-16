@@ -254,6 +254,15 @@ MIN_VIDEO_DUUR, MAX_VIDEO_DUUR = 5.0, 600.0
 VERVALLEN_CAMERA = ("live_url", "live_beelden")
 # De invulplaatsen voor het account in een camera-adres (§5.7 punt 7).
 PLAATS_GEBRUIKER, PLAATS_WACHTWOORD = "{gebruiker}", "{wachtwoord}"
+# Richten van een camera die kan bewegen (§5.7 punt 19). Het veld 'richten' noemt het merk:
+# elk merk heeft zijn eigen commando's, en die staan in de camera-reader
+# (brms/readers/camera.py). Een nieuw merk komt hier en daar bij.
+RICHT_MERKEN = ("foscam",)
+# De vier richtingen van de knoppen in het live-beeld; zo heten ze ook in de opdracht
+# brms/opdracht/camera/richt (§3.3).
+RICHTINGEN = ("op", "neer", "links", "rechts")
+# Grenzen van 'richt_stap' in seconden: hoe lang de camera per klik beweegt.
+MIN_RICHT_STAP, MAX_RICHT_STAP = 0.1, 5.0
 
 
 @dataclass(frozen=True)
@@ -274,6 +283,12 @@ class Camera:
     video_duur: float = 60.0
     # Het live-beeld in het web (§5.7 punt 18) heeft geen eigen velden: elke camera met een
     # video_url heeft live-beeld, via go2rtc (zie brms/go2rtc.py).
+    # Richten (§5.7 punt 19): het merk van een camera die kan bewegen (een van
+    # RICHT_MERKEN), of None voor een vaste camera. Alleen een camera met 'richten' krijgt
+    # de vier richtknoppen in het live-beeld.
+    richten: str | None = None
+    # Hoe lang de camera per klik beweegt, in seconden; daarna stopt de camera-reader hem.
+    richt_stap: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -565,7 +580,8 @@ def _cameras(fouten, data: dict, sensoren: dict[str, Sensor],
             fouten.append(f"{plek}: moet een tabel zijn")
             continue
         _onbekend(fouten, plek, c, ("id", "naam", "foto_url", "video_url", "gebruiker",
-                                    "wachtwoord", "foto_interval", "video_duur")
+                                    "wachtwoord", "foto_interval", "video_duur", "richten",
+                                    "richt_stap")
                   + VERVALLEN_CAMERA)
         aantal_fouten = len(fouten)
 
@@ -615,9 +631,26 @@ def _cameras(fouten, data: dict, sensoren: dict[str, Sensor],
                               MIN_FOTO_INTERVAL, MAX_FOTO_INTERVAL)
         video_duur = _tijd(fouten, plek, c, "video_duur", Camera.video_duur,
                            MIN_VIDEO_DUUR, MAX_VIDEO_DUUR)
+
+        # Richten (§5.7 punt 19): het merk moet bekend zijn, want de commando's verschillen
+        # per merk. De richtknoppen staan in het live-beeld; zonder videostroom is er geen
+        # live-beeld en zou 'richten' stil niets doen.
+        richten = c.get("richten")
+        if richten is not None:
+            if richten not in RICHT_MERKEN:
+                fouten.append(f"{plek}: 'richten' moet het merk van de camera zijn; bekend: "
+                              f"{', '.join(RICHT_MERKEN)}. Laat het veld weg bij een camera "
+                              f"die niet kan bewegen")
+            elif "video_url" not in c:
+                fouten.append(f"{plek}: 'richten' zonder 'video_url' doet niets: de "
+                              f"richtknoppen staan in het live-beeld")
+        elif "richt_stap" in c:
+            fouten.append(f"{plek}: 'richt_stap' zonder 'richten' doet niets")
+        richt_stap = _tijd(fouten, plek, c, "richt_stap", Camera.richt_stap,
+                           MIN_RICHT_STAP, MAX_RICHT_STAP)
         if len(fouten) == aantal_fouten:
             cameras[cid] = Camera(cid, naam.strip(), foto_url, video_url, gebruiker, wachtwoord,
-                                  foto_interval, video_duur)
+                                  foto_interval, video_duur, richten, richt_stap)
     return cameras
 
 

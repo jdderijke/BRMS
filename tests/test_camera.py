@@ -396,7 +396,192 @@ class TestVideo(unittest.TestCase):
         self.assertEqual(self._bestanden(), ["203000.jpg", "203007.jpg"])
 
 
+class TestRichten(unittest.TestCase):
+    """Richten van een camera die kan bewegen (§5.7 punt 19): per klik één stap. De camera
+    is vervangen: `stuur` onthoudt de adressen en geeft het antwoord van een Foscam."""
+
+    GOED = b"<CGI_Result>\n    <result>0</result>\n</CGI_Result>"
+
+    def setUp(self):
+        # Een tijdelijke opnamemap: de lus van de opnemer maakt bij zijn start een foto.
+        self._map = tempfile.TemporaryDirectory()
+        self.addCleanup(self._map.cleanup)
+        self.bus = NepBus()
+        self.gestuurd = []          # de adressen van de commando's, in volgorde
+        # Het antwoord per commando (de naam na "cmd="); standaard "gelukt". Een
+        # uitzondering wordt opgegooid; een lijst geeft per aanroep het volgende antwoord.
+        self.antwoorden = {}
+
+    def _stuur(self, adres, timeout):
+        self.gestuurd.append(adres)
+        commando = adres.split("cmd=")[1].split("&")[0]
+        antwoord = self.antwoorden.get(commando, self.GOED)
+        if isinstance(antwoord, list):
+            antwoord = antwoord.pop(0)
+        if isinstance(antwoord, Exception):
+            raise antwoord
+        return antwoord
+
+    def _camera(self, stap=0.1, richten="foscam"):
+        return Camera("dek", "Dek", ADRES, "rtsp://{gebruiker}:{wachtwoord}@192.168.1.20:89/videoMain",
+                      "brms", WACHTWOORD, 180.0, 60.0, richten, stap)
+
+    def _opnemer(self, cam=None):
+        return Opnemer(cam or self._camera(), self._map.name, self.bus,
+                       haal=lambda adres, timeout: JPEG, klok_ok=lambda: True,
+                       stuur=self._stuur)
+
+    def _commandos(self):
+        """De namen van de verstuurde commando's, zonder de rest van het adres."""
+        return [a.split("cmd=")[1].split("&")[0] for a in self.gestuurd]
+
+    def test_elk_merk_uit_de_configuratie_heeft_commandos(self):
+        # Wat check-config goedkeurt als 'richten', moet de reader ook kunnen uitvoeren.
+        from brms import config
+        self.assertEqual(set(camera._MERKEN), set(config.RICHT_MERKEN))
+
+    def test_adres_van_een_foscam(self):
+        # Schema, host en poort van het snapshot-adres; het account gecodeerd erachter.
+        cam = self._camera()
+        self.assertEqual(camera.foscam_adres(cam, "op"),
+                         "http://192.168.1.20:89/cgi-bin/CGIProxy.fcgi?cmd=ptzMoveUp"
+                         "&usr=brms&pwd=GEH%26IM%2Fw%40chtwoord")
+        self.assertEqual([camera.foscam_adres(cam, r).split("cmd=")[1].split("&")[0]
+                          for r in ("neer", "links", "rechts", None)],
+                         ["ptzMoveDown", "ptzMoveLeft", "ptzMoveRight", "ptzStopRun"])
+        # Een camera zonder account: geen usr en pwd in het adres.
+        zonder = Camera("dek", "Dek", "https://camera.local/snap.jpg", "rtsp://camera/v",
+                        richten="foscam")
+        self.assertEqual(camera.foscam_adres(zonder, None),
+                         "https://camera.local/cgi-bin/CGIProxy.fcgi?cmd=ptzStopRun")
+
+    def test_antwoord_van_een_foscam(self):
+        camera.foscam_controleer(self.GOED)          # result 0: geen fout
+        for antwoord, verwacht in [
+                (b"<CGI_Result><result>-2</result></CGI_Result>", "naam of wachtwoord"),
+                (b"<CGI_Result><result>-3</result></CGI_Result>", "operator"),
+                (b"<CGI_Result><result>-1</result></CGI_Result>", "result -1"),
+                (b"<html>404 Not Found</html>", "onverwacht antwoord")]:
+            with self.assertRaises(ValueError) as ctx:
+                camera.foscam_controleer(antwoord)
+            self.assertIn(verwacht, str(ctx.exception))
+
+    def test_een_stap_is_bewegen_wachten_en_stoppen(self):
+        import time
+        opnemer = self._opnemer(self._camera(stap=0.2))
+        begin = time.monotonic()
+        self.assertTrue(asyncio.run(opnemer.richt("links")))
+        self.assertEqual(self._commandos(), ["ptzMoveLeft", "ptzStopRun"])
+        # Tussen bewegen en stoppen zit de stap.
+        self.assertGreaterEqual(time.monotonic() - begin, 0.2)
+
+    def test_bewegen_mislukt_dan_geen_stop_en_geen_wachtwoord_in_het_log(self):
+        self.antwoorden["ptzMoveUp"] = urllib.error.URLError(
+            f"geen verbinding met {camera.foscam_adres(self._camera(), 'op')}")
+        with self.assertLogs("brms.readers.camera", "WARNING") as log:
+            self.assertFalse(asyncio.run(self._opnemer().richt("op")))
+        self.assertEqual(self._commandos(), ["ptzMoveUp"])
+        self.assertIn("richten van Dek (dek) naar op mislukt op http://192.168.1.20:89", log.output[0])
+        self.assertNotIn("GEH", log.output[0])
+
+    def test_afgewezen_door_de_camera(self):
+        # Een account met alleen kijkrechten: de camera antwoordt wel, maar beweegt niet.
+        self.antwoorden["ptzMoveUp"] = b"<CGI_Result><result>-3</result></CGI_Result>"
+        with self.assertLogs("brms.readers.camera", "WARNING") as log:
+            self.assertFalse(asyncio.run(self._opnemer().richt("op")))
+        self.assertIn("afgewezen (result -3)", log.output[0])
+        self.assertEqual(self._commandos(), ["ptzMoveUp"])
+
+    def test_stoppen_wordt_een_keer_opnieuw_geprobeerd(self):
+        # De eerste stop mislukt, de tweede lukt: geen waarschuwing, de camera staat stil.
+        self.antwoorden["ptzStopRun"] = [OSError("timed out"), self.GOED]
+        self.assertTrue(asyncio.run(self._opnemer().richt("rechts")))
+        self.assertEqual(self._commandos(), ["ptzMoveRight", "ptzStopRun", "ptzStopRun"])
+        # Beide mislukt: dat is het melden waard, want de camera loopt dan door.
+        self.gestuurd.clear()
+        self.antwoorden["ptzStopRun"] = [OSError("timed out"), OSError("timed out")]
+        with self.assertLogs("brms.readers.camera", "WARNING") as log:
+            self.assertFalse(asyncio.run(self._opnemer().richt("rechts")))
+        self.assertEqual(self._commandos(), ["ptzMoveRight", "ptzStopRun", "ptzStopRun"])
+        self.assertIn("loopt mogelijk door", log.output[0])
+
+    def test_opdracht_tijdens_een_stap_genegeerd_en_stoppen_maakt_de_stap_af(self):
+        opnemer = self._opnemer(self._camera(stap=0.5))
+
+        async def proef():
+            stop = asyncio.Event()
+            taak = asyncio.create_task(opnemer.draai(stop))
+            await asyncio.sleep(0.1)
+            opnemer.start_richten("op")
+            await asyncio.sleep(0.1)                 # de stap loopt
+            opnemer.start_richten("neer")            # genegeerd
+            # De service stopt midden in de stap: de camera krijgt toch zijn stopcommando.
+            stop.set()
+            opnemer.opdrachten.put_nowait((None, ""))
+            await asyncio.wait_for(taak, 5)
+
+        asyncio.run(proef())
+        self.assertEqual(self._commandos(), ["ptzMoveUp", "ptzStopRun"])
+
+    def test_vaste_camera_wordt_niet_gericht(self):
+        opnemer = self._opnemer(self._camera(richten=None))
+
+        async def proef():
+            with self.assertLogs("brms.readers.camera", "WARNING") as log:
+                opnemer.start_richten("op")
+                await asyncio.sleep(0.1)
+            self.assertIn("geen 'richten'", log.output[0])
+
+        asyncio.run(proef())
+        self.assertEqual(self.gestuurd, [])
+
+    def test_opdracht_van_de_bus(self):
+        # De hele weg in de reader: de opdracht van de bus wordt een stap van de camera.
+        from brms.config import Config, MqttConfig, OpnamenConfig, OpslagConfig
+        cam = self._camera(stap=0.1)
+        cfg = Config(MqttConfig(), OpslagConfig("x"), {}, cameras={"dek": cam},
+                     opnames=OpnamenConfig(tempfile.gettempdir()))
+
+        def urlopen(adres, timeout):
+            # De nagebootste camera: het antwoord op een richtcommando.
+            return _Antwoord(self._stuur(adres, timeout))
+
+        async def proef():
+            stop = asyncio.Event()
+            # De klok "niet gesynchroniseerd": dan maakt de reader geen foto's (§4.2) en
+            # gaat er in deze test alleen het richtcommando naar de camera. Richten zelf
+            # heeft de klok niet nodig.
+            with mock.patch("urllib.request.urlopen", urlopen), \
+                    mock.patch("brms.storage.klok_gesynchroniseerd", return_value=False), \
+                    self.assertLogs("brms.readers.camera", "WARNING") as log:
+                taak = asyncio.create_task(camera.draai(cfg, self.bus, stop))
+                await asyncio.sleep(0.1)
+                bij_richt = self.bus.abonnementen["brms/opdracht/camera/richt"]
+                bij_richt("brms/opdracht/camera/richt", b'{"camera_id": "dek", "richting": "neer"}')
+                # Ongeldig of voor een onbekende camera: een waarschuwing, geen commando.
+                bij_richt("brms/opdracht/camera/richt", b'{"camera_id": "dek", "richting": "schuin"}')
+                bij_richt("brms/opdracht/camera/richt", b'{"camera_id": "mast", "richting": "op"}')
+                await asyncio.sleep(0.6)
+                stop.set()
+                await asyncio.wait_for(taak, 5)
+            return "\n".join(log.output)
+
+        tekst = asyncio.run(proef())
+        self.assertEqual(self._commandos(), ["ptzMoveDown", "ptzStopRun"])
+        self.assertIn("richting moet een van op, neer, links, rechts zijn", tekst)
+        self.assertIn("onbekende camera 'mast'", tekst)
+
+
 class TestOpdracht(unittest.TestCase):
+    def test_richtopdracht_lezen(self):
+        self.assertEqual(camera.lees_richtopdracht(b'{"camera_id": "dek", "richting": "links"}'),
+                         ("dek", "links"))
+        # De camera is verplicht (anders dan bij poll-nu), en de richting een van de vier.
+        for inhoud in [b"", b"kapot", b"[1]", b'{"richting": "op"}', b'{"camera_id": 3, "richting": "op"}',
+                       b'{"camera_id": "dek"}', b'{"camera_id": "dek", "richting": "schuin"}']:
+            with self.assertRaises(ValueError):
+                camera.lees_richtopdracht(inhoud)
+
     def test_lezen(self):
         self.assertEqual(camera.lees_opdracht(b""), (None, "foto", "handmatig"))
         self.assertEqual(camera.lees_opdracht(

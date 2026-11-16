@@ -19,6 +19,11 @@
   "Video": die geven de camera-reader een opdracht (poll-nu, §5.7 punt 12) om een opname te
   maken en op te slaan. Het live-beeld loopt intussen door; het wordt zelf niet opgeslagen.
 
+  Richten (§5.7 punt 19): kan de camera bewegen (veld 'richten' in brms.toml), dan staan er
+  tijdens het live-beeld ook vier richtknoppen. Elke klik beweegt de camera één korte stap;
+  de camera-reader op de Pi stuurt het commando en stopt de camera daarna zelf. Een vaste
+  camera heeft deze knoppen niet.
+
   Dagoverzicht (tweede weergave): de opnames van de dag worden van oud naar nieuw
   afgespeeld als een versnelde film. Een intervalfoto staat 0,5 s in beeld, een foto bij
   een gebeurtenis (alarm, op verzoek) 5 s, en een video wordt helemaal afgespeeld (met
@@ -62,6 +67,11 @@
                   margin: 0 5px 0 12px; background: var(--fout); }
   #uitleg-dag i.video { background: var(--link); }
   #teller { color: var(--zacht); font-variant-numeric: tabular-nums; }
+  /* De vier richtknoppen (§5.7 punt 19): dicht bij elkaar en even breed, zodat ze ook op
+     een telefoon goed te raken zijn. */
+  #richt-knoppen { display: inline-flex; gap: 4px; margin-left: 6px; }
+  #richt-knoppen[hidden] { display: none; }
+  #richt-knoppen button { min-width: 38px; }
   /* De lijst. */
   td.vink, th.vink { width: 34px; padding-right: 0; }
   #rijen td { vertical-align: middle; }
@@ -119,6 +129,14 @@
     <span id="live-knoppen" hidden>
       <button id="live-foto" title="Maak nu een foto en sla hem op">Foto</button>
       <button id="live-video" title="Neem nu een video op en sla hem op">Video</button>
+      <!-- Alleen bij een camera die kan bewegen ('richten' in brms.toml, §5.7 punt 19):
+           elke klik beweegt de camera één korte stap. -->
+      <span id="richt-knoppen" hidden>
+        <button data-richting="links" title="Camera een stap naar links" aria-label="Camera naar links">◀</button>
+        <button data-richting="op" title="Camera een stap omhoog" aria-label="Camera omhoog">▲</button>
+        <button data-richting="neer" title="Camera een stap omlaag" aria-label="Camera omlaag">▼</button>
+        <button data-richting="rechts" title="Camera een stap naar rechts" aria-label="Camera naar rechts">▶</button>
+      </span>
     </span>
   </div>
   <p id="status"></p>
@@ -636,6 +654,7 @@ const LIVE_WACHT = 10;    // s: zo lang wachten op het eerste beeld
 const LIVE_STIL = 15;     // s: zo lang zonder nieuw beeld, dan stopt het live-beeld
 let videoTot = 0;         // tot wanneer de video-opname loopt (ms), of 0
 const bezig = {foto: false, video: false};   // loopt er een opname op verzoek?
+let richtBezig = false;   // loopt er een richtstap? Dan zijn de richtknoppen uitgeschakeld
 
 // De camera voor het live-beeld: de gekozen camera, of anders de eerste.
 const liveCamera = () => CAMERAS.find(c => c.id === el("camera").value) || CAMERAS[0];
@@ -650,6 +669,10 @@ function zetLiveKnop() {
   el("live-knoppen").hidden = !live;
   el("live-foto").disabled = bezig.foto;
   el("live-video").disabled = bezig.video || !(camera && camera.video);
+  // De richtknoppen: alleen tijdens het live-beeld van een camera die kan bewegen, en
+  // uitgeschakeld zolang een stap loopt (§5.7 punt 19).
+  el("richt-knoppen").hidden = !(live && live.richten);
+  for (const knop of el("richt-knoppen").children) knop.disabled = richtBezig;
   // Bladeren door de opnames hoort niet bij het live-beeld.
   el("ouder").hidden = el("nieuwer").hidden = !!live || weergave !== "lijst";
 }
@@ -851,6 +874,25 @@ async function liveOpname(type) {
   zetLiveKnop();
 }
 
+// Een klik op een richtknop (§5.7 punt 19): de camera één stap bewegen. De pagina stuurt
+// alleen de richting; de camera-reader op de Pi beweegt de camera en stopt hem na de stap
+// (ook als deze pagina intussen de verbinding verliest). Zolang de stap loopt, zijn de
+// knoppen uitgeschakeld: de camera-reader negeert een opdracht tijdens een lopende stap.
+// Of de camera beweegt, laat het live-beeld zien; een fout bij de camera zelf staat in
+// het log van de camera-reader.
+async function richt(richting) {
+  const camera = live;
+  if (!camera || !camera.richten || richtBezig) return;
+  richtBezig = true;
+  zetLiveKnop();
+  try {
+    await opdracht("/richt/" + encodeURIComponent(camera.id), {richting});
+    await new Promise(r => setTimeout(r, camera.richt_stap * 1000));
+  } catch (e) { meld("Het richten is niet gelukt: " + e.message, true); }
+  richtBezig = false;
+  zetLiveKnop();
+}
+
 // --- dag kiezen ------------------------------------------------------------------------
 function zetDag(d) { el("dag").value = datum(d); gekozen = null; geselecteerd.clear(); laad(); }
 function schuif(dagen) {
@@ -889,6 +931,9 @@ el("ja").addEventListener("click", verwijder);
 el("live").addEventListener("click", () => live ? stopLive() : startLive());
 el("live-foto").addEventListener("click", () => liveOpname("foto"));
 el("live-video").addEventListener("click", () => liveOpname("video"));
+// De richting van elke richtknop staat in de knop zelf (data-richting).
+for (const knop of el("richt-knoppen").children)
+  knop.addEventListener("click", () => richt(knop.dataset.richting));
 // Pijltjes bladeren door de opnames, behalve als de datum of een keuzelijst de invoer heeft.
 document.addEventListener("keydown", e => {
   if (["INPUT", "SELECT", "VIDEO"].includes(document.activeElement.tagName)) return;

@@ -495,6 +495,65 @@ class TestOpnames(unittest.TestCase):
             self.assertIn("broker", r.get_json()["fout"])
 
 
+class TestRichtRoute(unittest.TestCase):
+    """De richtknoppen van het live-beeld (§5.7 punt 19): een klik wordt een opdracht op de
+    bus voor de camera-reader. De webservice praat niet zelf met de camera."""
+
+    def setUp(self):
+        cameras = {
+            # Een camera die kan bewegen, en een vaste camera (zonder 'richten').
+            "kajuit": config.Camera("kajuit", "Kajuit", "http://c/snap", "rtsp://c/video",
+                                    "brms", "GEH&IM", richten="foscam", richt_stap=0.3),
+            "dek": config.Camera("dek", "Dek", "http://c2/snap", "rtsp://c2/video")}
+        cfg = config.Config(config.MqttConfig(), config.OpslagConfig("x"), {}, cameras=cameras)
+        self.bus = NepBus()
+        self.client = web.maak_app(cfg, web.LiveBuffer(), self.bus).test_client()
+
+    def test_klik_wordt_een_opdracht_op_de_bus(self):
+        for richting in ("op", "neer", "links", "rechts"):
+            r = self.client.post("/richt/kajuit", json={"richting": richting})
+            self.assertEqual((r.status_code, r.get_json()), (200, {"gevraagd": richting}))
+        self.assertEqual(self.bus.berichten, [
+            ("brms/opdracht/camera/richt", {"camera_id": "kajuit", "richting": r}, 1)
+            for r in ("op", "neer", "links", "rechts")])
+
+    def test_opdracht_past_bij_de_camera_reader(self):
+        # Wat het web op de bus zet, moet de camera-reader aannemen.
+        from brms.readers import camera
+        self.client.post("/richt/kajuit", json={"richting": "links"})
+        self.assertEqual(camera.lees_richtopdracht(json.dumps(self.bus.berichten[0][1]).encode()),
+                         ("kajuit", "links"))
+        self.assertEqual(self.bus.berichten[0][0], camera.TOPIC_RICHT)
+
+    def test_vaste_of_onbekende_camera(self):
+        for cam in ("dek", "boeg"):
+            self.assertEqual(self.client.post(f"/richt/{cam}", json={"richting": "op"}).status_code, 404)
+        self.assertEqual(self.bus.berichten, [])
+
+    def test_ongeldige_richting(self):
+        for inhoud in [{}, {"richting": "schuin"}, {"richting": 1}, ["op"]]:
+            self.assertEqual(self.client.post("/richt/kajuit", json=inhoud).status_code, 400)
+        self.assertEqual(self.bus.berichten, [])
+
+    def test_broker_niet_bereikbaar(self):
+        self.bus.verbonden = False
+        r = self.client.post("/richt/kajuit", json={"richting": "op"})
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("broker", r.get_json()["fout"])
+
+    def test_pagina_weet_welke_camera_gericht_kan_worden(self):
+        tekst = self.client.get("/opnames").get_data(as_text=True)
+        # De knoppen staan in de pagina; of ze zichtbaar worden, hangt af van de camera.
+        self.assertIn('id="richt-knoppen" hidden', tekst)
+        for richting in ("op", "neer", "links", "rechts"):
+            self.assertIn(f'data-richting="{richting}"', tekst)
+        self.assertIn('"richten": true, "richt_stap": 0.3', tekst)      # kajuit
+        self.assertIn('"richten": false, "richt_stap": 0.5', tekst)     # dek: vaste camera
+        # Het merk en het account van de camera horen niet in de pagina.
+        self.assertNotIn("foscam", tekst)
+        self.assertNotIn("GEH", tekst)
+
+
 class TestLiveRoute(unittest.TestCase):
     """Het live-beeld aanvragen: de webservice geeft het WebRTC-aanbod van de pagina door
     aan go2rtc en het antwoord terug (§5.7 punt 18). go2rtc zelf is hier vervangen."""
