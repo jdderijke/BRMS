@@ -41,7 +41,11 @@ Energie: systeem ca. 11 W (~21 Ah/dag). Walstroom aanwezig maar kan wegvallen; a
   dienst) en het relais voor Pi-herstart via de router-uitgang is vervallen. Vangnet: de router
   herstart zichzelf ("Ping Reboot"), de Pi via de hardware-watchdog (ARCHITECTURE.md §7).
 - Hostnaam Pi: `BRMS` (via Tailscale MagicDNS bereikbaar als `brms`).
-- Test-/ontwikkel-Pi 4 thuis: 192.168.178.114, user `jandirk`, SSH-alias `brms` (sleutel `~/.ssh/id_ed25519`).
+- Test-/ontwikkel-Pi 4 thuis: user `jandirk`, SSH-alias `brms` (sleutel `~/.ssh/id_ed25519`). De alias
+  wijst naar de Tailscale-naam `brms.tail62be52.ts.net` (100.109.203.39), niet naar een adres op het
+  thuisnetwerk: de Pi hangt met ethernet aan de RUT241 (192.168.1.114) en heeft de wifi thuis als reserve.
+- Mobiele verbinding van de RUT241 (KPN-netwerk): PDP type op alleen `IPv4`. Met `IPv4/IPv6` gaf het
+  netwerk alleen IPv6 en kwam IPv4-verkeer niet door de router.
 
 ## Software-architectuur
 Zie **ARCHITECTURE.md** – het ontwerpdocument is leidend voor architectuur, besluiten en open vragen.
