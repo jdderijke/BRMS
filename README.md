@@ -68,21 +68,18 @@ curl -fsSLO https://raw.githubusercontent.com/jdderijke/BRMS/main/deploy/install
 bash install.sh
 ```
 
-1. De eerste keer maakt het script een deploy key (een SSH-sleutel die alleen deze repo
-   mag lezen), toont die en stopt. Voeg de sleutel toe op GitHub onder
-   *Settings > Deploy keys* (zonder schrijfrechten) en draai `bash install.sh` opnieuw.
-   Werk je met een eigen fork, zet dan eerst je eigen repo bij `REPO=` bovenin het script.
-2. Het script haalt de code op naar `~/BRMS`, installeert de pakketten, Mosquitto, de
-   systemd-services en Tailscale, en zet de opdracht `brms` klaar. Het is veilig om het
-   opnieuw te draaien.
-3. Vul je eigen sensoren, camera's, alarmregels en meldingen in en herstart:
+1. Het script haalt de code via https op naar `~/BRMS`, installeert de pakketten,
+   Mosquitto, de systemd-services en Tailscale, en zet de opdracht `brms` klaar. Het vraagt
+   zelf om het sudo-wachtwoord en is veilig om opnieuw te draaien. Werk je met een eigen
+   fork, zet dan eerst het adres daarvan bij `REPO=` bovenin het script.
+2. Vul je eigen sensoren, camera's, alarmregels en meldingen in en herstart:
 
    ```bash
    nano ~/BRMS/config/brms.toml     # uitleg staat in het bestand zelf
    brms herstart                    # controleert eerst de configuratie
    ```
 
-4. Open de webinterface: `http://brms:8080` (via Tailscale of het netwerk aan boord).
+3. Open de webinterface: `http://brms:8080` (via Tailscale of het netwerk aan boord).
 
 Zonder sensoren uitproberen kan ook: `brms sim all` start een demo met gesimuleerde
 waarden (bevestig, en geef bij de duur alleen Enter).

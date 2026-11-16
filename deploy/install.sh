@@ -16,9 +16,8 @@
 # Gebruik – als gewone gebruiker (bijv. jandirk), NIET met sudo ervoor. Het script vraagt
 # zelf om het sudo-wachtwoord voor de stappen die dat nodig hebben.
 #
-#   Eerste keer – de code staat nog niet op de Pi; kopieer alleen dit script, vanaf de pc:
-#       scp deploy/install.sh brms:
-#   en dan op de Pi:
+#   Eerste keer – de code staat nog niet op de Pi; haal alleen dit script op van GitHub:
+#       curl -fsSLO https://raw.githubusercontent.com/jdderijke/BRMS/main/deploy/install.sh
 #       bash install.sh
 #
 #   Later (opnieuw inrichten):
@@ -27,32 +26,27 @@
 # Wat het doet, in volgorde:
 #   1. git installeren als het ontbreekt                                  (sudo)
 #   2. de gebruiker toevoegen aan de groep 'bluetooth'                     (sudo)
-#   3. de deploy key klaarzetten waarmee de Pi de code van GitHub mag LEZEN
-#   4. de code ophalen naar ~/BRMS, daarna de systeempakketten uit
-#      deploy/pakketten.txt installeren (alleen wat ontbreekt)              (sudo)
+#   3. de code ophalen naar ~/BRMS (via https; de repo is openbaar), daarna de
+#      systeempakketten uit deploy/pakketten.txt installeren (alleen wat ontbreekt) (sudo)
 #      en het programma go2rtc ophalen (het live-beeld, deploy/go2rtc.sh)
-#   5. een Python-venv maken en de vastgepinde pakketten installeren
-#   6. config/brms.toml aanmaken uit het voorbeeld (alleen als hij nog niet bestaat)
-#   7. de opdracht 'brms' installeren (/usr/local/bin/brms)                (sudo)
-#   8. Mosquitto inrichten volgens §3.1 (alleen lokaal, geen persistence)  (sudo)
-#   9. de systemd-services installeren en starten                          (sudo)
-#  10. Tailscale installeren en de aanmeldlink tonen (toegang van buiten)  (sudo)
+#   4. een Python-venv maken en de vastgepinde pakketten installeren
+#   5. config/brms.toml aanmaken uit het voorbeeld (alleen als hij nog niet bestaat)
+#   6. de opdracht 'brms' installeren (/usr/local/bin/brms)                (sudo)
+#   7. Mosquitto inrichten volgens §3.1 (alleen lokaal, geen persistence)  (sudo)
+#   8. de systemd-services installeren en starten                          (sudo)
+#   9. Tailscale installeren en de aanmeldlink tonen (toegang van buiten)  (sudo)
 #
 # Het script is veilig om opnieuw te draaien: elke stap kijkt eerst of hij al gedaan is.
-#
-# Deploy key: staat er nog geen sleutel in ~/.ssh, of heeft GitHub hem nog niet, dan toont
-# het script de publieke sleutel en stopt. Voeg die toe bij de repo (Settings > Deploy
-# keys, zonder schrijfrechten) en draai het script opnieuw.
 # =============================================================================
 
 # Stop bij de eerste fout (-e), bij gebruik van een onbekende variabele (-u) en bij een
 # fout ergens in een pijplijn (pipefail).
 set -euo pipefail
 
-# Repo via de SSH-alias 'github-brms' (zie stap 3), zodat git de deploy key gebruikt.
-REPO="git@github-brms:jdderijke/BRMS.git"
+# De repo is openbaar: lezen kan via https, zonder sleutel of account (§10.1 punt 1).
+# Bij een eigen fork: zet hier het adres van die fork.
+REPO="https://github.com/jdderijke/BRMS.git"
 BRMS="$HOME/BRMS"
-SLEUTEL="$HOME/.ssh/brms_deploy_ed25519"
 GEBRUIKER="$(id -un)"
 
 # Niet als root: de bestanden in ~/BRMS moeten van de gebruiker zijn, en de services
@@ -65,7 +59,7 @@ fi
 # -----------------------------------------------------------------------------
 echo "== 1. git"
 # De volledige lijst systeempakketten staat in deploy/pakketten.txt, maar die is er pas
-# na het clonen (stap 4). Daarvoor is alleen git nodig.
+# na het clonen (stap 3). Daarvoor is alleen git nodig.
 if ! command -v git >/dev/null; then
     sudo apt-get update -q
     sudo apt-get install -y -q git
@@ -79,73 +73,41 @@ echo "== 2. Groep bluetooth"
 sudo usermod -aG bluetooth "$GEBRUIKER"
 
 # -----------------------------------------------------------------------------
-echo "== 3. Deploy key"
-# Een deploy key is een SSH-sleutel die alleen deze ene repo mag lezen. Bij diefstal van
-# de Pi is alleen de BRMS-code leesbaar, niet de rest van het GitHub-account (§10.1).
-install -d -m 700 "$HOME/.ssh"
-if [ ! -f "$SLEUTEL" ]; then
-    # ed25519-sleutel zonder wachtwoord (-N ""), want updates moeten onbeheerd kunnen.
-    ssh-keygen -q -t ed25519 -N "" -C "brms-deploy@$(hostname)" -f "$SLEUTEL"
-fi
-# SSH-alias: 'github-brms' = github.com met precies deze sleutel. Zo raakt de deploy key
-# niet verward met andere sleutels van de gebruiker.
-if ! grep -q "^Host github-brms$" "$HOME/.ssh/config" 2>/dev/null; then
-    cat >> "$HOME/.ssh/config" <<EOF
-
-Host github-brms
-    HostName github.com
-    User git
-    IdentityFile $SLEUTEL
-    IdentitiesOnly yes
-EOF
-    chmod 600 "$HOME/.ssh/config"
-fi
-# De host-sleutel van GitHub vastleggen, zodat git niet interactief om bevestiging vraagt.
-if ! grep -q "^github.com " "$HOME/.ssh/known_hosts" 2>/dev/null; then
-    ssh-keyscan -t ed25519 github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null
-fi
-# Proberen de repo te lezen. Lukt dat niet, dan is de deploy key nog niet toegevoegd.
-if ! git ls-remote "$REPO" >/dev/null 2>&1; then
-    echo
-    echo "De Pi heeft nog geen toegang tot de repo. Voeg deze sleutel toe als deploy key"
-    echo "via GitHub: repo BRMS > Settings > Deploy keys > Add deploy key"
-    echo "('Allow write access' UIT laten):"
-    echo
-    cat "$SLEUTEL.pub"
-    echo
-    echo "Draai daarna dit script opnieuw."
-    exit 2
-fi
-
-# -----------------------------------------------------------------------------
-echo "== 4. Code in $BRMS"
+echo "== 3. Code in $BRMS"
 # Alleen de eerste keer clonen. Latere updates gaan via deploy/update.sh.
 if [ ! -d "$BRMS/.git" ]; then
     git clone -q --branch main "$REPO" "$BRMS"
+elif [ "$(git -C "$BRMS" remote get-url origin)" != "$REPO" ]; then
+    # Een clone van vóór v0.74 haalt de code nog op via SSH met een deploy key. Het adres
+    # van 'origin' omzetten naar https, zodat 'brms update' die sleutel niet meer nodig
+    # heeft. De oude sleutel en de alias 'github-brms' in ~/.ssh blijven staan; die mogen
+    # met de hand weg (ook bij GitHub: Settings > Deploy keys).
+    git -C "$BRMS" remote set-url origin "$REPO"
+    echo "   'origin' omgezet naar $REPO (de deploy key is niet meer nodig)."
 fi
 
 # Nu de code er is: de systeempakketten uit deploy/pakketten.txt (Mosquitto, sqlite3,
 # tmux, python3-venv, ...). Alleen wat ontbreekt wordt geïnstalleerd.
-echo "== 4b. Systeempakketten"
+echo "== 3b. Systeempakketten"
 bash "$BRMS/deploy/pakketten.sh"
 
 # go2rtc geeft het live-beeld van de camera's door (§5.7 punt 18). Het zit niet in apt;
 # deploy/go2rtc.sh haalt een vaste versie op en controleert die. Lukt dat niet, dan gaat
 # de inrichting door: alleen het live-beeld ontbreekt dan ('brms update' probeert het
 # later opnieuw).
-echo "== 4c. go2rtc"
+echo "== 3c. go2rtc"
 bash "$BRMS/deploy/go2rtc.sh" \
     || echo "   LET OP: go2rtc is niet geïnstalleerd; er is geen live-beeld. Later opnieuw: brms update" >&2
 
 # -----------------------------------------------------------------------------
-echo "== 5. Python-venv"
+echo "== 4. Python-venv"
 # Eigen venv in ~/BRMS/.venv (staat in .gitignore), net als op de pc. Pakketten exact
 # volgens requirements.txt (vastgepind, P3).
 [ -x "$BRMS/.venv/bin/python" ] || python3 -m venv "$BRMS/.venv"
 "$BRMS/.venv/bin/pip" install -q -r "$BRMS/requirements.txt"
 
 # -----------------------------------------------------------------------------
-echo "== 6. Configuratie en data"
+echo "== 5. Configuratie en data"
 # Nooit een bestaande configuratie overschrijven; alleen de eerste keer het voorbeeld
 # neerzetten. Alleen leesbaar voor de gebruiker (600): later staan hier de
 # Victron-sleutels in.
@@ -157,13 +119,13 @@ fi
 mkdir -p "$BRMS/data"
 
 # -----------------------------------------------------------------------------
-echo "== 7. Opdracht 'brms'"
+echo "== 6. Opdracht 'brms'"
 # /usr/local/bin/brms wordt een verwijzing (symlink) naar deploy/brms in de repo. Een
 # update van dat script komt dus vanzelf mee met git.
 sudo ln -sfn "$BRMS/deploy/brms" /usr/local/bin/brms
 
 # -----------------------------------------------------------------------------
-echo "== 8. Mosquitto"
+echo "== 7. Mosquitto"
 # De standaardconfiguratie van Debian schrijft persistence en een logbestand naar schijf.
 # BRMS vervangt die door een eigen, korte configuratie (§3.1 punt 3). Het origineel
 # wordt één keer bewaard als mosquitto.conf.orig.
@@ -175,7 +137,7 @@ sudo systemctl enable -q mosquitto
 sudo systemctl restart mosquitto
 
 # -----------------------------------------------------------------------------
-echo "== 9. systemd-services"
+echo "== 8. systemd-services"
 # De units in deploy/systemd/ bevatten @BRMS@ en @GEBRUIKER@ als plaatshouders; die worden
 # hier ingevuld (bijv. /home/jandirk/BRMS en jandirk) en het resultaat gaat naar
 # /etc/systemd/system/.
@@ -200,7 +162,7 @@ sudo systemctl enable -q --now "${SERVICES[@]}"
 sudo systemctl restart "${SERVICES[@]}"
 
 # -----------------------------------------------------------------------------
-echo "== 10. Tailscale"
+echo "== 9. Tailscale"
 # Tailscale is de toegang van buiten: de boot zit achter het mobiele netwerk en is anders
 # niet te bereiken (§9). Het zit niet in apt van Raspberry Pi OS; Tailscale levert een
 # eigen installatiescript, dat zijn pakketbron toevoegt en het pakket installeert (sudo).

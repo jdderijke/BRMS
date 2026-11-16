@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.73 – concept** · 16 november 2026
+**Versie 0.74 – concept** · 16 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -2447,11 +2447,15 @@ bereikbaar; metingen gaan wel door (P4). **[OPEN-18]** Moet uitval van BRMS zelf
 **Aanleiding.** Vastgesteld moest worden hoe de code op de (test-)Pi komt, hoe updates aan
 boord worden uitgerold, en hoe de installatie op de Pi is ingedeeld.
 
-**Redenering.** De code staat in een privérepo op GitHub. De boot-Pi draait onbeheerd en is
+**Redenering.** De code staat in een repo op GitHub. De boot-Pi draait onbeheerd en is
 alleen via Tailscale bereikbaar; een update mag niets breken en moet terug te draaien zijn.
-Met git op de Pi hoort elke installatie bij één commit en is teruggaan één commando. Een
-deploy key geeft de Pi alleen leesrechten op deze ene repo; bij diefstal van de Pi is
-alleen de BRMS-code leesbaar.
+Met git op de Pi hoort elke installatie bij één commit en is teruggaan één commando.
+
+*Ophalen via https (v0.74).* De repo was eerst privé; de Pi las hem met een deploy key (een
+SSH-sleutel met alleen leesrechten op deze ene repo). De repo is nu openbaar: lezen kan via
+https, zonder sleutel of account. Dat scheelt een stap bij het inrichten (de sleutel bij
+GitHub toevoegen) en er staat geen sleutel meer op de Pi. Geheimen staan niet in de repo:
+`config/brms.toml` en `data/` staan in `.gitignore`.
 
 Updates worden met de hand gestart. Daarmee kan ook de boot-Pi gewoon `main` volgen: de
 gebruiker kiest zelf het moment, nadat `main` op de test-Pi goed draait. Voorwaarde is dat
@@ -2481,10 +2485,14 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
 - *Linux-conventie met systeemgebruiker `brms` (`/opt/brms`, `/etc/brms`, `/var/lib/brms`).*
   Besluit tot v0.14; verlaten in v0.15 omdat de bestanden op de Pi lastig te vinden waren.
 - *Automatische OS-updates (unattended-upgrades).* Zie redenering.
+- *Ophalen via SSH met een deploy key.* Besluit tot v0.73, toen de repo privé was; verlaten
+  in v0.74. Bij een openbare repo voegt de sleutel niets toe en kost hij een extra stap.
 
 **Specificatie.**
-1. De Pi haalt de code met **git** uit de GitHub-repo, met een **deploy key** (alleen
-   leesrechten, alleen deze repo).
+1. De Pi haalt de code met **git** uit de openbare GitHub-repo, via **https**
+   (`https://github.com/jdderijke/BRMS.git`), zonder sleutel (v0.74). `install.sh` zet bij
+   een bestaande clone het adres van `origin` om naar https; de oude deploy key en de
+   SSH-alias `github-brms` blijven staan en mogen met de hand weg.
 2. **Test-Pi en boot-Pi volgen beide `main`.** Een update aan boord gebeurt pas als `main`
    op de test-Pi goed draait.
 3. Updates via **`deploy/update.sh`**:
@@ -2532,14 +2540,14 @@ internet (alleen Tailscale), dus het veiligheidsrisico van handmatig bijwerken i
    `config/brms.toml`, `data/` en `.venv/` staan in `.gitignore`; updates raken ze niet.
 5. De services draaien als de beheerder van de Pi (**`jandirk`**, lid van de groep
    `bluetooth`). systemd beperkt ze: systeem en home alleen-lezen, schrijven alleen in
-   `~/BRMS/data`. git en de deploy key horen ook bij `jandirk`; alleen pakketten
+   `~/BRMS/data`. De git-clone hoort ook bij `jandirk`; alleen pakketten
    installeren en services (her)starten vraagt `sudo`.
 6. Systeempakketten via apt (Mosquitto, rclone, later ffmpeg; als beheerhulpmiddelen
    `mosquitto-clients`, `sqlite3` en `tmux`). Ze staan in één lijst,
    **`deploy/pakketten.txt`** (v0.17); `install.sh` en `update.sh` installeren wat daarvan
    ontbreekt, zodat een nieuw pakket bij de eerstvolgende update vanzelf meekomt. Een
    eenmalig **`deploy/install.sh`** richt de Pi in:
-   pakketten, deploy key, clone, venv, configuratie, Mosquitto en systemd-units.
+   pakketten, clone, venv, configuratie, Mosquitto en systemd-units.
    Twee programma's komen niet uit apt (v0.48; gebouwd in v0.49):
    - **go2rtc** (§5.7 punt 18): één los programma in `~/BRMS/bin/` (in `.gitignore`),
      op een vaste versie. `install.sh` en `update.sh` halen het op bij GitHub als het
@@ -2874,7 +2882,8 @@ maand).
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.73** | 2026-11-16 | Claude Code, Fable 5.2 | Richten van de camera (§5.7 punt 19): beproefd door de gebruiker, werkt met de Foscam FI9826W. Alleen de status; ontwerp en code zijn niet gewijzigd. |
+| **0.74** | 2026-11-16 | Claude Code, Fable 5.2 | Uitrol (§10.1 punt 1): de repo is openbaar, `deploy/install.sh` haalt de code op via https in plaats van via SSH met een deploy key. Bij een bestaande clone zet `install.sh` het adres van `origin` om. De deploy key staat bij de verworpen alternatieven. README.md: beschrijving, schermafdrukken, installatie en opdrachten. De code in `brms/` is niet gewijzigd. |
+| 0.73 | 2026-11-16 | Claude Code, Fable 5.2 | Richten van de camera (§5.7 punt 19): beproefd door de gebruiker, werkt met de Foscam FI9826W. Alleen de status; ontwerp en code zijn niet gewijzigd. |
 | 0.72 | 2026-11-16 | Claude Code, Fable 5.2 | Richten van de camera gebouwd (§5.7 punt 19, met de invulling bij het bouwen) in code v0.25.0: velden `richten` en `richt_stap`, opdracht `brms/opdracht/camera/richt`, de commando's van Foscam met controle van het antwoord, `/richt/<camera_id>` in de webservice en vier richtknoppen in het live-beeld. Nog niet beproefd met de camera zelf. |
 | 0.71 | 2026-11-16 | Claude Code, Fable 5.2 | Camera (§5.7): voorlopig een binnencamera, de Foscam FI9826W; buitencamera en voeding later. Richten van de camera ontworpen (§5.7 punt 19, §5.6 punt 2, §3.3): veld `richten` (merk, nu alleen `"foscam"`) en `richt_stap` per camera; vier richtknoppen tijdens het live-beeld, alleen bij een camera met `richten`; stap per klik, het stoppen door de camera-reader; opdracht `brms/opdracht/camera/richt`; geen vaste stand. Verworpen: adressen per richting, ONVIF, ingedrukt houden, terug naar een vaste stand. Ontwerp; nog niet gebouwd. |
 | 0.70 | 2026-11-16 | Claude Code, Fable 5.2 | Camera (§5.7): twee verworpen alternatieven vastgelegd: een video-deurbel op batterij en een wifi-camera met eigen zonnepaneel (slapen, geen lokaal adres, batterij in de winter). Een bedrade deurbel met RTSP en snapshot-adres voldoet wel; een gewone 12V-buitencamera is eenvoudiger. Het model is nog niet gekozen. Alleen tekst; de code is niet gewijzigd. |
