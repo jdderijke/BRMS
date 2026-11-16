@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.72 – concept** · 16 november 2026
+**Versie 0.73 – concept** · 16 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1946,8 +1946,8 @@ verzoek (poll-nu), de tabel `opname` en het opruimen van oude foto's (v0.38), vi
 verzoek met de maximale ruimte (v0.39), foto en video bij een alarm (v0.40, punt 15), en
 bekijken en verwijderen in het web (v0.41, §5.6 punt 2). Foto's, video's en de foto bij
 een alarm zijn getest met de testcamera (Foscam) en Telegram; de opnamepagina alleen op
-de pc. Het richten van de camera (punt 19) is gebouwd in code v0.25.0 en nog niet beproefd
-met de camera zelf.*
+de pc. Het richten van de camera (punt 19) is gebouwd in code v0.25.0 en werkt met de
+Foscam FI9826W (beproefd door de gebruiker, 2026-11-16).*
 
 **Redenering.** De camera bekijkt het dek. Een regelmatige foto toont de toestand van de
 boot; een video legt een gebeurtenis vast (iemand stapt aan boord, storm). Een IP-camera
@@ -2281,8 +2281,8 @@ Verworpen bij het richten van de camera (punt 19, v0.71):
     - **Eerste update naar deze versie:** de update wordt nog uitgevoerd door het oude
       `update.sh`, dat go2rtc niet kent. Daarna is één keer extra `brms update` nodig: die
       haalt go2rtc op en start de service.
-19. **Richten van de camera** (ontwerp v0.71; gebouwd in v0.72, code v0.25.0; nog niet
-    beproefd met de camera zelf).
+19. **Richten van de camera** (ontwerp v0.71; gebouwd in v0.72, code v0.25.0; werkt met
+    de Foscam FI9826W, v0.73).
 
     **Redenering.** De binnencamera (Foscam FI9826W) kan draaien en kantelen. Tijdens het
     live kijken wil de gebruiker hem kunnen richten. Een vaste camera kan dat niet en
@@ -2312,7 +2312,7 @@ Verworpen bij het richten van de camera (punt 19, v0.71):
     - **Foscam.** De commando's gaan naar hetzelfde adres als de foto: schema, host en
       poort komen uit `foto_url`, het account uit `gebruiker` en `wachtwoord`. Bewegen:
       `cmd=ptzMoveUp`, `ptzMoveDown`, `ptzMoveLeft`, `ptzMoveRight`; stoppen:
-      `cmd=ptzStopRun` (op `/cgi-bin/CGIProxy.fcgi`). Nog te beproeven met de testcamera.
+      `cmd=ptzStopRun` (op `/cgi-bin/CGIProxy.fcgi`). Beproefd met de testcamera (v0.73).
     - **Fouten.** Mislukt een commando (camera onbereikbaar, afgewezen), dan komt er één
       waarschuwing in het log, zonder het wachtwoord (punt 8). Mislukt het bewegen, dan
       volgt geen stop; mislukt het stoppen, dan probeert de reader het één keer opnieuw.
@@ -2338,8 +2338,8 @@ Verworpen bij het richten van de camera (punt 19, v0.71):
       de camera, alleen of hij gericht kan worden.
     - **Wachttijd** op het antwoord van de camera: 5 s per commando.
     - `richt_stap` zonder `richten` is een fout in `check-config`.
-    - **Niet beproefd met de camera:** de commando's van de Foscam, de rechten van het
-      account en of 0,5 s een prettige stap is.
+    - **Beproefd met de camera** (v0.73, door de gebruiker op 2026-11-16): het richten
+      werkt met de Foscam FI9826W.
 
 ---
 
@@ -2874,7 +2874,8 @@ maand).
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.72** | 2026-11-16 | Claude Code, Fable 5.2 | Richten van de camera gebouwd (§5.7 punt 19, met de invulling bij het bouwen) in code v0.25.0: velden `richten` en `richt_stap`, opdracht `brms/opdracht/camera/richt`, de commando's van Foscam met controle van het antwoord, `/richt/<camera_id>` in de webservice en vier richtknoppen in het live-beeld. Nog niet beproefd met de camera zelf. |
+| **0.73** | 2026-11-16 | Claude Code, Fable 5.2 | Richten van de camera (§5.7 punt 19): beproefd door de gebruiker, werkt met de Foscam FI9826W. Alleen de status; ontwerp en code zijn niet gewijzigd. |
+| 0.72 | 2026-11-16 | Claude Code, Fable 5.2 | Richten van de camera gebouwd (§5.7 punt 19, met de invulling bij het bouwen) in code v0.25.0: velden `richten` en `richt_stap`, opdracht `brms/opdracht/camera/richt`, de commando's van Foscam met controle van het antwoord, `/richt/<camera_id>` in de webservice en vier richtknoppen in het live-beeld. Nog niet beproefd met de camera zelf. |
 | 0.71 | 2026-11-16 | Claude Code, Fable 5.2 | Camera (§5.7): voorlopig een binnencamera, de Foscam FI9826W; buitencamera en voeding later. Richten van de camera ontworpen (§5.7 punt 19, §5.6 punt 2, §3.3): veld `richten` (merk, nu alleen `"foscam"`) en `richt_stap` per camera; vier richtknoppen tijdens het live-beeld, alleen bij een camera met `richten`; stap per klik, het stoppen door de camera-reader; opdracht `brms/opdracht/camera/richt`; geen vaste stand. Verworpen: adressen per richting, ONVIF, ingedrukt houden, terug naar een vaste stand. Ontwerp; nog niet gebouwd. |
 | 0.70 | 2026-11-16 | Claude Code, Fable 5.2 | Camera (§5.7): twee verworpen alternatieven vastgelegd: een video-deurbel op batterij en een wifi-camera met eigen zonnepaneel (slapen, geen lokaal adres, batterij in de winter). Een bedrade deurbel met RTSP en snapshot-adres voldoet wel; een gewone 12V-buitencamera is eenvoudiger. Het model is nog niet gekozen. Alleen tekst; de code is niet gewijzigd. |
 | 0.69 | 2026-11-15 | Claude Code, Fable 5.2 | OPEN-15 voorlopig besloten (§5.6): geen aanmelding op de webinterface; Tailscale van buitenaf en het wifi-wachtwoord van de router aan boord. §11: accutype (nu AGM 4× 110 Ah, later LiFePO4 2× 300 Ah) en het afgesloten data-abonnement bijgewerkt. Alleen tekst; de code is niet gewijzigd. |
