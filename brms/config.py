@@ -16,6 +16,8 @@ Opbouw van het bestand (zie config/brms.example.toml):
     [opslag]    database                – pad van de SQLite-database; een relatief pad
                                           geldt vanaf de projectmap (bijv. data/brms.db)
     [web]       host, port              – waar de webinterface luistert (§5.6)
+    [boot]      tekening                – de SVG-tekening van de bootpagina (§5.6); een
+                                          relatief pad geldt vanaf de map van brms.toml
     [[sensor]]  id, type, naam, grootheden, correctie – één blok per sensor (§5.4.2);
                 bij een Victron-apparaat ook 'sleutel' (§5.2.2);
                 bij een sensor met versnellingen (Ruuvi) eventueel 'stuurboord', voor de
@@ -112,6 +114,17 @@ class WebConfig:
     # pagina alleen via Tailscale of aan boord (§5.6 punt 1).
     host: str = "0.0.0.0"
     port: int = 8080
+
+
+@dataclass(frozen=True)
+class BootConfig:
+    """Het blok [boot] (§5.6, bootpagina): de tekening van de boot.
+
+    Alleen het pad van het SVG-bestand. Welke waarden op de pagina staan en waar, staat in
+    de tekening zelf (de teksten `sensor.grootheid`); de pagina leest dat in de browser.
+    Zonder dit blok is er geen bootpagina.
+    """
+    tekening: str   # volledig pad van het SVG-bestand
 
 
 @dataclass(frozen=True)
@@ -310,6 +323,8 @@ class Config:
     alarmen: tuple[Alarmregel, ...] = ()
     cameras: dict[str, Camera] = field(default_factory=dict)   # id -> Camera
     opnames: OpnamenConfig = OpnamenConfig()
+    # De bootpagina (§5.6); None = geen blok [boot], dus geen bootpagina.
+    boot: BootConfig | None = None
     # Opmerkingen over de configuratie die geen fout zijn (bijv. een veld dat niet meer
     # bestaat en genegeerd wordt). `brms check-config` toont ze; de services starten gewoon.
     waarschuwingen: tuple[str, ...] = ()
@@ -338,7 +353,8 @@ def lees(pad: str = STANDAARD_PAD) -> Config:
     except tomllib.TOMLDecodeError as e:
         # Syntaxfout in de TOML zelf; de melding bevat regel en kolom.
         raise ConfigFout([f"{pad}: geen geldige TOML: {e}"]) from None
-    return controleer(data)
+    # De map van het bestand gaat mee: de tekening van de bootpagina staat ernaast (§5.6).
+    return controleer(data, os.path.dirname(os.path.abspath(pad)))
 
 
 def _onbekend(fouten, plek, d, toegestaan):
@@ -904,15 +920,51 @@ def _alarmen(fouten, data: dict, sensoren: dict[str, Sensor],
     return tuple(regels)
 
 
-def controleer(data: dict) -> Config:
+def _boot(fouten, data: dict, config_map: str, waarschuwingen: list[str]) -> "BootConfig | None":
+    """Controleert het blok [boot] (§5.6, bootpagina). Zonder blok: None (geen bootpagina).
+
+    Een relatief pad van de tekening geldt vanaf de map van brms.toml: de tekening hoort
+    bij de configuratie van deze boot en staat ernaast, buiten git.
+
+    Bestaat het bestand niet, dan is dat een waarschuwing en geen fout: een vergeten of
+    verplaatste tekening mag de services (en daarmee de alarmen) niet tegenhouden. De
+    bootpagina meldt het dan zelf.
+    """
+    if "boot" not in data:
+        return None
+    b = _tabel(fouten, data, "boot")
+    plek = "[boot]"
+    _onbekend(fouten, plek, b, ("tekening",))
+    tekening = b.get("tekening")
+    if not isinstance(tekening, str) or not tekening:
+        fouten.append(f"{plek}: 'tekening' ontbreekt of is geen tekst (de naam van het "
+                      f"SVG-bestand naast brms.toml)")
+        return None
+    if not tekening.lower().endswith(".svg"):
+        fouten.append(f"{plek}: 'tekening' moet een SVG-bestand zijn (naam eindigt op .svg)")
+        return None
+    if not os.path.isabs(tekening):
+        tekening = os.path.normpath(os.path.join(config_map, tekening))
+    if not os.path.isfile(tekening):
+        waarschuwingen.append(f"{plek}: de tekening {tekening} bestaat niet; de bootpagina "
+                              f"blijft leeg tot het bestand er staat")
+    return BootConfig(tekening)
+
+
+def controleer(data: dict, config_map: str | None = None) -> Config:
     """Controleert een ingelezen TOML-structuur en zet die om in een Config.
+
+    `config_map` is de map waarin brms.toml staat (voor een relatief pad in [boot]);
+    zonder: de standaardmap `config/` in de projectmap.
 
     Alle fouten worden verzameld en samen gemeld (ConfigFout), zodat in één keer
     zichtbaar is wat er gerepareerd moet worden.
     """
     fouten: list[str] = []
+    if config_map is None:
+        config_map = os.path.dirname(STANDAARD_PAD)
     _onbekend(fouten, "bovenste niveau", data,
-              ("mqtt", "opslag", "web", "sensor", "melding", "alarm", "camera", "opnames"))
+              ("mqtt", "opslag", "web", "boot", "sensor", "melding", "alarm", "camera", "opnames"))
 
     # --- [mqtt] ---
     m = _tabel(fouten, data, "mqtt")
@@ -1085,6 +1137,9 @@ def controleer(data: dict) -> Config:
     cameras = _cameras(fouten, data, sensoren, waarschuwingen)
     opnames = _opnames(fouten, data)
 
+    # --- [boot] (§5.6, bootpagina) ---
+    boot = _boot(fouten, data, config_map, waarschuwingen)
+
     # --- [melding] en [[alarm]] (§5.5.3, §5.5.4); de regels verwijzen naar de sensoren
     # en de camera's ---
     melding = _melding(fouten, data)
@@ -1094,4 +1149,4 @@ def controleer(data: dict) -> Config:
         raise ConfigFout(fouten)
     return Config(MqttConfig(host, port), OpslagConfig(database), sensoren,
                   WebConfig(web_host, web_port), melding, alarmen, cameras, opnames,
-                  tuple(waarschuwingen))
+                  boot, tuple(waarschuwingen))

@@ -21,7 +21,8 @@ the documentation are in Dutch.*
 - **Alarmeren** – eigen alarmregels met grens, duur en herstel; meldingen via Telegram en
   e-mail, desgewenst met een foto van het moment.
 - **Kijken** – webinterface met grafieken (live en historisch), opnames van de camera's,
-  live-beeld en een logboek van het systeem.
+  live-beeld en een logboek van het systeem. Desgewenst met een bootpagina als eerste
+  pagina: je eigen tekening van de boot (SVG) met op elke plek de actuele waarde.
 - **Onbeheerd draaien** – eigen Python-code met weinig afhankelijkheden, systemd-services
   die vanzelf herstarten, geen clouddienst nodig, niets open op internet.
 
@@ -113,7 +114,7 @@ brms/            Python-package
   config.py      inlezen config/brms.toml
   go2rtc.py      live-beeld van de camera's via het programma go2rtc (WebRTC)
   systeem.py     logboek uit journald, status van de services, herstarten
-  web/           Flask + Chart.js: grafieken, opnames, alarmen en systeem
+  web/           Flask + Chart.js: boot, grafieken, opnames, alarmen en systeem
 config/          brms.example.toml; eigen brms.toml ernaast (niet in git)
 deploy/          install.sh, update.sh, go2rtc.sh (haalt go2rtc op naar bin/), rechten.sh
 deploy/polkit/   polkit-regel: het web mag de services en de Pi herstarten

@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.76 – concept** · 17 november 2026
+**Versie 0.77 – concept** · 17 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1929,7 +1929,8 @@ De gebruiker waaronder de services draaien moet journald mogen lezen (groep `adm
 `systemd-journal`); `install.sh` en `update.sh` controleren dat (`deploy/rechten.sh`). Op
 de Pi is `jandirk` al lid van `adm`.
 
-**Bootpagina (v0.75; herzien in v0.76; ontworpen, nog niet gebouwd).**
+**Bootpagina (v0.75; herzien in v0.76; gebouwd in code v0.26.0, beproefd in de browser op
+de pc met nagemaakte metingen, nog niet op de Pi).**
 
 *Redenering.* De grafiekenpagina laat zien wat de gebruiker zelf heeft samengesteld; om te
 weten hoe de boot erbij ligt, moet hij eerst reeksen kiezen. Een plattegrond van de boot
@@ -2026,6 +2027,29 @@ wáár een alarm is. Deze pagina wordt daarom de eerste pagina van het web.
 8. **Telefoon rechtop.** De tekening staat dan een kwartslag gedraaid, met de boeg naar
    boven; de waarden en de overige tekst blijven rechtop staan op hun plek. Liggend zou
    de boot op een smal scherm te klein zijn om de waarden naast elkaar te lezen.
+
+*Invulling bij het bouwen (v0.77, code v0.26.0).*
+- **Ontbrekende tekening:** staat het bestand uit `[boot]` er niet, dan is dat bij
+  `brms check-config` een waarschuwing ("Let op"), geen fout: een vergeten tekening mag
+  de services (en daarmee de alarmen) niet tegenhouden. De bootpagina meldt het zelf.
+- **Adressen:** de tekening staat op `/boot/tekening.svg`; de waarden komen van
+  `/api/boot` (de pagina stuurt de lijst van sensor en grootheid mee en krijgt per waarde
+  het getal, het tijdstip en of ze in alarm staat).
+- **De vakjes zijn HTML over de tekening heen**, niet deel van de SVG: de letter is zo op
+  elk scherm even groot (14 px; 13 px op een telefoon) en een vakje is een gewone link.
+  De plek is een percentage van de tekening, dus de vakjes schalen mee. Een vakje dat
+  over de rand zou steken, schuift terug tot het past.
+- **Namen in stukken:** teksten die direct na elkaar in het bestand staan, op dezelfde
+  regel en verder naar rechts, worden aan elkaar geplakt zolang het resultaat het begin
+  van een bekende naam is; de langste bekende naam telt.
+- **Overige tekst** krijgt alleen de themakleur als de gebruiker er zelf geen kleur aan
+  heeft gegeven. In de gedraaide stand schuift een titel zo nodig opzij tot hij binnen
+  de tekening past.
+- **Scripts in de tekening** (en gebeurtenissen als `onclick`) worden niet uitgevoerd:
+  de pagina haalt ze eruit.
+- **De bootgrafiek** heeft een regel erboven ("Bootgrafiek: de waarden die je op de
+  bootpagina hebt aangeklikt") en een rand in de accentkleur.
+- De tekening staat in `.gitignore` (`config/*.svg`).
 
 **Aanmelding (besluit OPEN-15, v0.69).** Er komt voorlopig geen aanmelding op de
 webinterface. Van buitenaf is Tailscale de enige ingang (§9); aan boord luistert de
@@ -2985,7 +3009,8 @@ maand).
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.76** | 2026-11-17 | Claude Code, Fable 5.2 | Bootpagina herzien (§5.6): de plekken staan niet meer in `brms.toml` maar in één SVG-tekening van de gebruiker met de boot en op elke plek de tekst `sensor.grootheid`; `[boot]` heeft alleen het veld `tekening`; de tekening wordt zonder herstart opnieuw gelezen. De pagina zet de waarden in een eigen letter met een vakje in de themakleuren. OPEN-28 (bootgrafiek), OPEN-29 (slagzij aan één kant) en OPEN-30 (rood en vet bij alarm, `--` in lichtgrijs bij een stille sensor) besloten; OPEN-31 vervallen; OPEN-32 besloten (`--` na 15 minuten zonder meting). Nog niet gebouwd; de code is niet gewijzigd. |
+| **0.77** | 2026-11-17 | Claude Code, Fable 5.2 | Bootpagina gebouwd (§5.6, met de invulling bij het bouwen) in code v0.26.0: blok `[boot]` met `tekening` in de configuratie, `/` is de bootpagina als dat blok er is, grafieken op `/grafieken`, de tekening op `/boot/tekening.svg`, de waarden via `/api/boot`, de bootgrafiek op de grafiekenpagina. Een ontbrekende tekening is een waarschuwing, geen fout. Beproefd in de browser op de pc met nagemaakte metingen; nog niet op de Pi. |
+| 0.76 | 2026-11-17 | Claude Code, Fable 5.2 | Bootpagina herzien (§5.6): de plekken staan niet meer in `brms.toml` maar in één SVG-tekening van de gebruiker met de boot en op elke plek de tekst `sensor.grootheid`; `[boot]` heeft alleen het veld `tekening`; de tekening wordt zonder herstart opnieuw gelezen. De pagina zet de waarden in een eigen letter met een vakje in de themakleuren. OPEN-28 (bootgrafiek), OPEN-29 (slagzij aan één kant) en OPEN-30 (rood en vet bij alarm, `--` in lichtgrijs bij een stille sensor) besloten; OPEN-31 vervallen; OPEN-32 besloten (`--` na 15 minuten zonder meting). Nog niet gebouwd; de code is niet gewijzigd. |
 | 0.75 | 2026-11-17 | Claude Code, Fable 5.2 | Bootpagina ontworpen (§5.6): plattegrond van de boot met de actuele waarden op hun plek, als eerste pagina (`/`); Grafieken naar `/grafieken`. Plaatje met doorzichtige achtergrond naast `brms.toml`, plekken in `[boot]` / `[[boot.waarde]]`; waarde in alarm rood en dik; klik opent de grafiek. OPEN-28 t/m OPEN-31 toegevoegd. Nog niet gebouwd; de code is niet gewijzigd. |
 | 0.74 | 2026-11-16 | Claude Code, Fable 5.2 | Uitrol (§10.1 punt 1): de repo is openbaar, `deploy/install.sh` haalt de code op via https in plaats van via SSH met een deploy key. Bij een bestaande clone zet `install.sh` het adres van `origin` om. De deploy key staat bij de verworpen alternatieven. README.md: beschrijving, schermafdrukken, installatie en opdrachten. De code in `brms/` is niet gewijzigd. |
 | 0.73 | 2026-11-16 | Claude Code, Fable 5.2 | Richten van de camera (§5.7 punt 19): beproefd door de gebruiker, werkt met de Foscam FI9826W. Alleen de status; ontwerp en code zijn niet gewijzigd. |

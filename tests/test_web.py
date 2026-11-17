@@ -630,5 +630,201 @@ class TestLiveRoute(unittest.TestCase):
         self.assertEqual(r.status_code, 502)
 
 
+class TestBoot(unittest.TestCase):
+    """De bootpagina (§5.6 "Bootpagina"): een tekening van de boot met de actuele waarden.
+
+    De tekening zelf wordt in de browser gelezen (de namen `sensor.grootheid` en hun plek);
+    hier wordt getest wat de webservice doet: welke pagina op / staat, het uitleveren van
+    de tekening en de waarden met hun alarmstand."""
+
+    # Een minimale tekening: genoeg om te zien dat het bestand ongewijzigd wordt uitgeleverd.
+    SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><text>kajuit.temperatuur</text></svg>'
+
+    def setUp(self):
+        self._map = tempfile.TemporaryDirectory()
+        self.pad = os.path.join(self._map.name, "brms.db")
+        self.tekening = os.path.join(self._map.name, "boot.svg")
+        pathlib.Path(self.tekening).write_text(self.SVG, encoding="utf-8")
+        self.live = web.LiveBuffer()
+        # De klok van de Pi staat op 10.000; een meting van vóór 9.100 is ouder dan 15 minuten.
+        self.nu = 10_000
+        self.cfg = Config(MqttConfig(), OpslagConfig(self.pad),
+                          {MAC: Sensor(MAC, "bthome", "kajuit"), MAC2: Sensor(MAC2, "ruuvi", "motorruim")},
+                          alarmen=ALARMEN, boot=config.BootConfig(self.tekening))
+        self.client = web.maak_app(self.cfg, self.live, klok=lambda: self.nu + 0.2).test_client()
+
+    def tearDown(self):
+        self._map.cleanup()
+
+    def _waarden(self, *paren):
+        r = self.client.post("/api/boot", json={
+            "waarden": [{"sensor": s, "grootheid": g} for s, g in paren]})
+        self.assertEqual(r.status_code, 200)
+        return r.get_json()["waarden"]
+
+    def test_met_boot_is_de_bootpagina_de_eerste_pagina(self):
+        tekst = self.client.get("/").get_data(as_text=True)
+        # De bootpagina: de titel, de naam van de tekening en de sensoren met hun grootheden.
+        for verwacht in ["<title>BRMS – Boot</title>", '"boot.svg"', "kajuit", '"temperatuur"',
+                         "const STIL_NA = 900;"]:
+            self.assertIn(verwacht, tekst)
+        self.assertNotIn("chart.umd.min.js", tekst)
+        # In het menu staat Boot op / en Grafieken op /grafieken.
+        self.assertIn('<a href="/" class="hier" aria-current="page">', tekst)
+        self.assertIn('<a href="/grafieken" >', tekst)
+        # De grafiekenpagina staat op /grafieken.
+        grafieken = self.client.get("/grafieken").get_data(as_text=True)
+        self.assertIn("chart.umd.min.js", grafieken)
+        self.assertIn('<a href="/grafieken" class="hier" aria-current="page">', grafieken)
+
+    def test_zonder_boot_blijft_grafieken_de_eerste_pagina(self):
+        client = web.maak_app(_config(self.pad), self.live).test_client()
+        tekst = client.get("/").get_data(as_text=True)
+        self.assertIn("chart.umd.min.js", tekst)
+        # Geen regel "Boot" in het menu; Grafieken wijst naar /, zoals altijd.
+        self.assertNotIn('<span class="naam">Boot</span>', tekst)
+        self.assertIn('<a href="/" class="hier" aria-current="page">', tekst)
+        # /grafieken werkt ook zonder bootpagina; de tekening en haar waarden zijn er niet.
+        self.assertEqual(client.get("/grafieken").status_code, 200)
+        self.assertEqual(client.get("/boot/tekening.svg").status_code, 404)
+
+    def test_grafiekenpagina_kent_de_bootgrafiek(self):
+        # De klik op de bootpagina (?sensor=..&grootheid=..) wordt door de pagina zelf
+        # verwerkt; het adres met de vraag geeft gewoon de grafiekenpagina.
+        r = self.client.get(f"/grafieken?sensor={MAC}&grootheid=temperatuur")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("grafieken.find(x => x.boot)", r.get_data(as_text=True))
+
+    def test_tekening_wordt_van_schijf_gelezen_zonder_herstart(self):
+        r = self.client.get("/boot/tekening.svg")
+        self.assertEqual((r.status_code, r.mimetype), (200, "image/svg+xml"))
+        self.assertEqual(r.get_data(as_text=True), self.SVG)
+        # De browser bewaart het bestand, maar vraagt elke keer of het gewijzigd is.
+        self.assertIn("no-cache", r.headers["Cache-Control"])
+        etag = r.headers["ETag"]
+        r.close()
+        # Niet gewijzigd: een kort antwoord zonder inhoud.
+        r = self.client.get("/boot/tekening.svg", headers={"If-None-Match": etag})
+        self.assertEqual(r.status_code, 304)
+        r.close()
+        # Een nieuwe versie van de tekening is er meteen, zonder herstart van de webservice.
+        nieuw = self.SVG.replace("kajuit", "motorruim") + "<!-- langer -->"
+        pathlib.Path(self.tekening).write_text(nieuw, encoding="utf-8")
+        r = self.client.get("/boot/tekening.svg", headers={"If-None-Match": etag})
+        self.assertEqual((r.status_code, r.get_data(as_text=True)), (200, nieuw))
+        r.close()
+
+    def test_tekening_ontbreekt(self):
+        os.remove(self.tekening)
+        self.assertEqual(self.client.get("/boot/tekening.svg").status_code, 404)
+        # De pagina zelf werkt wel; ze meldt dat de tekening ontbreekt.
+        self.assertEqual(self.client.get("/").status_code, 200)
+
+    def test_laatste_waarde_van_de_bus(self):
+        self.live.voeg_toe(maak(self.nu - 60, MAC, "temperatuur", 8.0))
+        self.live.voeg_toe(maak(self.nu - 5, MAC, "temperatuur", 8.4))
+        self.live.voeg_toe(maak(self.nu - 5, MAC2, "slagzij", -1.8))
+        # Een MAC-adres mag in kleine letters; twee keer dezelfde waarde mag (de slagzij
+        # staat twee keer in de tekening).
+        self.assertEqual(
+            self._waarden((MAC.lower(), "temperatuur"), (MAC2, "slagzij"), (MAC2, "slagzij")),
+            [{"waarde": 8.4, "ts": self.nu - 5, "alarm": False},
+             {"waarde": -1.8, "ts": self.nu - 5, "alarm": False},
+             {"waarde": -1.8, "ts": self.nu - 5, "alarm": False}])
+
+    def test_na_een_herstart_de_laatste_rij_uit_de_database(self):
+        # Het live-geheugen is leeg; de database heeft rijen (per 5 minuten).
+        db = Database(self.pad)
+        db.schrijf([(self.nu - 600, MAC, "temperatuur", 7.0), (self.nu - 300, MAC, "temperatuur", 7.5),
+                    (self.nu - 2000, MAC2, "temperatuur", 3.0)])
+        db.sluit()
+        kajuit, motorruim = self._waarden((MAC, "temperatuur"), (MAC2, "temperatuur"))
+        self.assertEqual(kajuit, {"waarde": 7.5, "ts": self.nu - 300, "alarm": False})
+        # Ouder dan 15 minuten telt niet: de sensor geldt als stil.
+        self.assertEqual(motorruim, {"waarde": None, "ts": None, "alarm": False})
+        # Komt er een meting over de bus, dan gaat die voor.
+        self.live.voeg_toe(maak(self.nu - 1, MAC, "temperatuur", 7.7))
+        self.assertEqual(self._waarden((MAC, "temperatuur"))[0]["waarde"], 7.7)
+
+    def test_stil_na_een_kwartier(self):
+        self.assertEqual(web.BOOT_STIL, 900)
+        self.live.voeg_toe(maak(self.nu - 900, MAC, "temperatuur", 8.0))    # precies 15 minuten: telt nog
+        self.live.voeg_toe(maak(self.nu - 901, MAC2, "temperatuur", 3.0))   # net te oud
+        kajuit, motorruim = self._waarden((MAC, "temperatuur"), (MAC2, "temperatuur"))
+        self.assertEqual(kajuit["waarde"], 8.0)
+        self.assertEqual(motorruim, {"waarde": None, "ts": None, "alarm": False})
+
+    def test_alarm_op_de_sensor_en_de_grootheid(self):
+        self.live.voeg_toe(maak(self.nu - 5, MAC, "temperatuur", 1.5))
+        self.live.voeg_toe(maak(self.nu - 5, MAC, "vocht", 60.0))
+        self.live.voeg_toe(maak(self.nu - 5, MAC2, "temperatuur", 1.0))
+        db = Database(self.pad)
+        db.alarm_begin(self.nu - 100, "vorst", MAC, "temperatuur", 1.5)     # actief
+        db.alarm_begin(self.nu - 500, "vorst", MAC2, "temperatuur", 0.5)    # al afgelopen
+        db.alarm_einde(self.nu - 400, "vorst", MAC2, "herstel")
+        db.sluit()
+        temperatuur, vocht, motorruim = self._waarden(
+            (MAC, "temperatuur"), (MAC, "vocht"), (MAC2, "temperatuur"))
+        # Alleen de waarde waarop het alarm staat is rood: niet een andere grootheid van
+        # dezelfde sensor, en niet na het einde van het alarm.
+        self.assertEqual([temperatuur["alarm"], vocht["alarm"], motorruim["alarm"]],
+                         [True, False, False])
+
+    def test_stille_sensor_met_en_zonder_alarm(self):
+        db = Database(self.pad)
+        db.alarm_begin(self.nu - 100, "stil", MAC, None, None)   # "sensor stil" op de kajuit
+        db.sluit()
+        kajuit, motorruim = self._waarden((MAC, "temperatuur"), (MAC2, "temperatuur"))
+        # Geen waarde: "--". Rood alleen waar het alarm "sensor stil" actief is.
+        self.assertEqual(kajuit, {"waarde": None, "ts": None, "alarm": True})
+        self.assertEqual(motorruim, {"waarde": None, "ts": None, "alarm": False})
+        # Levert de sensor (weer) een waarde, dan kleurt "sensor stil" die niet rood.
+        self.live.voeg_toe(maak(self.nu - 1, MAC, "temperatuur", 8.0))
+        self.assertEqual(self._waarden((MAC, "temperatuur"))[0],
+                         {"waarde": 8.0, "ts": self.nu - 1, "alarm": False})
+
+    def test_onbekend_en_ongeldig(self):
+        # Een onbekende sensor of grootheid: geen waarde, geen alarm, geen fout.
+        self.assertEqual(self._waarden(("onbekend", "temperatuur"), (MAC, "bestaat-niet")),
+                         [{"waarde": None, "ts": None, "alarm": False}] * 2)
+        # Zonder database (de opslag heeft nog nooit gedraaid) werkt het ook.
+        self.assertEqual(self._waarden((MAC, "temperatuur"))[0]["waarde"], None)
+        self.assertEqual(self._waarden(), [])
+        for inhoud in ({}, {"waarden": "x"}, {"waarden": [{}] * (web.MAX_VRAGEN + 1)}):
+            self.assertEqual(self.client.post("/api/boot", json=inhoud).status_code, 400)
+
+
+class TestBootConfig(unittest.TestCase):
+    """Het blok [boot] in brms.toml (§5.6 "Bootpagina" punt 2)."""
+
+    def test_zonder_blok_geen_bootpagina(self):
+        self.assertIsNone(config.controleer({}).boot)
+
+    def test_tekening_naast_brms_toml(self):
+        with tempfile.TemporaryDirectory() as map_:
+            pathlib.Path(map_, "boot.svg").write_text("<svg/>", encoding="utf-8")
+            pathlib.Path(map_, "brms.toml").write_text('[boot]\ntekening = "boot.svg"\n', encoding="utf-8")
+            # Een relatief pad geldt vanaf de map van brms.toml.
+            cfg = config.lees(os.path.join(map_, "brms.toml"))
+            self.assertEqual(cfg.boot, config.BootConfig(os.path.join(os.path.abspath(map_), "boot.svg")))
+            self.assertEqual(cfg.waarschuwingen, ())
+
+    def test_ontbrekende_tekening_is_een_waarschuwing(self):
+        # Geen fout: een vergeten tekening mag de services niet tegenhouden.
+        cfg = config.controleer({"boot": {"tekening": "bestaat-niet.svg"}})
+        self.assertTrue(cfg.boot.tekening.endswith("bestaat-niet.svg"))
+        self.assertEqual(len(cfg.waarschuwingen), 1)
+        self.assertIn("bestaat niet", cfg.waarschuwingen[0])
+
+    def test_fouten(self):
+        for blok, verwacht in (({}, "'tekening' ontbreekt"),
+                               ({"tekening": 5}, "'tekening' ontbreekt"),
+                               ({"tekening": "boot.png"}, "SVG-bestand"),
+                               ({"tekening": "boot.svg", "plaatje": "x"}, "onbekende sleutel 'plaatje'")):
+            with self.assertRaises(config.ConfigFout) as ctx:
+                config.controleer({"boot": blok})
+            self.assertIn(verwacht, "\n".join(ctx.exception.fouten))
+
+
 if __name__ == "__main__":
     unittest.main()

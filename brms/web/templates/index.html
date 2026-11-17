@@ -20,6 +20,10 @@
   grens als streeplijn in de grafiek (de herstelgrens als stippellijn). De perioden waarin
   een alarm actief was, zijn gearceerd.
 
+  De bootgrafiek (§5.6 "Bootpagina" punt 6): een klik op een waarde op de bootpagina opent
+  deze pagina met ?sensor=<id>&grootheid=<naam>; die reeks komt in één grafiek bovenaan,
+  die blijft staan tot de gebruiker hem sluit.
+
   De indeling (welke grafieken, welke reeksen) wordt in de browser onthouden.
   Chart.js komt uit static/ (geen CDN): de pagina werkt ook zonder internet.
 
@@ -35,6 +39,12 @@
   #leeg { color: var(--zacht); padding: 24px 2px; }
   .grafiek { background: var(--vlak); border: 1px solid var(--rand); border-radius: 12px;
              padding: 10px 12px; margin-bottom: 14px; box-shadow: var(--schaduw); }
+  /* De bootgrafiek (§5.6 "Bootpagina" punt 6): de grafiek waarin de waarden komen die op
+     de bootpagina zijn aangeklikt. Een regel erboven zegt wat het is; verder is het een
+     gewone grafiek. */
+  .grafiek.boot { border-color: var(--accent); }
+  .grafiek.boot::before { content: "Bootgrafiek: de waarden die je op de bootpagina hebt aangeklikt";
+                          display: block; margin-bottom: 6px; font-size: 13px; color: var(--zacht); }
   .bron { font-weight: 600; margin-right: 4px; }
   /* De legenda staat in kolommen van gelijke breedte (v0.61), niet als doorlopende tekst
      die afbreekt: de plaats van een reeks hangt zo niet af van de lengte van de waarden,
@@ -289,6 +299,7 @@ function bewaar() {
   try {
     localStorage.setItem(BEWAARSLEUTEL, JSON.stringify(grafieken.map(g => ({
       bron: g.bron, venster: g.venster, periode: g.periode,
+      boot: g.boot || undefined,   // alleen bij de bootgrafiek (undefined komt niet in de JSON)
       reeksen: g.reeksen.map(r => ({sensor: r.sensor, grootheid: r.grootheid, kleur: r.kleur})),
     }))));
   } catch (e) { /* niet erg */ }
@@ -298,13 +309,21 @@ function bewaard() {
 }
 
 // --- een grafiek opbouwen -------------------------------------------------------------
-function nieuweGrafiek(bron, opgeslagen) {
+// `bovenaan`: de grafiek komt vóór de bestaande grafieken in plaats van erachter (de
+// bootgrafiek, §5.6 "Bootpagina" punt 6).
+function nieuweGrafiek(bron, opgeslagen, bovenaan) {
   const vak = el("sjabloon").content.firstElementChild.cloneNode(true);
   const q = klasse => vak.querySelector("." + klasse);
   const g = {bron, venster: VENSTER_STANDAARD, periode: PERIODE_STANDAARD, verschuiving: 0, anker: null,
-             vak, chart: null, reeksen: []};
-  if (opgeslagen) { g.venster = opgeslagen.venster || g.venster; g.periode = opgeslagen.periode || g.periode; }
-  grafieken.push(g);
+             vak, chart: null, reeksen: [], boot: false};
+  if (opgeslagen) {
+    g.venster = opgeslagen.venster || g.venster;
+    g.periode = opgeslagen.periode || g.periode;
+    g.boot = opgeslagen.boot === true;
+  }
+  vak.classList.toggle("boot", g.boot);
+  // De volgorde in `grafieken` is de volgorde op de pagina en in de bewaarde indeling.
+  if (bovenaan) grafieken.unshift(g); else grafieken.push(g);
 
   // Zet de kop van de grafiek naar de bron: de keuzelijst van de bron zelf, en van de twee
   // keuzelijsten voor de tijd alleen die van deze bron (venster bij live, periode bij de
@@ -364,7 +383,7 @@ function nieuweGrafiek(bron, opgeslagen) {
     bewaar();
   });
 
-  el("grafieken").appendChild(vak);
+  if (bovenaan) el("grafieken").prepend(vak); else el("grafieken").appendChild(vak);
   el("leeg").hidden = true;
   for (const r of (opgeslagen ? opgeslagen.reeksen || [] : []))
     voegReeksToe(g, r.sensor, r.grootheid, r.kleur);
@@ -847,6 +866,40 @@ if (Array.isArray(vorigeKeer)) {
   const g = nieuweGrafiek("live");
   if (SENSOREN[0].grootheden.length) { voegReeksToe(g, SENSOREN[0].id, SENSOREN[0].grootheden[0]); ververs(g); }
 }
+
+// --- een klik op de bootpagina (§5.6 "Bootpagina" punt 6) ----------------------------
+// De bootpagina verwijst hierheen met ?sensor=<id>&grootheid=<naam>. Die waarde komt als
+// reeks in de bootgrafiek:
+//   - is er nog geen bootgrafiek, dan komt er een nieuwe bovenaan (live); de bestaande
+//     grafieken blijven ongewijzigd en staan eronder;
+//   - is er al een, dan komt de reeks erbij (een reeks die er al in staat niet nog eens;
+//     bij 8 reeksen meldt de grafiek dat hij vol is);
+//   - de bootgrafiek blijft staan (en wordt met de indeling onthouden) tot de gebruiker
+//     hem met het kruisje sluit; daarna maakt een volgende klik een nieuwe.
+(() => {
+  const vraag = new URLSearchParams(location.search);
+  if (!vraag.has("sensor")) return;
+  // De vraag uit het adres halen: opnieuw laden van de pagina (of een herstart van de
+  // webservice, zie haal) mag de reeks niet nog eens toevoegen.
+  history.replaceState(null, "", location.pathname);
+  // Een MAC-adres staat in hoofdletters in de configuratie; een vrij gekozen ID (Shelly)
+  // zoals het getypt is.
+  const gevraagd = vraag.get("sensor"), grootheid = vraag.get("grootheid");
+  const s = sensor(gevraagd) || sensor(gevraagd.toUpperCase());
+  if (!s || !s.grootheden.includes(grootheid)) {
+    status("De bootpagina vroeg om een sensor of grootheid die niet in de configuratie staat.");
+    return;
+  }
+  const g = grafieken.find(x => x.boot) || nieuweGrafiek("live", {boot: true}, true);
+  const staatErAl = g.reeksen.some(r => r.sensor === s.id && r.grootheid === grootheid);
+  const melding = staatErAl ? "" : voegReeksToe(g, s.id, grootheid);
+  bewaar();
+  if (!staatErAl && !melding) ververs(g);
+  if (melding) meld(g, melding);
+  // De bootgrafiek staat bovenaan; daar begint de pagina ook.
+  window.scrollTo(0, 0);
+})();
+
 el("leeg").hidden = grafieken.length > 0;
 if (!SENSOREN.length) status("Er staan geen sensoren in de configuratie.");
 setInterval(vraagLive, LIVE_INTERVAL);

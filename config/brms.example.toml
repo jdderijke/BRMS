@@ -18,6 +18,20 @@ database = "data/brms.db"
 host = "0.0.0.0"
 port = 8080
 
+# Bootpagina (ARCHITECTURE.md §5.6 "Bootpagina"): een tekening van de boot met op elke plek
+# de actuele waarde van een sensor. Met dit blok is dat de eerste pagina van het web en
+# staan de grafieken op /grafieken; zonder dit blok is er geen bootpagina.
+#   tekening    een SVG-bestand dat je zelf tekent (bijv. een dia uit PowerPoint, opgeslagen
+#               als SVG), naast dit bestand in de map config/. Zet in de tekening op elke
+#               plek waar een waarde moet komen de tekst  sensor.grootheid , met de naam van
+#               de sensor uit dit bestand, bijvoorbeeld  kajuit.temperatuur . De waarde komt
+#               op de plek van de eerste letter. Pijlen, een titel en dergelijke blijven staan.
+#               Staat de slagzij er twee keer in (boven = bakboord, onder = stuurboord), dan
+#               staat de waarde alleen aan de kant waar de boot naartoe helt.
+# Een gewijzigde tekening is zichtbaar na het verversen van de pagina; herstarten hoeft niet.
+# [boot]
+# tekening = "boot.svg"
+
 # Eén blok per sensor. Alleen sensoren die hier staan worden verwerkt (ARCHITECTURE.md §5.4.2).
 #   id          vaste ID; bij BLE-sensoren het MAC-adres (AA:BB:CC:DD:EE:FF), bij een
 #               Shelly een vrij gekozen naam (bijv. shelly-bilge)

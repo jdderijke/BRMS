@@ -1,0 +1,389 @@
+{#
+  Bootpagina van BRMS (ARCHITECTURE.md §5.6 "Bootpagina"): een tekening van de boot met op
+  elke plek de actuele waarde van een sensor. De eerste pagina van het web als er een blok
+  [boot] in brms.toml staat.
+
+  De tekening is één SVG-bestand dat de gebruiker zelf tekent (PowerPoint, opgeslagen als
+  SVG) en dat naast brms.toml staat. Op elke plek waar een waarde moet komen, staat in de
+  tekening de tekst `sensor.grootheid`, bijvoorbeeld `motorruimte.slagzij`. Deze pagina:
+
+    1. haalt de tekening op (/boot/tekening.svg) en zet haar in de pagina;
+    2. zoekt de teksten `sensor.grootheid` op, haalt ze uit de tekening en zet op de plek
+       van hun eerste letter een vakje met de waarde (HTML over de tekening heen, zodat
+       de letter op elk scherm even groot is en het vakje aan te klikken is);
+    3. vraagt elke 5 s de waarden op (/api/boot) en zet ze in de vakjes.
+
+  Er staat niets over plekken of sensoren in brms.toml of in deze pagina: een sensor
+  toevoegen of verplaatsen is alleen een wijziging van de tekening, en die is zichtbaar na
+  het verversen van de pagina (geen herstart).
+
+  De bovenbalk, het menu en de kleuren komen uit basis.html en static/brms.css.
+#}
+{% extends "basis.html" %}
+
+{% block stijl %}
+<style>
+  /* Op deze pagina is de statusregel er alleen voor fouten. */
+  #status { color: var(--fout); }
+  /* De tekening met de vakjes eroverheen. De vakjes staan in een laag die precies over de
+     tekening ligt; hun plek is een percentage van de breedte en de hoogte, zodat ze met
+     de tekening meeschalen. */
+  #boot { position: relative; }
+  /* De tekening vult de breedte; de hoogte volgt uit de verhouding (viewBox). */
+  #tekening svg { display: block; width: 100%; height: auto; overflow: visible; }
+  /* Overige tekst in de tekening (een titel) krijgt de tekstkleur van het thema, anders
+     is zwarte tekst in het donkere thema niet te lezen. Tekst waaraan de gebruiker zelf
+     een kleur heeft gegeven (attribuut fill) houdt die kleur. */
+  #tekening text:not([fill]) { fill: var(--tekst); }
+  #waarden { position: absolute; inset: 0; pointer-events: none; }
+  /* Eén waarde: een klein vakje in de kleuren van het thema, zodat het getal ook op het
+     hout van de boot en in het donkere thema te lezen is. Het vakje begint op de plek van
+     de eerste letter van de naam in de tekening, verticaal gecentreerd op die regel.
+     Cijfers van gelijke breedte: het vakje verspringt niet als de waarde verandert. */
+  #waarden a { position: absolute; transform: translate(0, -50%); pointer-events: auto;
+               padding: 1px 6px; border: 1px solid var(--rand); border-radius: 6px;
+               background: var(--vlak); color: var(--tekst); box-shadow: var(--schaduw);
+               font-size: 14px; line-height: 1.35; white-space: nowrap; text-decoration: none;
+               font-variant-numeric: tabular-nums; }
+  #waarden a:hover { border-color: var(--accent); }
+  /* In alarm (§5.6 punt 4): rood en vet, met een rode rand. */
+  #waarden a.alarm { color: var(--fout); border-color: var(--fout); font-weight: 800; }
+  /* Stille of ontbrekende sensor: "--" in lichtgrijs. De eerste regel is voor een browser
+     die color-mix niet kent. Met een actief alarm "sensor stil" wint de regel hieronder
+     en is de "--" rood en vet. */
+  #waarden a.stil { color: var(--as); color: color-mix(in srgb, var(--as) 55%, var(--vlak)); }
+  #waarden a.stil.alarm { color: var(--fout); }
+  /* Telefoon rechtop (§5.6 punt 8): de tekening staat een kwartslag gedraaid (boeg boven).
+     Een naam liep in de tekening naar rechts en loopt nu naar boven; het vakje staat dan
+     met zijn midden op de plek van de eerste letter. */
+  #boot.gedraaid #waarden a { transform: translate(-50%, -50%); }
+  @media (max-width: 640px) { #waarden a { font-size: 13px; padding: 1px 5px; } }
+</style>
+{% endblock %}
+
+{% block inhoud %}
+  <p id="status"></p>
+  <div id="boot">
+    <div id="tekening"></div>
+    <div id="waarden"></div>
+  </div>
+{% endblock %}
+
+{% block script %}
+<script>
+// Uit de configuratie van de Pi: de sensoren met de grootheden die ze leveren, en per
+// grootheid de eenheid, de soort en het aantal decimalen (§5.3.3).
+const SENSOREN = {{ sensoren | tojson }};
+const GROOTHEDEN = {{ grootheden | tojson }};
+// De bestandsnaam van de tekening (voor een melding) en na hoeveel seconden zonder meting
+// een waarde als stil geldt (voor de uitleg bij een "--").
+const TEKENING = {{ tekening | tojson }};
+const STIL_NA = {{ stil_na | tojson }};
+
+// Het starttijdstip van de webservice waar deze pagina vandaan komt. De sensoren hierboven
+// zijn die van dat moment; is de webservice herstart (andere configuratie), dan laadt de
+// pagina zichzelf opnieuw (§5.6, zoals de grafiekenpagina).
+const GESTART = {{ gestart | tojson }};
+let herlaadt = false;
+async function haal(url, opties) {
+  const antwoord = await fetch(url, opties);
+  const kenmerk = antwoord.headers.get({{ kop_gestart | tojson }});
+  if (kenmerk !== null && kenmerk !== GESTART && !herlaadt) {
+    herlaadt = true;
+    location.reload();
+  }
+  return antwoord;
+}
+
+const VERVERS = 5000;   // ms tussen twee vragen aan /api/boot (§5.6 punt 7)
+const el = id => document.getElementById(id);
+function status(tekst) { el("status").textContent = tekst || ""; }
+
+// De namen die in de tekening herkend worden: "sensornaam.grootheid" in kleine letters
+// (hoofdletters tellen niet mee: PowerPoint maakt van "vooronder" vanzelf "Vooronder")
+// -> {sensor (ID), naam, grootheid}. Alleen grootheden die de sensor levert (§5.4.2).
+const NAMEN = new Map();
+for (const s of SENSOREN)
+  for (const g of s.grootheden)
+    NAMEN.set((s.naam + "." + g).toLowerCase(), {sensor: s.id, naam: s.naam, grootheid: g});
+const isBegin = t => [...NAMEN.keys()].some(naam => naam.startsWith(t));
+
+// Telefoon rechtop: de tekening een kwartslag gedraaid, boeg boven (§5.6 punt 8).
+const rechtop = matchMedia("(max-width: 640px) and (orientation: portrait)");
+
+let bron = null;      // de tekst van het SVG-bestand, zoals opgehaald
+let plekken = [];     // per waarde in de tekening: {sensor, naam, grootheid, vak, kant}
+let laatste = null;   // het laatste antwoord van /api/boot (de lijst "waarden")
+
+// --- getallen ---------------------------------------------------------------------------
+const twee = n => String(n).padStart(2, "0");
+function klok(ts) {
+  const d = new Date(ts * 1000);
+  return twee(d.getHours()) + ":" + twee(d.getMinutes()) + ":" + twee(d.getSeconds());
+}
+// Een getal met het vaste aantal decimalen van de grootheid (§5.3.3), zoals in de legenda
+// van de grafieken: 19,0 en 12,60. Zonder punt tussen de duizendtallen.
+function meetwaarde(grootheid, w) {
+  const d = GROOTHEDEN[grootheid].decimalen;
+  return Number(w).toLocaleString("nl-NL", {minimumFractionDigits: d, maximumFractionDigits: d,
+                                            useGrouping: false});
+}
+// Is de waarde, afgerond op de decimalen van de grootheid, nul? (-0,04° wordt 0,0°.)
+const afgerondNul = (grootheid, w) => Math.abs(w) < 0.5 * Math.pow(10, -GROOTHEDEN[grootheid].decimalen);
+// De waarde zoals hij in het vakje staat (§5.6 punt 4):
+//   toestand (0/1)            "aan" of "uit"
+//   grootheid met een kant    "1,8° bb" (de slagzij, §5.2.5 punt 10); afgerond nul: "0,0°"
+//   anders                    het getal met de eenheid: "19,0 °C"
+function waardeTekst(grootheid, w) {
+  const g = GROOTHEDEN[grootheid];
+  if (g.soort === "toestand") return w ? "aan" : "uit";
+  if (!g.zijden) return meetwaarde(grootheid, w) + " " + g.eenheid;
+  if (afgerondNul(grootheid, w)) return meetwaarde(grootheid, 0) + "°";
+  return meetwaarde(grootheid, Math.abs(w)) + "° " + (w > 0 ? g.zijden[0] : g.zijden[1]);
+}
+
+// --- de tekening ------------------------------------------------------------------------
+// Haalt het SVG-bestand op. De browser bewaart het en vraagt alleen of het gewijzigd is
+// (zie boot_tekening in de webservice).
+async function laadTekening() {
+  try {
+    const a = await haal("/boot/tekening.svg");
+    if (a.status === 404) {
+      status("De tekening " + TEKENING + " staat niet naast brms.toml; zet het bestand daar neer "
+             + "en ververs de pagina.");
+      return;
+    }
+    if (!a.ok) throw new Error("fout " + a.status);
+    bron = await a.text();
+    bouw();
+    vraag();
+  } catch (e) {
+    status("Geen verbinding met de BRMS-webservice (" + e.message + ").");
+  }
+}
+
+// Zet de tekening in de pagina, zoekt de namen op en maakt de vakjes. Wordt opnieuw
+// gedaan als de telefoon gedraaid wordt (de tekening staat dan anders).
+function bouw() {
+  const doc = new DOMParser().parseFromString(bron, "image/svg+xml");
+  if (doc.querySelector("parsererror") || doc.documentElement.localName !== "svg") {
+    status("De tekening " + TEKENING + " is geen geldig SVG-bestand.");
+    return;
+  }
+  const svg = document.importNode(doc.documentElement, true);
+  // De tekening is van de gebruiker zelf, maar een tekening hoort geen programma te
+  // bevatten: scripts en gebeurtenissen (onclick en dergelijke) gaan eruit.
+  svg.querySelectorAll("script, foreignObject").forEach(e => e.remove());
+  for (const e of [svg, ...svg.querySelectorAll("*")])
+    for (const a of [...e.attributes]) if (a.name.toLowerCase().startsWith("on")) e.removeAttribute(a.name);
+
+  // De maat van de tekening in haar eigen eenheden: de viewBox, of anders width en height
+  // (PowerPoint zet alleen die twee). Daarna schaalt de tekening mee met de pagina.
+  let vb = (svg.getAttribute("viewBox") || "").trim().split(/[\s,]+/).map(Number);
+  if (vb.length !== 4 || vb.some(isNaN))
+    vb = [0, 0, parseFloat(svg.getAttribute("width")), parseFloat(svg.getAttribute("height"))];
+  const [minX, minY, B, H] = vb;
+  if (!(B > 0) || !(H > 0)) {
+    status("De tekening " + TEKENING + " heeft geen maat (width en height, of een viewBox).");
+    return;
+  }
+  svg.setAttribute("viewBox", vb.join(" "));
+  svg.removeAttribute("width");
+  svg.removeAttribute("height");
+  el("tekening").replaceChildren(svg);
+  el("waarden").replaceChildren();
+  status("");
+
+  // Van de eenheden van een element naar die van de tekening als geheel (de viewBox): een
+  // tekst staat in PowerPoint-SVG binnen groepen met een verschuiving, en heeft zelf ook
+  // een transform. Beide omrekeningen naar het scherm zijn bekend; de ene terug en de
+  // andere heen geeft de omrekening tussen de twee.
+  const terug = svg.getScreenCTM().inverse();
+  const naarTekening = e => terug.multiply(e.getScreenCTM());
+
+  // Alle teksten, in de volgorde van het bestand, met hun inhoud en de plek van hun
+  // eerste letter (op de schrijflijn) in eenheden van de tekening.
+  const teksten = [...svg.querySelectorAll("text")].map(e => {
+    let begin;
+    try { begin = e.getStartPositionOfChar(0); }          // houdt rekening met x, y en tspan
+    catch (fout) { begin = {x: parseFloat(e.getAttribute("x")) || 0, y: parseFloat(e.getAttribute("y")) || 0}; }
+    const m = naarTekening(e);
+    const p = new DOMPoint(begin.x, begin.y).matrixTransform(m);
+    // De lettergrootte in eenheden van de tekening (de eigen grootte maal de schaal).
+    const letter = (parseFloat(getComputedStyle(e).fontSize) || 10) * Math.hypot(m.a, m.b);
+    return {e, tekst: e.textContent, x: p.x, y: p.y, letter};
+  });
+
+  // PowerPoint knipt een naam soms in stukken ("s" + "b_achter.temperatuur"), elk een
+  // eigen tekst op dezelfde regel. Daarom worden opeenvolgende teksten op dezelfde regel
+  // als één rij bekeken, en daarin de namen gezocht: stukken aan elkaar plakken zolang
+  // het resultaat het begin van een bekende naam is; de langste bekende naam telt.
+  // Wat geen naam oplevert (een titel, een tikfout) blijft als tekst in de tekening staan.
+  const gevonden = [];   // {stukken: [tekst, ...], doel: {sensor, naam, grootheid}}
+  for (let i = 0; i < teksten.length;) {
+    let tekst = "", beste = -1, doel = null;
+    for (let j = i; j < teksten.length; j++) {
+      // Hetzelfde stuk tekst: dezelfde regel (hoogte) en verder naar rechts.
+      if (j > i && (Math.abs(teksten[j].y - teksten[i].y) > 0.5 || teksten[j].x <= teksten[j - 1].x)) break;
+      tekst += teksten[j].tekst;
+      const t = tekst.trim().toLowerCase();
+      if (NAMEN.has(t)) { beste = j; doel = NAMEN.get(t); }
+      if (!isBegin(t)) break;
+    }
+    if (beste < 0) { i++; continue; }
+    gevonden.push({stukken: teksten.slice(i, beste + 1), doel});
+    i = beste + 1;
+  }
+  const naam = new Set(gevonden.flatMap(g => g.stukken));
+  const overig = teksten.filter(t => !naam.has(t));
+
+  // Telefoon rechtop: de hele tekening een kwartslag linksom, zodat de boeg (rechts in de
+  // tekening) boven staat. Een punt (x, y) komt op (y, breedte - x); de tekening wordt
+  // H breed en B hoog. De overige teksten (een titel) draaien niet mee: ze komen rechtop
+  // te staan, met hun midden op de plek waar hun midden na het draaien terechtkomt, en
+  // schuiven zo nodig opzij tot ze binnen de (nu smalle) tekening passen.
+  const gedraaid = rechtop.matches;
+  el("boot").classList.toggle("gedraaid", gedraaid);
+  if (gedraaid) {
+    // Eerst opmeten, in de tekening zoals getekend: per tekst het midden van zijn vak (in
+    // zijn eigen eenheden en in die van de tekening) en zijn schaal.
+    const los = [];
+    for (const t of overig) {
+      try {
+        const vak = t.e.getBBox(), m = naarTekening(t.e);
+        const eigen = {x: vak.x + vak.width / 2, y: vak.y + vak.height / 2};
+        const midden = new DOMPoint(eigen.x, eigen.y).matrixTransform(m);
+        const schaal = Math.hypot(m.a, m.b);
+        los.push({e: t.e, eigen, midden, schaal, breedte: vak.width * schaal});
+      } catch (fout) { /* een tekst zonder maat (leeg): laten staan */ }
+    }
+    const groep = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    groep.setAttribute("transform", "translate(" + (-minY) + " " + (minX + B) + ") rotate(-90)");
+    groep.append(...svg.childNodes);
+    svg.append(groep);
+    svg.setAttribute("viewBox", "0 0 " + H + " " + B);
+    // Dan elke overige tekst uit de gedraaide groep halen en rechtop terugzetten. Van
+    // rechts naar links gelezen: het midden van de tekst naar de oorsprong, op schaal, en
+    // dan naar zijn plek in de gedraaide tekening.
+    for (const t of los) {
+      let x = t.midden.y - minY;                 // een punt (x, y) komt op (y, breedte - x)
+      const y = minX + B - t.midden.x;
+      // Binnen de tekening houden; een tekst die breder is dan de tekening komt in het midden.
+      x = t.breedte >= H ? H / 2 : Math.min(Math.max(x, t.breedte / 2), H - t.breedte / 2);
+      t.e.setAttribute("transform", "translate(" + x + " " + y + ") scale(" + t.schaal + ") translate("
+                                    + (-t.eigen.x) + " " + (-t.eigen.y) + ")");
+      svg.append(t.e);
+    }
+  }
+
+  // Per gevonden naam: de tekst uit de tekening halen en een vakje maken op de plek van
+  // de eerste letter. Het vakje is een link naar de grafiekenpagina (§5.6 punt 6).
+  plekken = gevonden.map(({stukken, doel}) => {
+    for (const t of stukken) t.e.remove();
+    const eerste = stukken[0];
+    // Het midden van de regel ligt ongeveer een derde lettergrootte boven de schrijflijn.
+    const x = eerste.x, y = eerste.y - 0.35 * eerste.letter;
+    const vak = document.createElement("a");
+    vak.href = "/grafieken?sensor=" + encodeURIComponent(doel.sensor)
+               + "&grootheid=" + encodeURIComponent(doel.grootheid);
+    vak.style.left = 100 * (gedraaid ? (y - minY) / H : (x - minX) / B) + "%";
+    vak.style.top = 100 * (gedraaid ? (minX + B - x) / B : (y - minY) / H) + "%";
+    el("waarden").append(vak);
+    return {...doel, vak, hoogte: eerste.y, kant: null};
+  });
+
+  // De slagzij (§5.6 punt 5): staat een grootheid met een kant twee keer in de tekening,
+  // dan is de bovenste plek voor bakboord (de tweede kant, negatieve waarden) en de
+  // onderste voor stuurboord (de eerste kant, positieve waarden). "Boven" en "onder" zoals
+  // getekend, dus ook als de tekening op een telefoon gedraaid staat.
+  const paren = new Map();
+  for (const p of plekken) {
+    if (!GROOTHEDEN[p.grootheid].zijden) continue;
+    const sleutel = p.sensor + "\n" + p.grootheid;
+    paren.set(sleutel, [...(paren.get(sleutel) || []), p]);
+  }
+  for (const paar of paren.values()) {
+    if (paar.length !== 2) continue;
+    paar.sort((a, b) => a.hoogte - b.hoogte);
+    paar[0].kant = "negatief";
+    paar[1].kant = "positief";
+  }
+
+  if (!plekken.length)
+    status("In de tekening staat geen tekst van de vorm sensor.grootheid die bij een sensor uit "
+           + "brms.toml past, bijvoorbeeld " + ([...NAMEN.keys()][0] || "kajuit.temperatuur") + ".");
+  toon();
+}
+
+// --- de waarden ---------------------------------------------------------------------------
+// Vraagt de waarden op van alles wat in de tekening staat: één aanvraag (§5.6 punt 7).
+let bezig = false;
+async function vraag() {
+  if (bezig || !plekken.length) return;
+  bezig = true;
+  const gevraagd = plekken;   // de tekening kan intussen opnieuw gebouwd worden
+  try {
+    const a = await haal("/api/boot", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({waarden: gevraagd.map(p => ({sensor: p.sensor, grootheid: p.grootheid}))})});
+    if (!a.ok) throw new Error("fout " + a.status);
+    const d = await a.json();
+    // Dezelfde namen in dezelfde volgorde, ook na opnieuw bouwen: het antwoord past nog.
+    if (gevraagd.length === plekken.length) laatste = d.waarden;
+    status(d.broker === false ? "De MQTT-broker is niet bereikbaar; er komen geen metingen binnen." : "");
+    toon();
+  } catch (e) {
+    status("Geen verbinding met de BRMS-webservice (" + e.message + ").");
+  } finally {
+    bezig = false;
+  }
+}
+
+// Zet de laatst opgehaalde waarden in de vakjes (§5.6 punt 4 en 5).
+function toon() {
+  plekken.forEach((p, i) => {
+    const w = laatste && laatste[i];
+    const vak = p.vak, wat = p.naam + " · " + p.grootheid;
+    vak.hidden = false;
+    vak.classList.toggle("alarm", !!(w && w.alarm));
+    if (!w || w.waarde === null) {
+      // Stil of ontbrekend (of nog niets opgehaald): "--".
+      vak.classList.add("stil");
+      vak.textContent = "--";
+      vak.title = wat + ": geen meting in de laatste " + Math.round(STIL_NA / 60) + " minuten"
+                  + (w && w.alarm ? " (alarm: sensor stil)" : "");
+      return;
+    }
+    vak.classList.remove("stil");
+    vak.textContent = waardeTekst(p.grootheid, w.waarde);
+    vak.title = wat + ", " + klok(w.ts) + (w.alarm ? " (alarm)" : "");
+    // De slagzij op twee plekken: alleen aan de kant waar de boot naartoe helt. Afgerond
+    // nul staat op beide plekken, zonder kant.
+    if (p.kant && !afgerondNul(p.grootheid, w.waarde))
+      vak.hidden = (w.waarde > 0) !== (p.kant === "positief");
+  });
+  klem();
+}
+
+// Houdt de vakjes binnen de tekening: een vakje dat over de linker- of rechterrand zou
+// steken (een naam aan de rand, een smal scherm), schuift zover terug dat het past.
+function klem() {
+  const rand = el("boot").getBoundingClientRect();
+  for (const p of plekken) {
+    p.vak.style.marginLeft = "0";
+    if (p.vak.hidden) continue;
+    const r = p.vak.getBoundingClientRect();
+    if (r.right > rand.right) p.vak.style.marginLeft = (rand.right - r.right) + "px";
+    else if (r.left < rand.left) p.vak.style.marginLeft = (rand.left - r.left) + "px";
+  }
+}
+
+// --- begin ----------------------------------------------------------------------------
+laadTekening();
+setInterval(vraag, VERVERS);
+// De telefoon is gedraaid: de tekening opnieuw opbouwen in de andere stand.
+rechtop.addEventListener("change", () => { if (bron !== null) bouw(); });
+// Een andere breedte: de vakjes opnieuw binnen de tekening houden.
+addEventListener("resize", klem);
+</script>
+{% endblock %}

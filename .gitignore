@@ -8,6 +8,9 @@ venv/
 data/*
 !data/.gitkeep
 config/brms.toml
+# De tekening van de bootpagina staat naast brms.toml en hoort bij deze ene boot
+# (ARCHITECTURE.md §5.6 "Bootpagina")
+config/*.svg
 
 # PyCharm: gebruikersspecifiek
 .idea/workspace.xml

@@ -1,7 +1,9 @@
 """Webinterface: Flask + Chart.js, alleen bereikbaar via Tailscale/LAN (ARCHITECTURE.md §5.6).
 
 Vier pagina's met een gedeelde bovenbalk en een zijbalk als menu (sjabloon basis.html,
-stijl static/brms.css): Grafieken, Opnames, Alarmen en Systeem (§5.6, v0.52).
+stijl static/brms.css): Grafieken, Opnames, Alarmen en Systeem (§5.6, v0.52). Staat er
+een blok [boot] in brms.toml, dan is er een vijfde, de eerste pagina: Boot, een tekening
+van de boot met de actuele waarden op hun plek (§5.6 "Bootpagina", v0.76).
 
 Grafieken (§5.6 punt 4): de gebruiker voegt zelf grafieken toe en kiest per grafiek welke
 reeksen (sensor + grootheid) erin staan. Een grafiek heeft één bron:
@@ -20,8 +22,13 @@ Opbouw:
   internet heeft en je via het lokale netwerk kijkt.
 
 Adressen:
-    /                 de pagina
-    /api/live         (POST) metingen van de bus voor een lijst reeksen, zie api_live
+    /                 de bootpagina als er een blok [boot] is, anders de grafiekenpagina
+    /grafieken        de grafiekenpagina; met ?sensor=<id>&grootheid=<naam> komt die reeks
+                      in de bootgrafiek bovenaan (een klik op de bootpagina)
+    /boot/tekening.svg   de SVG-tekening van de bootpagina, zoals hij nu op schijf staat
+    /api/boot         (POST) de actuele waarde en de alarmstand van de waarden in de
+                      tekening, zie api_boot
+    /api/live        (POST) metingen van de bus voor een lijst reeksen, zie api_live
     /api/historie     ?sensor=<id>&grootheid=<naam>&van=<ts>&tot=<ts>  rijen uit de database
     /api/alarmen      ?sensor=<id>&grootheid=<naam>&van=<ts>&tot=<ts>  alarmperioden (§5.5.3)
     /opnames          de pagina met foto's en video's van de camera's (§5.6 punt 2)
@@ -61,7 +68,8 @@ import sqlite3
 import threading
 import time
 
-from flask import Flask, Response, abort, jsonify, render_template, request, send_from_directory
+from flask import (Flask, Response, abort, jsonify, render_template, request, send_file,
+                   send_from_directory)
 
 from brms import VERSION, alarms, config, go2rtc, grootheden, systeem
 from brms.config import Config
@@ -140,6 +148,12 @@ MAX_VRAGEN = 64     # reeksen in één aanvraag aan /api/live
 # Langste periode die in één keer uit de database wordt gelezen (in seconden). 31 dagen is
 # bijna 9000 rijen per grootheid; meer wordt traag in de browser.
 MAX_PERIODE = 31 * 24 * 3600
+
+# --- bootpagina (§5.6 "Bootpagina") ---
+# Is de laatste meting van een waarde ouder dan dit (seconden), dan geldt ze als stil en
+# toont de bootpagina "--" (besluit OPEN-32): 15 minuten, drie opslagintervallen, zodat
+# een enkele gemiste meting nog geen "--" geeft.
+BOOT_STIL = 15 * 60
 
 
 class _Reeks:
@@ -392,6 +406,52 @@ def lees_alarmen(pad: str, sensor_id: str, grootheid: str, van: int, tot: int) -
         con.close()
 
 
+def lees_laatste(pad: str, reeksen: list[tuple[str, str]], vanaf: int) -> dict:
+    """De laatste opgeslagen rij per reeks (sensor-ID, grootheid), niet ouder dan `vanaf`:
+    {(sensor_id, grootheid): (ts, waarde)}. Een reeks zonder zo'n rij staat er niet in.
+
+    Voor de bootpagina (§5.6 punt 7): na een herstart van de webservice is het
+    live-geheugen leeg en toont de pagina de laatste rij uit de database, tot er weer
+    metingen over de bus komen. Bestaat de database of de tabel (nog) niet: leeg.
+    """
+    if not reeksen or not pathlib.Path(pad).exists():
+        return {}
+    con = sqlite3.connect(pathlib.Path(pad).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+    try:
+        uit = {}
+        for sensor_id, grootheid in reeksen:
+            # De tabel is gesorteerd op (sensor_id, grootheid, ts): de laatste rij van een
+            # reeks is één stap in de index (§5.3.1).
+            rij = con.execute(
+                "SELECT ts, waarde FROM meting WHERE sensor_id = ? AND grootheid = ? AND ts >= ? "
+                "ORDER BY ts DESC LIMIT 1", (sensor_id, grootheid, vanaf)).fetchone()
+            if rij is not None:
+                uit[(sensor_id, grootheid)] = (rij[0], rij[1])
+        return uit
+    except sqlite3.OperationalError as e:
+        log.debug("laatste waarden niet leesbaar: %s", e)
+        return {}
+    finally:
+        con.close()
+
+
+def lees_actieve_alarmen(pad: str) -> set:
+    """De alarmen die nu actief zijn, als verzameling van (sensor-ID, grootheid). Bij een
+    regel van soort 'stil' is de grootheid None. Voor de bootpagina (§5.6 punt 4): een
+    waarde met een actief alarm is rood en vet. Bestaat de database of de tabel (nog)
+    niet: leeg."""
+    if not pathlib.Path(pad).exists():
+        return set()
+    con = sqlite3.connect(pathlib.Path(pad).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+    try:
+        return set(con.execute("SELECT sensor_id, grootheid FROM alarm WHERE einde IS NULL"))
+    except sqlite3.OperationalError as e:
+        log.debug("alarmen niet leesbaar: %s", e)
+        return set()
+    finally:
+        con.close()
+
+
 def lees_opnames(pad: str, van: int, tot: int, camera_id: str | None = None,
                  type_: str | None = None, interval: bool = True,
                  limiet: int = MAX_OPNAMES) -> tuple[list, dict]:
@@ -601,8 +661,10 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
 
     @app.context_processor
     def _voor_elke_pagina():
-        # Wat het gedeelde sjabloon (basis.html) op elke pagina nodig heeft.
-        return {"versie": VERSION}
+        # Wat het gedeelde sjabloon (basis.html) op elke pagina nodig heeft. `boot`: of
+        # er een bootpagina is; dan staat "Boot" bovenaan in het menu en wijst
+        # "Grafieken" naar /grafieken in plaats van naar / (§5.6 "Bootpagina" punt 1).
+        return {"versie": VERSION, "boot": cfg.boot is not None}
 
     def _getal(waarde, standaard=None, laagste=None, hoogste=None):
         """Zet een waarde uit een aanvraag om in een geheel getal binnen de grenzen;
@@ -617,21 +679,117 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
             getal = min(hoogste, getal)
         return getal
 
-    @app.get("/")
-    def pagina():
-        return render_template(
-            "index.html", pagina="grafieken", titel="Grafieken",
-            gestart=gestart, kop_gestart=KOP_GESTART,
-            sensoren=[{"id": s.id, "naam": s.naam, "type": s.type, "grootheden": _levert(s)}
-                      for s in cfg.sensoren.values()],
-            regels=_regels(cfg),
+    def _sensoren_en_grootheden() -> dict:
+        """Wat de grafiekenpagina en de bootpagina uit de configuratie nodig hebben."""
+        return {
+            "sensoren": [{"id": s.id, "naam": s.naam, "type": s.type, "grootheden": _levert(s)}
+                         for s in cfg.sensoren.values()],
             # Naam -> eenheid en soort, voor de assen en de vorm van de lijnen.
             # `decimalen`: met hoeveel decimalen de pagina een waarde toont (§5.3.3).
             # `zijden`: alleen bij een grootheid die met een kant getoond wordt in plaats
             # van een teken, bijv. ["sb", "bb"] bij de slagzij (§5.2.5 punt 10); anders null.
-            grootheden={g.naam: {"eenheid": g.eenheid, "soort": g.soort, "decimalen": g.decimalen,
-                                 "zijden": grootheden.ZIJDEN.get(g.naam)}
-                        for g in grootheden.GROOTHEDEN.values()})
+            "grootheden": {g.naam: {"eenheid": g.eenheid, "soort": g.soort,
+                                    "decimalen": g.decimalen,
+                                    "zijden": grootheden.ZIJDEN.get(g.naam)}
+                           for g in grootheden.GROOTHEDEN.values()}}
+
+    def _pagina_grafieken():
+        return render_template(
+            "index.html", pagina="grafieken", titel="Grafieken",
+            gestart=gestart, kop_gestart=KOP_GESTART, regels=_regels(cfg),
+            **_sensoren_en_grootheden())
+
+    @app.get("/")
+    def pagina():
+        # De eerste pagina (§5.6 "Bootpagina" punt 1): de bootpagina als er een blok
+        # [boot] in brms.toml staat, anders de grafiekenpagina, zoals vóór v0.26.0.
+        if cfg.boot is None:
+            return _pagina_grafieken()
+        return render_template(
+            "boot.html", pagina="boot", titel="Boot",
+            gestart=gestart, kop_gestart=KOP_GESTART,
+            # Alleen de bestandsnaam, voor de melding als de tekening ontbreekt.
+            tekening=pathlib.Path(cfg.boot.tekening).name,
+            # Voor de uitleg bij een "--": na hoeveel seconden een waarde als stil geldt.
+            stil_na=BOOT_STIL,
+            **_sensoren_en_grootheden())
+
+    @app.get("/grafieken")
+    def pagina_grafieken():
+        # Werkt met en zonder bootpagina; de bootpagina verwijst hierheen bij een klik op
+        # een waarde (?sensor=<id>&grootheid=<naam>, door de pagina zelf verwerkt).
+        return _pagina_grafieken()
+
+    # --- bootpagina (§5.6 "Bootpagina") -------------------------------------------------
+    @app.get("/boot/tekening.svg")
+    def boot_tekening():
+        """De tekening van de boot, zoals hij nu op schijf staat (§5.6 punt 2).
+
+        Het bestand wordt bij elke aanvraag van schijf gelezen: een nieuwe versie is te
+        zien na het verversen van de pagina, zonder herstart. max_age=0 met conditional:
+        de browser bewaart het bestand, maar vraagt elke keer of het gewijzigd is; is dat
+        niet zo, dan is het antwoord een korte "304" en gaat de tekening (enkele honderden
+        kB, de boot zit erin) niet opnieuw over de mobiele verbinding.
+        """
+        if cfg.boot is None or not pathlib.Path(cfg.boot.tekening).is_file():
+            abort(404)
+        return send_file(cfg.boot.tekening, mimetype="image/svg+xml", conditional=True,
+                         max_age=0)
+
+    @app.post("/api/boot")
+    def api_boot():
+        """De actuele waarden voor de bootpagina; één aanvraag voor alle waarden in de
+        tekening (§5.6 punt 7).
+
+        Aanvraag (JSON):  {"waarden": [{"sensor": <id>, "grootheid": <naam>}, ...]}
+        Antwoord:  {"nu": tijd van de Pi, "broker": bereikbaar,
+                    "waarden": per gevraagde waarde
+                       {"waarde": het getal, of null als de sensor stil is of ontbreekt,
+                        "ts":     tijdstip van die meting (null zonder waarde),
+                        "alarm":  true als er een alarm actief is op deze sensor en deze
+                                  grootheid, of – zonder waarde – op het stilvallen van
+                                  deze sensor}}
+
+        De waarde komt uit het live-geheugen (de laatste meting van de bus); is dat leeg
+        (kort na een herstart van de webservice), dan uit de laatste rij in de database.
+        Een meting ouder dan BOOT_STIL telt niet: de sensor geldt dan als stil.
+        Een onbekende sensor of grootheid geeft een waarde null zonder alarm.
+        """
+        inhoud = request.get_json(silent=True)
+        lijst = inhoud.get("waarden") if isinstance(inhoud, dict) else None
+        if not isinstance(lijst, list) or len(lijst) > MAX_VRAGEN:
+            return jsonify(fout=f"'waarden' moet een lijst van hooguit {MAX_VRAGEN} zijn"), 400
+        nu = int(klok())
+        grens = nu - BOOT_STIL
+        # Per gevraagde waarde de reeks (sensor-ID, grootheid), of None als hij niet bestaat.
+        reeksen = []
+        for v in lijst:
+            v = v if isinstance(v, dict) else {}
+            sensor = _sensor(cfg, v.get("sensor"))
+            grootheid = v.get("grootheid")
+            bestaat = sensor is not None and grootheid in grootheden.GROOTHEDEN
+            reeksen.append((sensor.id, grootheid) if bestaat else None)
+        # De laatste meting van de bus, voor alle reeksen in één keer.
+        _, punten, _ = live.lees([
+            {"sensor_id": r[0], "grootheid": r[1], "aantal": 1} if r else
+            {"sensor_id": "", "grootheid": ""} for r in reeksen])
+        laatste = {r: tuple(p[-1]) for r, p in zip(reeksen, punten) if r and p}
+        # Wat de bus (nog) niet heeft, uit de database.
+        ontbreekt = [r for r in dict.fromkeys(reeksen) if r and r not in laatste]
+        laatste.update(lees_laatste(cfg.opslag.database, ontbreekt, grens))
+        actief = lees_actieve_alarmen(cfg.opslag.database)
+        waarden = []
+        for r in reeksen:
+            ts, waarde = laatste.get(r, (None, None))
+            if ts is None or ts < grens:
+                # Stil of ontbrekend: geen waarde. Rood alleen als er een alarm "sensor
+                # stil" actief is voor deze sensor (grootheid None in de tabel).
+                waarden.append({"waarde": None, "ts": None,
+                                "alarm": r is not None and (r[0], None) in actief})
+            else:
+                waarden.append({"waarde": waarde, "ts": ts, "alarm": r in actief})
+        return jsonify(nu=nu, waarden=waarden,
+                       broker=bus.verbonden if bus is not None else None)
 
     @app.post("/api/live")
     def api_live():
