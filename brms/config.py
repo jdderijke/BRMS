@@ -29,13 +29,14 @@ Opbouw van het bestand (zie config/brms.example.toml):
     [[alarm]]   id, naam, sensoren, grootheid, soort, ... – één blok per alarmregel (§5.5.3)
 """
 
+import dataclasses
 import os
 import re
 import tomllib
 from dataclasses import dataclass, field
 
 from brms import afleiden, grootheden
-from brms.readers import bthome, ruuvi, shelly_uni, victron
+from brms.readers import bthome, ruuvi, shelly_relais, shelly_uni, victron
 
 # Projectmap: de map waarin de map 'brms' (dit pakket) staat. Op de Pi ~/BRMS.
 # Alle standaardpaden zijn hiervan afgeleid, zodat dezelfde code op de pc en op de Pi werkt.
@@ -49,8 +50,10 @@ BLE_TYPES = ("bthome", "ruuvi", *victron.LEVERT)   # victron-bmv, -mppt, -multip
 # Sensortypen waarvan de gegevens versleuteld zijn; die hebben een 'sleutel' nodig (§5.2.2).
 SLEUTEL_TYPES = tuple(victron.LEVERT)
 # Sensortypen die de Shelly-reader via het netwerk pollt (§5.2.4). Hun id is een vrij
-# gekozen vaste naam, bijv. "shelly-bilge".
-SHELLY_TYPES = ("shelly-uni",)
+# gekozen vaste naam, bijv. "shelly-bilge". Het relais (§5.2.6) is de tussenstekker van
+# de kachel: de reader pollt hem en schakelt hem op opdracht van de alarmlaag.
+RELAIS_TYPE = "shelly-relais"
+SHELLY_TYPES = ("shelly-uni", RELAIS_TYPE)
 SENSOR_TYPES = BLE_TYPES + SHELLY_TYPES
 
 # Poll-interval van een Shelly in seconden (§5.3.2): de standaard en de grenzen.
@@ -71,6 +74,7 @@ LEVERT: dict[str, tuple[str, ...]] = {
         "ruuvi": ruuvi.LEVERT,
         **victron.LEVERT,
         "shelly-uni": shelly_uni.LEVERT,   # rssi = hier de signaalsterkte van de wifi
+        RELAIS_TYPE: shelly_relais.LEVERT,
     }.items()
 }
 
@@ -180,6 +184,12 @@ class Sensor:
     # of "-y". Nodig voor de afgeleide grootheid 'slagzij'; zonder dit veld (None) levert
     # de sensor geen slagzij.
     stuurboord: str | None = None
+    # --- alleen bij een Shelly-relais (§5.2.6 punt 5) ---
+    # Wat moet gelden om het relais aan te zetten: (sensor-ID, grootheid, waarde), bijv.
+    # (("D3:00:00:00:00:03", "walstroom", 1.0),). Alle voorwaarden moeten gelden. Verplicht
+    # bij een relais (besluit OPEN-34): de kachel gaat nooit aan zonder dat er iets over
+    # de walstroom is vastgelegd.
+    voorwaarde: tuple[tuple[str, str, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -223,7 +233,8 @@ PRIORITEITEN = ("urgent", "hoog", "normaal")
 # Foto bij een notificatie (§5.5.3 punt 5): bij het begin van het alarm, of ook bij elke
 # herinnering.
 FOTO_BIJ = ("begin", "elke")
-# Acties die gebouwd zijn (§5.5.3 punt 6); het relais volgt nog.
+# Acties met de camera (§5.5.3 punt 6). De derde actie, "relais", staat apart in de regel
+# (veld `relais`): zij heeft geen camera nodig en werkt anders (§5.2.6).
 ACTIES = ("video", "foto")
 
 
@@ -256,6 +267,10 @@ class Alarmregel:
     foto: str | None = None      # foto bij de notificatie: "begin" of "elke"; None = geen
     acties: tuple[str, ...] = ()  # "video" en/of "foto": opname als het alarm afgaat
     camera: str | None = None    # ID van de camera voor foto en acties
+    # --- relais (§5.2.6, §5.5.3 punt 6) ---
+    # ID van de sensor van het type shelly-relais die deze regel schakelt: aan zolang het
+    # alarm actief is en er walstroom is, uit bij herstel. None = de regel schakelt niets.
+    relais: str | None = None
 
 
 # Grenzen van de camera-instellingen (§5.7), in seconden.
@@ -337,7 +352,7 @@ def levert(sensor: Sensor) -> tuple[str, ...]:
     tot de lijst 'grootheden' als die er is (§5.4.2). Gebruikt door de webpagina voor de
     keuzelijst en door de controle van de alarmregels."""
     alles = LEVERT.get(sensor.type, ())
-    if sensor.type in SHELLY_TYPES:
+    if sensor.type == "shelly-uni":
         alles = tuple(g for g in alles if g in sensor.bron or g == "rssi")
     alles = tuple(g for g in alles if afleiden.ontbreekt(g, sensor) is None)
     return tuple(g for g in alles if sensor.grootheden is None or g in sensor.grootheden)
@@ -399,9 +414,10 @@ def _correctie(fouten, plek, w) -> "Correctie | None":
     return None
 
 
-def _shelly(fouten, plek, s: dict, lijst_g) -> dict:
+def _shelly(fouten, plek, s: dict, lijst_g, relais: bool = False) -> dict:
     """Controleert de velden van een Shelly (§5.2.4) en geeft ze terug als argumenten voor
-    Sensor. lijst_g is de lijst 'grootheden' van de sensor, of None."""
+    Sensor. lijst_g is de lijst 'grootheden' van de sensor, of None. relais: het is een
+    Shelly-relais (§5.2.6 punt 1): alleen 'adres' en 'interval'."""
     # --- adres: waar de Shelly te bereiken is ---
     adres = s.get("adres")
     if not isinstance(adres, str) or not _ADRES.match(adres):
@@ -415,6 +431,14 @@ def _shelly(fouten, plek, s: dict, lijst_g) -> dict:
         fouten.append(f"{plek}: 'interval' moet een getal tussen {MIN_INTERVAL:g} en "
                       f"{MAX_INTERVAL:g} (seconden) zijn")
         interval = STANDAARD_INTERVAL
+
+    # Het relais heeft één vaste uitgang (switch:0): er valt niets te kiezen, en een
+    # contact of spanningsmeting heeft het niet.
+    if relais:
+        for k in ("bron", "drempel", "omgekeerd"):
+            if k in s:
+                fouten.append(f"{plek}: '{k}' hoort bij type shelly-uni, niet bij een relais")
+        return {"adres": adres, "interval": float(interval)}
 
     # --- bron: welke component welke grootheid levert ---
     bron_in = s.get("bron")
@@ -691,10 +715,75 @@ def _opnames(fouten, data: dict) -> OpnamenConfig:
     return OpnamenConfig(map_, bewaren, float(ruimte))
 
 
-def _camera_bij_alarm(fouten, plek, a: dict, melding: str,
-                      cameras: dict[str, Camera]) -> tuple[str | None, tuple[str, ...], str | None]:
+def _relais_bij_alarm(fouten, plek, actie: dict, sensoren: dict[str, Sensor]) -> str | None:
+    """Controleert een actie { type = "relais", relais = "<sensor>" } (§5.5.3 punt 6,
+    §5.2.6); geeft het ID van het relais, of None na een fout."""
+    _onbekend(fouten, f"{plek}: actie 'relais'", actie, ("type", "relais"))
+    naam = actie.get("relais")
+    if not isinstance(naam, str) or not naam:
+        fouten.append(f"{plek}: actie 'relais' mist het veld 'relais' (de naam of het id van "
+                      f"de sensor van het type {RELAIS_TYPE})")
+        return None
+    # Op ID of op naam, zoals bij 'sensoren' van de regel.
+    sensor = sensoren.get(naam) or next(
+        (x for x in sensoren.values() if x.naam.lower() == naam.lower()), None)
+    if sensor is None:
+        fouten.append(f"{plek}: actie 'relais': onbekende sensor '{naam}'")
+        return None
+    if sensor.type != RELAIS_TYPE:
+        fouten.append(f"{plek}: actie 'relais': sensor '{naam}' is van type {sensor.type}, "
+                      f"niet {RELAIS_TYPE}")
+        return None
+    # Wanneer het relais aan mag (bijv. alleen met walstroom), staat bij het relais zelf:
+    # het veld 'voorwaarde' van die sensor (§5.2.6 punt 5).
+    return sensor.id
+
+
+def _voorwaarde(fouten, plek, w, sensoren: dict[str, Sensor]) -> tuple[tuple[str, str, float], ...]:
+    """Controleert het veld 'voorwaarde' van een Shelly-relais (§5.2.6 punt 5) en geeft de
+    voorwaarden als (sensor-ID, grootheid, waarde).
+
+    In brms.toml staat  voorwaarde = { multiplus.walstroom = 1 }. TOML leest de punt als
+    een tabel in een tabel: {"multiplus": {"walstroom": 1}}. Zo komt het hier binnen.
+    Het veld is verplicht (besluit OPEN-34).
+    """
+    voorbeeld = "bijv. voorwaarde = { multiplus.walstroom = 1 }"
+    if w is None:
+        fouten.append(f"{plek}: 'voorwaarde' ontbreekt: wat moet gelden om het relais aan te "
+                      f"zetten, {voorbeeld}")
+        return ()
+    if not isinstance(w, dict) or not w or not all(isinstance(v, dict) and v for v in w.values()):
+        fouten.append(f"{plek}: 'voorwaarde' moet een tabel <sensor>.<grootheid> = <waarde> "
+                      f"zijn, {voorbeeld}")
+        return ()
+    uit: list[tuple[str, str, float]] = []
+    for naam, per_grootheid in w.items():
+        # Op ID of op naam, zoals bij 'sensoren' van een alarmregel.
+        sensor = (sensoren.get(naam) or sensoren.get(naam.upper())
+                  or next((x for x in sensoren.values() if x.naam.lower() == naam.lower()), None))
+        if sensor is None:
+            fouten.append(f"{plek}: voorwaarde: onbekende sensor '{naam}'")
+            continue
+        for g, waarde in per_grootheid.items():
+            if g not in levert(sensor):
+                fouten.append(f"{plek}: voorwaarde: sensor '{sensor.naam}' levert geen '{g}'  "
+                              f"(zie: brms grootheden {sensor.type})")
+            elif grootheden.soort(g) != grootheden.TOESTAND:
+                fouten.append(f"{plek}: voorwaarde: '{g}' is geen toestand (0/1); een "
+                              f"voorwaarde kan alleen op een toestand, bijv. walstroom")
+            elif not _getal(waarde) or waarde not in (0, 1):
+                fouten.append(f"{plek}: voorwaarde: de waarde van '{naam}.{g}' moet 0 of 1 zijn, "
+                              f"niet {waarde!r}")
+            else:
+                uit.append((sensor.id, g, float(waarde)))
+    return tuple(uit)
+
+
+def _camera_bij_alarm(fouten, plek, a: dict, melding: str, cameras: dict[str, Camera],
+                      sensoren: dict[str, Sensor]
+                      ) -> tuple[str | None, tuple[str, ...], str | None, str | None]:
     """Controleert 'foto', 'actie' en 'camera' van een alarmregel (§5.5.3 punt 5 en 6);
-    geeft (foto, acties, camera-ID)."""
+    geeft (foto, acties met de camera, camera-ID, relais-ID)."""
     # --- foto bij de notificatie ---
     foto = a.get("foto")
     if foto == "geen":
@@ -708,6 +797,8 @@ def _camera_bij_alarm(fouten, plek, a: dict, melding: str,
 
     # --- acties: een lijst van tabellen, elk met een type ---
     acties: list[str] = []
+    relais: str | None = None
+    relais_gezien = False
     lijst = a.get("actie", [])
     if not isinstance(lijst, list) or not all(isinstance(x, dict) for x in lijst):
         fouten.append(f"{plek}: 'actie' moet een lijst van tabellen zijn, "
@@ -716,9 +807,15 @@ def _camera_bij_alarm(fouten, plek, a: dict, melding: str,
     for actie in lijst:
         type_ = actie.get("type")
         if type_ == "relais":
-            fouten.append(f"{plek}: actie 'relais' is nog niet gebouwd (§5.2.6)")
+            # Het relais (§5.2.6): een eigen veld in de regel, los van de camera.
+            if relais_gezien:
+                fouten.append(f"{plek}: actie 'relais' staat er meer dan eens")
+            else:
+                relais = _relais_bij_alarm(fouten, plek, actie, sensoren)
+            relais_gezien = True
         elif type_ not in ACTIES:
-            fouten.append(f"{plek}: actie 'type' moet een van {', '.join(ACTIES)} zijn, niet {type_!r}")
+            fouten.append(f"{plek}: actie 'type' moet een van {', '.join(ACTIES)}, relais zijn, "
+                          f"niet {type_!r}")
         elif type_ in acties:
             fouten.append(f"{plek}: actie '{type_}' staat er meer dan eens")
         else:
@@ -726,23 +823,24 @@ def _camera_bij_alarm(fouten, plek, a: dict, melding: str,
             acties.append(type_)
 
     # --- camera: welke camera de foto of video maakt; zonder dit veld de eerste ---
+    # (Een regel met alleen de actie 'relais' heeft geen camera nodig.)
     camera = a.get("camera")
     if foto is None and not acties:
         if camera is not None:
             fouten.append(f"{plek}: 'camera' zonder 'foto' of 'actie' doet niets")
-        return None, (), None
+        return None, (), None, relais
     if camera is None:
         if not cameras:
             fouten.append(f"{plek}: 'foto' of 'actie' gevraagd, maar er is geen [[camera]] ingesteld")
-            return foto, tuple(acties), None
+            return foto, tuple(acties), None, relais
         camera = next(iter(cameras))
     elif camera not in cameras:
         fouten.append(f"{plek}: onbekende camera {camera!r}"
                       + (f"; ingesteld: {', '.join(cameras)}" if cameras else "; er is geen [[camera]]"))
-        return foto, tuple(acties), None
+        return foto, tuple(acties), None, relais
     if "video" in acties and cameras[camera].video_url is None:
         fouten.append(f"{plek}: actie 'video', maar camera {camera} heeft geen 'video_url'")
-    return foto, tuple(acties), camera
+    return foto, tuple(acties), camera, relais
 
 
 def _alarmen(fouten, data: dict, sensoren: dict[str, Sensor],
@@ -907,7 +1005,9 @@ def _alarmen(fouten, data: dict, sensoren: dict[str, Sensor],
             fouten.append(f"{plek}: 'prioriteit' moet een van {', '.join(PRIORITEITEN)} zijn")
 
         # Foto bij de notificatie en acties met de camera (§5.5.3 punt 5 en 6).
-        foto, acties, camera = _camera_bij_alarm(fouten, plek, a, melding, cameras)
+        # en met het relais (§5.2.6).
+        foto, acties, camera, relais = _camera_bij_alarm(fouten, plek, a, melding, cameras,
+                                                         sensoren)
 
         if len(fouten) == aantal_fouten:
             regels.append(Alarmregel(
@@ -916,7 +1016,7 @@ def _alarmen(fouten, data: dict, sensoren: dict[str, Sensor],
                 float(onder) if onder is not None else None,
                 float(herstel) if herstel is not None else None,
                 aantal, venster, regel_duur, herstelduur, melding, herhaling, herstelmelding,
-                prioriteit, foto, acties, camera))
+                prioriteit, foto, acties, camera, relais))
     return tuple(regels)
 
 
@@ -1001,6 +1101,8 @@ def controleer(data: dict, config_map: str | None = None) -> Config:
 
     # --- [[sensor]] (lijst van tabellen) ---
     sensoren: dict[str, Sensor] = {}
+    # Per relais: (plek, het veld 'voorwaarde' zoals het in het bestand staat).
+    voorwaarden_in: dict[str, tuple[str, object]] = {}
     lijst = data.get("sensor", [])
     if not isinstance(lijst, list):
         fouten.append("[[sensor]] moet een lijst van tabellen zijn")
@@ -1013,7 +1115,7 @@ def controleer(data: dict, config_map: str | None = None) -> Config:
             continue
         _onbekend(fouten, plek, s, ("id", "type", "naam", "grootheden", "correctie", "sleutel",
                                     "adres", "interval", "bron", "drempel", "omgekeerd",
-                                    "stuurboord"))
+                                    "stuurboord", "voorwaarde"))
         sid, stype, snaam = s.get("id"), s.get("type"), s.get("naam")
         if not isinstance(snaam, str) or not snaam:
             fouten.append(f"{plek}: 'naam' ontbreekt of is leeg")
@@ -1122,15 +1224,27 @@ def controleer(data: dict, config_map: str | None = None) -> Config:
         # --- Shelly: adres, interval, bron, drempel, omgekeerd (§5.2.4) ---
         shelly = {}
         if stype in SHELLY_TYPES:
-            shelly = _shelly(fouten, plek, s, lijst_g)
+            shelly = _shelly(fouten, plek, s, lijst_g, relais=(stype == RELAIS_TYPE))
         else:
             for k in ("adres", "interval", "bron", "drempel", "omgekeerd"):
                 if k in s:
                     fouten.append(f"{plek}: '{k}' hoort alleen bij een Shelly")
+        # --- voorwaarde: alleen bij een relais (§5.2.6 punt 5). Hij verwijst naar sensoren
+        # (ook naar het relais zelf, of naar een sensor verderop in het bestand) en wordt
+        # daarom pas na deze lus gecontroleerd. ---
+        if stype == RELAIS_TYPE:
+            voorwaarden_in[sid] = (plek, s.get("voorwaarde"))
+        elif "voorwaarde" in s:
+            fouten.append(f"{plek}: 'voorwaarde' hoort alleen bij een relais (type {RELAIS_TYPE})")
 
         sensoren[sid] = Sensor(sid, stype, snaam if isinstance(snaam, str) else "", correcties,
                                tuple(lijst_g) if lijst_g is not None else None, sleutel, **shelly,
                                stuurboord=stuurboord)
+
+    # --- de voorwaarden van de relais (§5.2.6 punt 5), nu alle sensoren bekend zijn ---
+    for sid, (plek, w) in voorwaarden_in.items():
+        sensoren[sid] = dataclasses.replace(
+            sensoren[sid], voorwaarde=_voorwaarde(fouten, plek, w, sensoren))
 
     # --- [[camera]] en [opnames] (§5.7) ---
     waarschuwingen: list[str] = []

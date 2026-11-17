@@ -41,6 +41,7 @@ port = 8080
 #               victron-mppt       (zonnelader: BlueSolar met dongle, SmartSolar)
 #               victron-multiplus  (MultiPlus met VE.Bus Smart dongle: walstroom)
 #               shelly-uni         (Shelly Plus Uni via wifi: bilge; zie onderaan)
+#               shelly-relais      (Shelly Plug M Gen3 via wifi: de kachel; zie onderaan)
 #   sleutel     alleen bij Victron: de versleutelingssleutel van het apparaat (32 tekens).
 #               In VictronConnect: apparaat openen -> tandwiel -> Productinfo ->
 #               "Instant readout via Bluetooth" aanzetten -> "Versleutelingsgegevens tonen".
@@ -143,6 +144,33 @@ naam = "motorruim"
 # interval = 2
 # bron = { bilgepomp = "voltmeter:100" }
 # drempel = 6.0
+
+# Shelly Plug M Gen3 als relais voor de kachel (ARCHITECTURE.md §5.2.6). Een tussenstekker
+# met energiemeting; de Shelly-reader pollt hem via wifi en schakelt hem op opdracht van een
+# alarmregel (zie het voorbeeld "kachel bij vorst" bij de alarmregels). Geen wachtwoord op
+# de plug. Haal het # weg en vul het adres in.
+#   id, adres, interval   als bij de Shelly Plus Uni hierboven (interval standaard 30)
+#   voorwaarde  verplicht: wat moet gelden om het relais aan te zetten, als
+#               <sensor>.<grootheid> = 0 of 1 (sensor op naam of id; alleen toestanden):
+#                 voorwaarde = { multiplus.walstroom = 1 }   de MultiPlus meldt walstroom
+#                 voorwaarde = { kachel.walstroom = 1 }      de plug zelf ziet netspanning
+#               Meer voorwaarden in de tabel moeten allemaal gelden. Geldt er één niet, of
+#               is de waarde ouder dan 10 minuten (sensor stil), dan blijft het relais uit.
+#               Let op: de plug zelf ziet geen verschil tussen walstroom en 230 V uit de
+#               omvormer; alleen de MultiPlus weet dat.
+#   Levert: relais (1 = aan), vermogen (W: stookt de kachel echt?), spanning (V), stroom (A),
+#   walstroom (afgeleid: spanning boven 180 V = 1) en rssi (signaalsterkte van de wifi).
+#   Zonder walstroom heeft de plug geen voeding en meldt hij niets: 'walstroom' wordt dan
+#   niet 0 maar blijft weg. Een melding "walstroom weg" zonder MultiPlus maak je daarom met
+#   een regel van soort "stil" op de plug (zie het voorbeeld bij de alarmregels).
+# Eén keer instellen in de plug zelf (webpagina van de Shelly -> uitgang -> "Power on
+# default" = Off): na een spanningsuitval begint hij dan uit. BRMS zet hem zelf weer aan.
+# [[sensor]]
+# id = "kachel"
+# type = "shelly-relais"
+# naam = "kachel"
+# adres = "192.168.1.121"
+# voorwaarde = { kachel.walstroom = 1 }
 
 # =============================================================================
 # Camera's (ARCHITECTURE.md §5.7)
@@ -254,6 +282,15 @@ naam = "motorruim"
 #               actie = [{ type = "video" }]   een video-opname
 #               actie = [{ type = "foto" }]    een extra foto tussen de intervalfoto's
 #   camera      het id van de camera voor foto en actie (zonder: de eerste camera)
+# Met een relais (zie de Shelly Plug bij de sensoren, §5.2.6):
+#   actie = [{ type = "relais", relais = "kachel" }]
+#               De regel werkt als thermostaat: relais aan als het alarm afgaat, uit bij
+#               herstel. De grens en de herstelgrens zijn de schakelpunten.
+#               - Alleen aan zolang de 'voorwaarde' van het relais geldt (bijv. walstroom,
+#                 zie de Shelly Plug bij de sensoren). Geldt die niet of is hij onbekend,
+#                 dan blijft het relais uit; het alarm en de melding gaan gewoon door.
+#               - "Aan" geldt 10 minuten en wordt elke 5 minuten herhaald. Valt BRMS weg of
+#                 zwijgt de sensor, dan schakelt de plug zelf uit.
 # Tijden: een getal met eenheid: "90s", "15m", "6u", "7d".
 
 [[alarm]]
@@ -300,6 +337,31 @@ herhaling = "7d"
 
 # De overige regels van §5.5.2 horen bij sensoren die hierboven uitgecommentarieerd staan
 # (Victron, Shelly, Ruuvi). Haal het # weg zodra die sensoren in de configuratie staan.
+#
+# Kachel bij vorst (§5.2.6): een thermostaat zonder melding. Onder 3 °C gaat de kachel
+# aan, vanaf 5 °C weer uit. Vraagt de Shelly Plug ("kachel") bij de sensoren, met zijn
+# 'voorwaarde'. De melding "Vorst" hierboven blijft een eigen regel.
+# [[alarm]]
+# id = "kachel"
+# naam = "Kachel bij vorst"
+# sensoren = ["kajuit"]
+# grootheid = "temperatuur"
+# soort = "grens"
+# onder = 3.0
+# herstel = 5.0
+# melding = "uit"
+# actie = [{ type = "relais", relais = "kachel" }]
+#
+# Walstroom weg, zonder MultiPlus (§5.2.6 punt 5): de plug zit op de walstroom en zwijgt
+# als die wegvalt. (Ook als de wifi of de plug zelf uitvalt.)
+# [[alarm]]
+# id = "walstroom-plug"
+# naam = "Walstroom weg (plug stil)"
+# sensoren = ["kachel"]
+# soort = "stil"
+# duur = "5m"
+# herhaling = "12u"
+# prioriteit = "hoog"
 #
 # Het alarm "bilge" hieronder is alleen nodig als er een waterdetector op de Shelly zit
 # (grootheid bilge, §5.2.4); zonder detector blijft het uitgecommentarieerd.

@@ -22,6 +22,19 @@ Poll-nu (§5.2.1 punt 6): de opdracht
 
 laat de reader direct pollen, los van het interval.
 
+Het relais (§5.2.6): een sensor van het type `shelly-relais` (de tussenstekker van de
+kachel) wordt op dezelfde manier gepolld, met de decoder readers/shelly_relais.py. De
+reader is ook de enige die het relais schakelt (§5.5.3: per apparaat één component die
+ermee praat). De opdracht
+
+    brms/opdracht/relais/zet     {"sensor_id": "kachel", "aan": true, "duur": 600}
+
+komt van de alarmlaag. "Aan" gaat altijd met een uitschakeltijd (`duur`, seconden) die de
+Shelly zelf bewaakt; de alarmlaag herhaalt de opdracht zolang het alarm actief is. Direct
+na het schakelen pollt de reader, zodat de nieuwe stand meteen op de bus staat. Lukt het
+schakelen niet, dan komt er een waarschuwing in het log: "aan" wordt vanzelf herhaald, en
+na een mislukt "uit" schakelt de Shelly zelf uit als de uitschakeltijd om is.
+
 Het ophalen gebeurt met urllib uit de standaardbibliotheek (geen extra afhankelijkheid,
 P3), in een thread: urllib blokkeert, en de asyncio-loop moet door kunnen lopen voor de
 andere Shelly's.
@@ -41,14 +54,17 @@ import urllib.request
 from brms import meting
 from brms.config import Config, Sensor
 from brms.meting import Meting
-from brms.readers import shelly_uni
+from brms.readers import shelly_relais, shelly_uni
 
 log = logging.getLogger(__name__)
 
 # Sensortypen die deze reader verwerkt (zie config.SHELLY_TYPES).
-_TYPES = ("shelly-uni",)
+RELAIS_TYPE = "shelly-relais"
+_TYPES = ("shelly-uni", RELAIS_TYPE)
 
 TOPIC_POLL_NU = "brms/opdracht/shelly/poll-nu"
+# Schakelopdracht voor een relais (§5.2.6 punt 3): {"sensor_id", "aan", "duur"}.
+TOPIC_RELAIS_ZET = "brms/opdracht/relais/zet"
 
 # Langste wachttijd op een antwoord, in seconden. Een Shelly op het lokale netwerk
 # antwoordt binnen een fractie van een seconde. Bij een kort interval geldt het interval
@@ -70,10 +86,47 @@ def haal_status(adres: str, timeout: float) -> dict:
         return json.loads(r.read(MAX_ANTWOORD))
 
 
+def schakel(adres: str, aan: bool, duur: float | None, timeout: float) -> dict:
+    """Zet een relais aan of uit (§5.2.6 punt 3) en geeft het antwoord van de Shelly als
+    dict (bijv. {"was_on": false}).
+
+    Blokkeert zoals haal_status, met dezelfde fouten. ValueError ook bij "aan" zonder
+    uitschakeltijd (zie shelly_relais.zet_url).
+    """
+    with urllib.request.urlopen(shelly_relais.zet_url(adres, aan, duur), timeout=timeout) as r:
+        return json.loads(r.read(MAX_ANTWOORD))
+
+
+def lees_zet(payload: bytes) -> tuple[str, bool, float | None]:
+    """Leest een opdracht van brms/opdracht/relais/zet: geeft (sensor_id, aan, duur).
+    ValueError bij een ongeldig bericht. "Aan" zonder geldige duur is ongeldig: het relais
+    gaat nooit aan zonder uitschakeltijd (§5.2.6 punt 4)."""
+    try:
+        d = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise ValueError(f"geen geldige JSON: {e}") from None
+    if not isinstance(d, dict) or not isinstance(d.get("sensor_id"), str) or not d["sensor_id"]:
+        raise ValueError("sensor_id ontbreekt")
+    if not isinstance(d.get("aan"), bool):
+        raise ValueError("'aan' moet true of false zijn")
+    duur = d.get("duur")
+    if not d["aan"]:
+        return d["sensor_id"], False, None
+    if isinstance(duur, bool) or not isinstance(duur, (int, float)) or duur <= 0:
+        raise ValueError("bij 'aan' hoort een 'duur' (uitschakeltijd in seconden) groter dan 0")
+    return d["sensor_id"], True, float(duur)
+
+
 def _kort(status: dict, sensor: Sensor) -> str:
     """De delen van het antwoord die BRMS gebruikt, als tekst voor de trace. Het hele
     antwoord is tientallen regels (cloud, bluetooth, systeem); dat past niet in de monitor."""
-    delen = {c: status.get(c) for c in sensor.bron.values()}
+    if sensor.type == RELAIS_TYPE:
+        # Van de uitgang alleen de vier velden die een grootheid worden.
+        deel = status.get(shelly_relais.COMPONENT)
+        delen = {shelly_relais.COMPONENT: {k: deel.get(k) for k in ("output", "apower", "voltage", "current")}
+                 if isinstance(deel, dict) else None}
+    else:
+        delen = {c: status.get(c) for c in sensor.bron.values()}
     wifi = status.get("wifi")
     delen["wifi"] = {"rssi": wifi.get("rssi")} if isinstance(wifi, dict) else None
     return json.dumps(delen, ensure_ascii=False)
@@ -98,7 +151,12 @@ def verwerk(sensor: Sensor, status: dict, ts: int, tracer=None,
     bron = "SIMULATIE " if gesimuleerd else ""
 
     try:
-        velden = shelly_uni.decodeer_velden(status, sensor.bron, sensor.drempel, sensor.omgekeerd)
+        # De decoder hangt af van het sensortype: het relais (§5.2.6) of de Shelly Plus
+        # Uni met 'bron', 'drempel' en 'omgekeerd' uit de configuratie (§5.2.4).
+        if sensor.type == RELAIS_TYPE:
+            velden = shelly_relais.decodeer_velden(status)
+        else:
+            velden = shelly_uni.decodeer_velden(status, sensor.bron, sensor.drempel, sensor.omgekeerd)
     except shelly_uni.ShellyFout as e:
         log.debug("%s (%s): %s", sensor.naam, sensor.id, e)
         if stap:
@@ -123,6 +181,17 @@ def verwerk(sensor: Sensor, status: dict, ts: int, tracer=None,
     if not waarden:
         return []
 
+    # Het relais levert ook 'walstroom', afgeleid van de spanning (§5.2.6 punt 5). Zoals
+    # elke afleiding rekent zij met de gecorrigeerde waarde (§5.2.5 punt 4), en ook als
+    # 'spanning' zelf niet in de lijst 'grootheden' staat.
+    if sensor.type == RELAIS_TYPE and "spanning" in waarden:
+        spanning = waarden["spanning"]
+        if "spanning" in sensor.correctie:
+            spanning = sensor.correctie["spanning"].toepassen(spanning)
+        waarden["walstroom"], uitleg = shelly_relais.walstroom(spanning)
+        if stap:
+            stap("afgeleid", f"{'walstroom':<17} {uitleg} = {waarden['walstroom']:g}")
+
     # Alleen de grootheden uit de lijst van de sensor (§5.4.2 punt 1). Zonder lijst gaat
     # alles door.
     regels = []
@@ -133,8 +202,9 @@ def verwerk(sensor: Sensor, status: dict, ts: int, tracer=None,
         if weg:
             regels.append(f"weggelaten (niet in 'grootheden'): {', '.join(weg)}")
 
-    # Correcties uit de configuratie (§5.4.2 punt 2). Bij een Shelly kan dat alleen op de
-    # signaalsterkte: bilge en bilgepomp zijn toestanden.
+    # Correcties uit de configuratie (§5.4.2 punt 2). Bij de bilge-Shelly kan dat alleen op
+    # de signaalsterkte (bilge en bilgepomp zijn toestanden); bij het relais ook op
+    # vermogen, spanning en stroom.
     for g, c in sensor.correctie.items():
         if g in waarden:
             nieuw = c.toepassen(waarden[g])
@@ -153,13 +223,16 @@ class Poller:
     Wordt alleen in de asyncio-loop gebruikt; een lock is niet nodig.
     """
 
-    def __init__(self, sensor: Sensor, bus, tracer, simulator, haal=haal_status):
-        """haal: de functie die het antwoord ophaalt; te vervangen in tests."""
+    def __init__(self, sensor: Sensor, bus, tracer, simulator, haal=haal_status,
+                 schakel=schakel):
+        """haal: de functie die het antwoord ophaalt; schakel: de functie die een relais
+        zet. Beide te vervangen in tests."""
         self.sensor = sensor
         self._bus = bus
         self._tracer = tracer
         self._simulator = simulator
         self._haal = haal
+        self._schakel = schakel
         # Bron voor de ruis in gesimuleerde antwoorden.
         self._toeval = random.Random()
         # Aantal mislukte polls op rij. Een onbereikbare Shelly faalt elk interval opnieuw;
@@ -211,6 +284,37 @@ class Poller:
         if stap and metingen:
             stap("gepubliceerd", "\n".join(regels))
         return metingen
+
+    async def zet(self, aan: bool, duur: float | None) -> bool:
+        """Zet het relais aan (met uitschakeltijd `duur`) of uit (§5.2.6 punt 3) en laat
+        direct daarna pollen, zodat de nieuwe stand meteen op de bus staat. Geeft terug of
+        het schakelen gelukt is.
+
+        Eén poging: "aan" wordt door de alarmlaag elke 5 minuten herhaald, en na een
+        mislukt "uit" schakelt de Shelly zelf uit zodra de uitschakeltijd om is.
+        """
+        sensor = self.sensor
+        stap = self._tracer.voor(sensor.id) if self._tracer else None
+        wat = f"aan voor {duur:g} s" if aan else "uit"
+        try:
+            # urllib blokkeert; in een thread, net als het pollen.
+            antwoord = await asyncio.to_thread(self._schakel, sensor.adres, aan, duur, TIMEOUT)
+        except (OSError, ValueError, http.client.HTTPException) as e:
+            log.warning("relais %s (%s) op %s niet geschakeld (%s): %s", sensor.naam, sensor.id,
+                        sensor.adres, wat, e)
+            if stap:
+                stap("opdracht", f"relais {wat}: MISLUKT ({e})")
+            return False
+        # De Shelly meldt de vorige stand. Alleen een verandering komt in het log: "aan"
+        # wordt elke 5 minuten herhaald en zou het log anders vullen.
+        was_aan = antwoord.get("was_on") if isinstance(antwoord, dict) else None
+        if was_aan != aan:
+            log.info("relais %s (%s) is %s gezet", sensor.naam, sensor.id, wat)
+        if stap:
+            stap("opdracht", f"relais {wat}; antwoord van de Shelly: {json.dumps(antwoord)}")
+        # Direct pollen (zoals poll-nu): de wachttijd tot de volgende poll afbreken.
+        self.wek.set()
+        return True
 
     async def draai(self, stop: asyncio.Event) -> None:
         """Pollt tot `stop` gezet wordt: elke `interval` seconden, en direct als `wek`
@@ -278,6 +382,32 @@ async def draai(config: Config, bus, stop: asyncio.Event) -> None:
 
     bus.abonneer(TOPIC_POLL_NU, 1, bij_poll_nu)
 
+    # Schakelopdrachten voor een relais (§5.2.6 punt 3), van de alarmlaag. Ook deze komen
+    # binnen in paho's netwerkthread; het schakelen zelf loopt als taak in de asyncio-loop.
+    # De taken worden vastgehouden tot ze klaar zijn (anders kan Python ze opruimen).
+    schakeltaken: set[asyncio.Task] = set()
+
+    def start_zet(poller: Poller, aan: bool, duur: float | None) -> None:
+        taak = asyncio.create_task(poller.zet(aan, duur))
+        schakeltaken.add(taak)
+        taak.add_done_callback(schakeltaken.discard)
+
+    def bij_relais_zet(topic: str, payload: bytes) -> None:
+        try:
+            sensor_id, aan, duur = lees_zet(payload)
+        except ValueError as e:
+            log.warning("ongeldige opdracht op %s genegeerd: %s", topic, e)
+            return
+        poller = pollers.get(sensor_id)
+        if poller is None or poller.sensor.type != RELAIS_TYPE:
+            # Alleen een relais uit de configuratie wordt geschakeld (§5.2.1 punt 3).
+            log.warning("opdracht op %s voor %r genegeerd: geen relais in de configuratie",
+                        topic, sensor_id)
+            return
+        loop.call_soon_threadsafe(start_zet, poller, aan, duur)
+
+    bus.abonneer(TOPIC_RELAIS_ZET, 1, bij_relais_zet)
+
     log.info("Shelly-reader gestart; %d Shelly's: %s", len(sensoren),
              ", ".join(f"{s.naam} ({s.id}) op {s.adres} elke {s.interval:g} s"
                        for s in sensoren.values()))
@@ -290,4 +420,6 @@ async def draai(config: Config, bus, stop: asyncio.Event) -> None:
     for p in pollers.values():
         p.wek.set()
     await asyncio.gather(*taken)
+    # Een schakelopdracht die nog loopt, mag afmaken (hooguit TIMEOUT seconden).
+    await asyncio.gather(*schakeltaken, return_exceptions=True)
     log.info("Shelly-reader gestopt")

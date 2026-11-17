@@ -20,6 +20,8 @@ the documentation are in Dutch.*
 - **Bewaren** – alles lokaal in SQLite, één rij per 5 minuten; bestand tegen stroomuitval.
 - **Alarmeren** – eigen alarmregels met grens, duur en herstel; meldingen via Telegram en
   e-mail, desgewenst met een foto van het moment.
+- **Schakelen** – een elektrische kachel bij vorst, via een tussenstekker (Shelly Plug M
+  Gen3); alleen met walstroom, en de stekker schakelt zelf uit als BRMS wegvalt.
 - **Kijken** – webinterface met grafieken (live en historisch), opnames van de camera's,
   live-beeld en een logboek van het systeem. Desgewenst met een bootpagina als eerste
   pagina: je eigen tekening van de boot (SVG) met op elke plek de actuele waarde.
@@ -56,7 +58,8 @@ verzoek, en live-beeld.
 - Raspberry Pi 4 met Raspberry Pi OS Lite (64-bit), opslag op USB.
 - Een router met internet aan boord (hier een Teltonika RUT241 met 4G).
 - Sensoren naar keuze: Xiaomi Monitor 3 met pvvx-firmware (zie `FLASH_XIAOMI.md`),
-  RuuviTag, Victron met Bluetooth, Shelly Plus Uni, een IP-camera met RTSP.
+  RuuviTag, Victron met Bluetooth, Shelly Plus Uni, Shelly Plug M Gen3, een IP-camera
+  met RTSP.
 
 De volledige lijst met keuzes en redenen staat in `CLAUDE.md` en `ARCHITECTURE.md`.
 

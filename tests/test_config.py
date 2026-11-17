@@ -441,8 +441,10 @@ class TestConfig(unittest.TestCase):
                 ('foto = "geen"\ncamera = "dek"', "'camera' zonder 'foto' of 'actie' doet niets"),
                 ('foto = "begin"\nmelding = "uit"', "'foto' gaat mee met de melding"),
                 ('actie = { type = "video" }', "'actie' moet een lijst van tabellen zijn"),
-                ('actie = [{ type = "relais", relais = "kachel" }]', "actie 'relais' is nog niet gebouwd"),
-                ('actie = [{ type = "sirene" }]', "actie 'type' moet een van video, foto zijn"),
+                # Het relais (§5.2.6): in deze configuratie staat geen sensor 'kachel'.
+                ('actie = [{ type = "relais", relais = "kachel" }]', "actie 'relais': onbekende sensor 'kachel'"),
+                ('actie = [{ type = "relais" }]', "actie 'relais' mist het veld 'relais'"),
+                ('actie = [{ type = "sirene" }]', "actie 'type' moet een van video, foto, relais zijn"),
                 ('actie = [{ type = "foto" }, { type = "foto" }]', "staat er meer dan eens"),
                 ('actie = [{ type = "foto", kleur = "rood" }]', "onbekende sleutel 'kleur'"),
                 ('camera = "dek"', "'camera' zonder 'foto' of 'actie' doet niets"),

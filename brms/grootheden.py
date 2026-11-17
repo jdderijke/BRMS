@@ -27,7 +27,7 @@ class Grootheid:
 
 
 # De decimalen (§5.3.3): 0 voor luchtdruk, toestanden (0/1), versnelling, rssi, beweging en
-# resterende tijd; 1 voor temperatuur, vocht, laadtoestand, zonnevermogen en verbruik;
+# resterende tijd; 1 voor temperatuur, vocht, laadtoestand, (zonne)vermogen en verbruik;
 # 2 voor spanningen en stromen. Slagzij 1: op een tiende graad af te lezen voor de
 # kalibratie (§5.2.5 punt 10).
 GROOTHEDEN: dict[str, Grootheid] = {
@@ -55,6 +55,11 @@ GROOTHEDEN: dict[str, Grootheid] = {
         Grootheid("walstroom", "0/1", TOESTAND, 0),
         Grootheid("bilge", "0/1", TOESTAND, 0),
         Grootheid("bilgepomp", "0/1", TOESTAND, 0),
+        # Het Shelly-relais (§5.2.6): de stand van het relais, en wat het geschakelde
+        # apparaat (de kachel) opneemt. Spanning en stroom van de plug gebruiken de
+        # bestaande grootheden 'spanning' en 'stroom'.
+        Grootheid("relais", "0/1", TOESTAND, 0),
+        Grootheid("vermogen", "W", DOORLOPEND, 1),
     )
 }
 

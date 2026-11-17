@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.78 – concept** · 17 november 2026
+**Versie 0.81 – concept** · 17 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -359,7 +359,7 @@ metingen aanlevert zodra ze binnenkomen, en in welke vorm.
 | Ruuvi | RuuviTag (Pro) | BLE-advertenties, eigen decoder (§5.2.3) | Gebouwd (v0.19); nog niet getest met een echte RuuviTag |
 | Victron | BMV-700, 3× MPPT, MultiPlus | BLE Instant Readout, decoder in de BLE-reader (§5.2.2) | Gebouwd (v0.27); nog niet getest met de echte apparaten |
 | Shelly | Bilge: pompspanning achter de bestaande vlotter (Shelly Plus Uni) | Lokale HTTP-API (§5.2.4) | Gebouwd (v0.29); nog niet getest met een echte Shelly |
-| Shelly-relais | Tussenstekker met energiemeting voor de kachel (Shelly Plug M Gen3) | Lokale HTTP-API: pollen en schakelen (§5.2.6) | Ontworpen (v0.31, v0.63) |
+| Shelly-relais | Tussenstekker met energiemeting voor de kachel (Shelly Plug M Gen3) | Lokale HTTP-API: pollen en schakelen (§5.2.6) | Gebouwd (code v0.27.0); nog niet beproefd op de Pi |
 | Camera | IP-camera dek | Foto per interval, video op poll-nu (§5.7) | Later |
 | GPIO | Waar nodig | — | Gepland |
 
@@ -736,7 +736,8 @@ is alleen in `brms.toml` te zien; overal waar de waarde getoond wordt staat sb o
 
 #### 5.2.6 Relais (v0.31, uitgewerkt in v0.63)
 
-*Ontworpen; nog niet gebouwd. Model (v0.63): Shelly Plug M Gen3, een tussenstekker met
+*Gebouwd in code v0.27.0 (v0.79); beproefd met tests en met het antwoord van de echte
+plug, nog niet als geheel op de Pi. Model (v0.63): Shelly Plug M Gen3, een tussenstekker met
 energiemeting (3000 W weerstandsbelasting, 13 A, −20 tot +40 °C). De API is met de plug
 zelf gecontroleerd (v0.78), zie "Bevindingen met de plug" onder de specificatie.*
 
@@ -794,6 +795,7 @@ thermostaat, omgevallen, defect).
    | `vermogen` | W | wat de kachel nu opneemt (nieuwe grootheid, §5.3.3) |
    | `spanning` | V | de netspanning op de plug |
    | `stroom` | A | de stroom door de plug |
+   | `walstroom` | 0/1 | afgeleid: `spanning` > 180 V = 1 (punt 5, v0.80) |
    | `rssi` | dBm | signaalsterkte van de wifi |
 
    De **energieteller** van de plug (totaal verbruik in Wh) wordt niet opgeslagen
@@ -826,6 +828,47 @@ thermostaat, omgevallen, defect).
      sensor in de configuratie `walstroom` levert.
    - Het alarm zelf en zijn melding hangen niet van de walstroom af: het vorstalarm blijft
      actief en wordt gemeld, ook als de kachel niet aan mag.
+   **Herzien in v0.80 en zo gebouwd in code v0.27.0 (v0.81): de voorwaarde staat bij het
+   relais zelf. Wat hierboven over de vaste bron MultiPlus staat, geldt niet meer.**
+
+   *Aanleiding.* De plug zit op de walstroom en meet de netspanning: hij is zelf ook een
+   bron voor de walstroom (OPEN-33). De MultiPlus-dongle is er nog niet, en welke bron
+   geldt, hangt af van waar de plug zit; dat weet de gebruiker, niet BRMS.
+
+   *Verworpen.* (a) `walstroom` als algemene afleiding uit `spanning` (§5.2.5): dan zou
+   ook de accumonitor, die `spanning` levert, walstroom melden. (b) Vast de MultiPlus als
+   bron, zoals in v0.63: werkt niet zonder dongle en laat de gebruiker geen keus.
+
+   - **Elke plug levert `walstroom`** (0/1), afgeleid van zijn eigen spanning:
+     `spanning` > 180 V = 1, anders 0. De Shelly-reader rekent dit uit, met de
+     gecorrigeerde spanning, alleen voor het type `shelly-relais`. Het is daarna een
+     gewone grootheid (grafiek, alarm, bootpagina). Zonder walstroom heeft de plug geen
+     voeding en meldt hij niets; dat is "onbekend", geen 0.
+   - **Veld `voorwaarde`** bij de sensor van het type `shelly-relais`: wat moet gelden om
+     het relais aan te zetten, als `<sensor>.<grootheid> = <waarde>`:
+
+     ```toml
+     [[sensor]]
+     id = "kachel"
+     type = "shelly-relais"
+     naam = "kachelplug"
+     adres = "192.168.1.121"
+     voorwaarde = { multiplus.walstroom = 1 }     # of: { kachelplug.walstroom = 1 }
+     ```
+     De sensor staat er op naam of ID (een MAC-adres tussen aanhalingstekens). Meer
+     regels in de tabel moeten allemaal gelden. Alleen toestanden (0/1).
+   - De alarmlaag zet het relais alleen aan, en herhaalt "aan" alleen, zolang elke
+     voorwaarde geldt met een waarde jonger dan de uitschakeltijd. Geldt er één niet
+     meer, dan volgt direct "uit"; een **onbekende** waarde (sensor stil) telt als niet
+     voldaan. Het alarm zelf en zijn melding hangen er niet van af.
+   - De voorwaarde geldt voor het relais, dus voor elke alarmregel die het schakelt.
+   - `check-config` weigert een voorwaarde met een onbekende sensor, een grootheid die
+     die sensor niet levert, of een waarde anders dan 0 of 1.
+   - De controle "geen sensor levert `walstroom`" vervalt. `voorwaarde` is **verplicht**
+     bij een relais (besluit OPEN-34, v0.81): de kachel kan nooit aan zonder dat er iets
+     over de walstroom is vastgelegd.
+   - Zolang de MultiPlus-dongle er niet is, meldt een regel van soort `stil` op de plug
+     dat de walstroom is weggevallen (de plug heeft dan geen voeding en zwijgt).
 6. Na een **herstart** van de alarmlaag is er geen actief alarm (§5.5.2 punt 6); het relais
    gaat binnen de uitschakeltijd uit, en weer aan zodra het alarm opnieuw afgaat.
 7. Handmatig schakelen via het web is niet voorzien.
@@ -844,6 +887,27 @@ Pi gecontroleerd, zonder belasting in de plug:
 - *Begintoestand* (punt 4). Stond op `match_input`; omgezet naar `off` met
   `Switch.SetConfig`. Dit moet bij elke nieuwe plug één keer gebeuren.
 - De plug heeft geen wachtwoord op de API, net als de bilge-Shelly.
+
+**Invulling bij het bouwen (v0.79).**
+- *Code.* De decoder en het adres van de schakelopdracht staan in
+  `brms/readers/shelly_relais.py`; het pollen en schakelen in `brms/readers/shelly.py`; de
+  thermostaat in `brms/alarms.py`. De alarmregel krijgt een veld `relais` (het ID van de
+  plug), los van de acties met de camera: een regel met alleen het relais heeft geen
+  camera nodig.
+- *Schakelen.* De reader doet één poging per opdracht. Lukt "aan" niet, dan volgt de
+  herhaling; lukt "uit" niet, dan schakelt de plug zelf uit als de uitschakeltijd om is.
+  Een mislukte poging geeft een waarschuwing in het log. "Aan" zonder uitschakeltijd wordt
+  geweigerd, ook als de opdracht van elders komt.
+- *Meer sensoren in één regel.* Het relais staat aan zolang het alarm voor minstens één
+  sensor van de regel actief is en die sensor nog waarden levert.
+- *Log.* De alarmlaag meldt "relais aan", "relais uit" met de reden, en één keer waarom een
+  relais uit blijft terwijl het alarm actief is (een voorwaarde geldt niet of is onbekend,
+  de sensor van het alarm is stil). De herhaling van "aan" komt niet in het log.
+- *Simulatie.* Het relais doet niet mee met `brms sim`: er is geen testreeks voor
+  ontworpen. De regel die het schakelt, is wel te beproeven door de temperatuursensor te
+  simuleren; de plug schakelt dan echt.
+- *Bootpagina.* De plug is een gewone sensor: `kachel.relais` of `kachel.vermogen` kan in
+  de tekening (§5.6).
 
 ### 5.3 Opslag
 
@@ -1092,7 +1156,7 @@ hun eigen stappen.
 | `resterende_tijd` | min | doorlopend | BMV-700 | geen waarde tijdens laden |
 | `zonnevermogen` | W | doorlopend | MPPT (3×) | vermogen van het paneel |
 | `laadstroom_zon` | A | doorlopend | MPPT (3×) | stroom van de MPPT naar de accu |
-| `walstroom` | 0/1 | toestand | MultiPlus | 1 = AC-ingang aanwezig |
+| `walstroom` | 0/1 | toestand | MultiPlus, Shelly-relais | 1 = AC-ingang aanwezig; bij het relais afgeleid van de netspanning op de plug (§5.2.6 punt 5) |
 | `bilge` | 0/1 | toestand | Shelly Plus Uni | 1 = waterdetector actief; nu niet aangesloten (§5.2.4) |
 | `bilgepomp` | 0/1 | toestand | Shelly Plus Uni | 1 = bilgepomp krijgt spanning (§5.2.4) |
 | `relais` | 0/1 | toestand | Shelly-relais | 1 = relais aan (§5.2.6, v0.31) |
@@ -1304,8 +1368,7 @@ buitensensor mag geen vorstalarm geven.
 *Gebouwd: stap (a) van punt 11 (v0.33): regels, notificaties, de tabel `alarm` en de
 grenzen in de grafieken; en met de camera (v0.40) de foto bij een notificatie (punt 5) en
 de acties `video` en `foto` (punt 6); en de schakelaar (punt 7) en "camera stil" (punt 2)
-in code v0.19.0. Nog niet gebouwd: de actie `relais`; `check-config` weigert die actie tot
-hij er is.*
+in code v0.19.0; en de actie `relais` (punt 6, §5.2.6) in code v0.27.0.*
 
 **Aanleiding.** Vastgelegd moest worden hoe een alarm wordt ingesteld, wat het teweegbrengt
 (een notificatie, een actie, of geen van beide), hoe opgetreden alarmen bewaard en getoond
@@ -1440,7 +1503,7 @@ betreffende reader uitvoert. Zo blijft er per apparaat één component die ermee
    |---|---|
    | `{ type = "video" }` | poll-nu voor een video als het alarm afgaat (§5.5.1, §5.7) |
    | `{ type = "foto" }` | poll-nu voor een foto als het alarm afgaat, los van de notificatie |
-   | `{ type = "relais", relais = "<sensor>" }` | relais aan als het alarm afgaat, uit bij herstel; alleen aan zolang `walstroom` = 1 (§5.2.6) |
+   | `{ type = "relais", relais = "<sensor>" }` | relais aan als het alarm afgaat, uit bij herstel; alleen aan zolang de `voorwaarde` van het relais geldt (§5.2.6 punt 5) |
 
    Een regel kan nul of meer acties hebben. Een opdracht aan de MultiPlus is niet
    voorzien: Instant Readout is alleen lezen (§5.2.2). Een actie wordt alleen uitgevoerd
@@ -2993,6 +3056,8 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 | 30 | ~~Bootpagina: wanneer een waarde rood is~~ – **besloten in v0.76**: rood en vet bij een actief alarm op die sensor en die grootheid; `--` in lichtgrijs bij een stille of ontbrekende sensor zonder alarm | §5.6 |
 | 31 | ~~Bootpagina: `heater1` en `heater2`~~ – **vervallen in v0.76**: de kachels staan niet in de eerste tekening; ze komen er in de tekening bij als het relais gebouwd is | §5.6, §5.2.6 |
 | 32 | ~~Bootpagina: na hoeveel tijd zonder meting toont de pagina `--`~~ – **besloten in v0.76**: na 15 minuten | §5.6 |
+| 33 | ~~De plug zelf als sensor voor de walstroom~~ – **besloten in v0.80**: elke plug levert `walstroom` (spanning > 180 V = 1); welke bron geldt voor het aanzetten, kiest de gebruiker met het veld `voorwaarde` bij het relais | §5.2.6 punt 5 |
+| 34 | ~~Is `voorwaarde` bij een relais verplicht?~~ – **besloten in v0.81**: verplicht | §5.2.6 punt 5 |
 
 Daarnaast uit `CLAUDE.md`: de accu is nu 4× Victron AGM 12 V 110 Ah en wordt later deze
 winter vervangen door LiFePO4 (2× 300 Ah); bij die wissel de BMV-instellingen en de grens
@@ -3023,7 +3088,10 @@ maand).
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.78** | 2026-11-17 | Claude Code, Fable 5.2 | Relais (§5.2.6): de eerste Shelly Plug M Gen3 staat op 192.168.1.121 en is vanaf de Pi gecontroleerd. De namen in de API kloppen (`output`, `apower`, `voltage`, `current`); de uitschakeltijd per opdracht werkt (`toggle_after`); de begintoestand na spanningsuitval is op `off` gezet. Nog niet gebouwd. |
+| **0.81** | 2026-11-17 | Claude Code, Fable 5.2 | OPEN-34 besloten: `voorwaarde` is verplicht bij een relais. De herziening van v0.80 gebouwd in code v0.27.0: de plug levert `walstroom` (spanning > 180 V), het veld `voorwaarde` bij het relais, en de alarmlaag schakelt alleen aan zolang elke voorwaarde geldt. Zonder MultiPlus-dongle meldt een `stil`-regel op de plug dat de walstroom weg is. Nog niet beproefd op de Pi. |
+| 0.80 | 2026-11-17 | Claude Code, Fable 5.2 | Relais (§5.2.6 punt 5) herzien, op aanwijzing van de gebruiker: elke plug levert `walstroom`, afgeleid van zijn spanning (> 180 V = 1); het veld `voorwaarde` bij het relais bepaalt wat moet gelden om het aan te zetten, bijv. `{ multiplus.walstroom = 1 }`. OPEN-33 besloten, OPEN-34 toegevoegd (is `voorwaarde` verplicht). Ontwerp; nog niet gebouwd. |
+| 0.79 | 2026-11-17 | Claude Code, Fable 5.2 | Relais gebouwd (§5.2.6, met de invulling bij het bouwen) in code v0.27.0: sensortype `shelly-relais` (pollen en schakelen door de Shelly-reader), de grootheden `relais` en `vermogen`, en de actie `relais` in de alarmlaag (uitschakeltijd 10 minuten, herhaling elke 5 minuten, alleen met walstroom, uit bij een stille sensor). `check-config` weigert de actie zonder sensor die `walstroom` levert. OPEN-33 toegevoegd: de plug zelf als sensor voor de walstroom. Nog niet beproefd op de Pi. |
+| 0.78 | 2026-11-17 | Claude Code, Fable 5.2 | Relais (§5.2.6): de eerste Shelly Plug M Gen3 staat op 192.168.1.121 en is vanaf de Pi gecontroleerd. De namen in de API kloppen (`output`, `apower`, `voltage`, `current`); de uitschakeltijd per opdracht werkt (`toggle_after`); de begintoestand na spanningsuitval is op `off` gezet. Nog niet gebouwd. |
 | 0.77 | 2026-11-17 | Claude Code, Fable 5.2 | Bootpagina gebouwd (§5.6, met de invulling bij het bouwen) in code v0.26.0: blok `[boot]` met `tekening` in de configuratie, `/` is de bootpagina als dat blok er is, grafieken op `/grafieken`, de tekening op `/boot/tekening.svg`, de waarden via `/api/boot`, de bootgrafiek op de grafiekenpagina. Een ontbrekende tekening is een waarschuwing, geen fout. Beproefd in de browser op de pc met nagemaakte metingen; nog niet op de Pi. |
 | 0.76 | 2026-11-17 | Claude Code, Fable 5.2 | Bootpagina herzien (§5.6): de plekken staan niet meer in `brms.toml` maar in één SVG-tekening van de gebruiker met de boot en op elke plek de tekst `sensor.grootheid`; `[boot]` heeft alleen het veld `tekening`; de tekening wordt zonder herstart opnieuw gelezen. De pagina zet de waarden in een eigen letter met een vakje in de themakleuren. OPEN-28 (bootgrafiek), OPEN-29 (slagzij aan één kant) en OPEN-30 (rood en vet bij alarm, `--` in lichtgrijs bij een stille sensor) besloten; OPEN-31 vervallen; OPEN-32 besloten (`--` na 15 minuten zonder meting). Nog niet gebouwd; de code is niet gewijzigd. |
 | 0.75 | 2026-11-17 | Claude Code, Fable 5.2 | Bootpagina ontworpen (§5.6): plattegrond van de boot met de actuele waarden op hun plek, als eerste pagina (`/`); Grafieken naar `/grafieken`. Plaatje met doorzichtige achtergrond naast `brms.toml`, plekken in `[boot]` / `[[boot.waarde]]`; waarde in alarm rood en dik; klik opent de grafiek. OPEN-28 t/m OPEN-31 toegevoegd. Nog niet gebouwd; de code is niet gewijzigd. |
