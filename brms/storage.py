@@ -96,6 +96,9 @@ CREATE TABLE IF NOT EXISTS alarm_uit (
 # Topics van de alarmlaag (zie brms/alarms.py).
 TOPIC_ALARM = "brms/alarm"
 TOPIC_HERSTART = "brms/alarm/herstart"
+# Hierop vraagt de opslag bij zijn start aan de alarmlaag om de stand (§5.5.3 punt 8,
+# v0.86); het antwoord komt op TOPIC_HERSTART.
+TOPIC_STAND_VRAAG = "brms/opdracht/alarm/stand"
 
 # De schakelaar van het web (§5.5.3 punt 7): {"alarm_id": ..., "aan": true|false}.
 TOPIC_SCHAKEL = "brms/opdracht/alarm/schakel"
@@ -695,9 +698,21 @@ async def draai(config: Config, bus, stop: asyncio.Event, klok_ok=klok_gesynchro
                     {regel.id for regel in config.alarmen}))
     moment = volgend_moment(time.time())
     log.info("opslag gestart; database %s", config.opslag.database)
+    # Bij de start de alarmlaag om de stand vragen (§5.5.3 punt 8, v0.86). Bij een herstart
+    # van alle services meldt de alarmlaag zijn stand vaak net voordat de opslag luistert;
+    # zonder deze vraag bleven de alarmen van vóór de herstart dan nog een minuut open
+    # staan (tot de volgende melding), en zo lang ook op de webpagina's. De vraag gaat één
+    # keer uit, zodra de broker bereikbaar is: het abonnement op de alarmen hierboven is
+    # dan al aangemeld, dus het antwoord wordt niet gemist. Draait de alarmlaag nog niet,
+    # dan meldt hij de stand zelf bij zijn start.
+    stand_gevraagd = False
     try:
         while not stop.is_set():
             nu = time.time()
+
+            if not stand_gevraagd:
+                stand_gevraagd = bus.publiceer(
+                    TOPIC_STAND_VRAAG, json.dumps({"ts": int(nu)}), qos=1)
 
             # Is de klok teruggesprongen (bijv. bij de eerste tijdsynchronisatie), dan ligt
             # het geplande moment ver in de toekomst; opnieuw plannen.

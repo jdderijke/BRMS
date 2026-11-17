@@ -399,6 +399,36 @@ class TestDienst(unittest.TestCase):
                          [(JPEG, "dek-2026-11-10-203000.jpg")])
         self.assertIn("Vorst – kajuit", verstuurd[0].titel)
 
+    def test_stand_op_verzoek_van_de_opslag(self):
+        """De alarmlaag meldt zijn stand bij de start en daarna elke minuut; vraagt de
+        opslag erom (bij zijn eigen start), dan direct (§5.5.3 punt 8, v0.86)."""
+        cfg = Config(MqttConfig(), OpslagConfig("x"), {MAC: KAJUIT}, alarmen=(_regel(onder=2.0),))
+        bus = NepBus()
+
+        def standen():
+            return [b for b in bus.berichten if b[0] == alarms.TOPIC_HERSTART]
+
+        async def proef():
+            stop = asyncio.Event()
+            taak = asyncio.create_task(alarms.draai(cfg, bus, stop))
+            await asyncio.sleep(0.3)
+            bij_start = len(standen())
+            # Zonder verzoek komt er binnen de minuut geen tweede melding.
+            await asyncio.sleep(1.5)
+            zonder = len(standen())
+            # Het verzoek van de opslag (in het echt vanuit de thread van paho).
+            bus.callbacks[alarms.TOPIC_STAND_VRAAG](alarms.TOPIC_STAND_VRAAG, b'{"ts": 1}')
+            await asyncio.sleep(1.5)
+            stop.set()
+            await asyncio.wait_for(taak, 5)
+            return bij_start, zonder, len(standen())
+
+        from unittest import mock
+        from brms import melding
+        with mock.patch.object(melding, "kanalen", lambda c: {}), \
+                self.assertLogs("brms.alarms", "INFO"):
+            self.assertEqual(asyncio.run(proef()), (1, 1, 2))
+
 
 if __name__ == "__main__":
     unittest.main()

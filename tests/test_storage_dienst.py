@@ -21,6 +21,7 @@ class NepBus:
         self.q = None          # de wachtrij met metingen
         self.alarmen = None    # de wachtrij met berichten van de alarmlaag
         self.opnames = None    # de wachtrij met berichten van de camera-reader
+        self.gepubliceerd = [] # de topics waarop de opslag zelf iets publiceert
 
     def wachtrij(self, topic, qos):
         q = asyncio.Queue()
@@ -38,7 +39,39 @@ class NepBus:
         pass  # trace-opdrachten: niet gebruikt in deze test
 
     def publiceer(self, topic, payload, qos=0):
+        self.gepubliceerd.append(topic)
         return True
+
+
+class TestStandVragen(unittest.TestCase):
+    """Bij zijn start vraagt de opslag de alarmlaag om de stand (§5.5.3 punt 8, v0.86)."""
+
+    def _proef(self, bus):
+        with tempfile.TemporaryDirectory() as map_:
+            cfg = Config(MqttConfig(), OpslagConfig(os.path.join(map_, "brms.db")), {},
+                         opnames=OpnamenConfig(os.path.join(map_, "opnames")))
+
+            async def proef():
+                stop = asyncio.Event()
+                taak = asyncio.create_task(storage.draai(cfg, bus, stop, klok_ok=lambda: True))
+                await asyncio.sleep(2.5)
+                stop.set()
+                await taak
+            asyncio.run(proef())
+        return [t for t in bus.gepubliceerd if t == storage.TOPIC_STAND_VRAAG]
+
+    def test_een_keer_bij_de_start(self):
+        # Eén vraag, ook al draait de lus daarna nog een paar ronden.
+        self.assertEqual(len(self._proef(NepBus())), 1)
+
+    def test_opnieuw_tot_de_broker_bereikbaar_is(self):
+        # De eerste twee keer is de broker er nog niet (publiceer geeft False): de opslag
+        # blijft het proberen en stopt zodra de vraag verstuurd is.
+        class TrageBus(NepBus):
+            def publiceer(self, topic, payload, qos=0):
+                self.gepubliceerd.append(topic)
+                return len(self.gepubliceerd) > 2
+        self.assertEqual(len(self._proef(TrageBus())), 3)
 
 
 async def _draai(pad, berichten, klok_ok, alarmen=(), opnames=()):

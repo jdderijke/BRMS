@@ -96,6 +96,11 @@ TOPIC_ALARM = "brms/alarm"                 # brms/alarm/<alarm_id>
 TOPIC_HERSTART = f"{TOPIC_ALARM}/herstart"
 # Om de hoeveel seconden de alarmlaag opnieuw meldt welke alarmen actief zijn (§5.5.3 punt 8).
 STAND_INTERVAL = 60.0
+# De opslag vraagt hierop bij zijn eigen start om de stand (§5.5.3 punt 8, v0.86); de
+# alarmlaag antwoordt direct op TOPIC_HERSTART. Zo zijn alarmen die in de database nog
+# open staan binnen een paar seconden na een herstart afgesloten, in welke volgorde de
+# services ook starten. De inhoud van het bericht doet er niet toe.
+TOPIC_STAND_VRAAG = "brms/opdracht/alarm/stand"
 
 # De camera-reader (zie brms/readers/camera.py): opdracht voor een opname, en het bericht
 # van een gemaakte opname.
@@ -856,6 +861,14 @@ async def draai(cfg: Config, bus, stop: asyncio.Event) -> None:
     # bij zijn (§5.5.3 punt 8). Eén melding bij de start is niet genoeg: na een herstart
     # van de Pi starten beide services tegelijk en luistert de opslag nog niet, of de klok
     # is nog niet gelijkgezet en de opslag schrijft nog niet (§4.2).
+    #
+    # Die minuut is het vangnet. Om er niet op te hoeven wachten, vraagt de opslag bij zijn
+    # eigen start om de stand (v0.86): dan wordt hij bij de eerstvolgende ronde van de lus
+    # hieronder gemeld, dus binnen een seconde. Het verzoek komt binnen in paho's
+    # netwerkthread; de vlag wordt in de asyncio-loop gezet.
+    stand_gevraagd = asyncio.Event()
+    bus.abonneer(TOPIC_STAND_VRAAG, 1,
+                 lambda topic, payload: loop.call_soon_threadsafe(stand_gevraagd.set))
     stand_gemeld = None        # monotone tijd van de laatste geslaagde melding
     laatste_tik = 0.0
     uit_gelezen = time.monotonic()
@@ -869,10 +882,15 @@ async def draai(cfg: Config, bus, stop: asyncio.Event) -> None:
                 stand = await asyncio.to_thread(lees_alarm_uit, cfg.opslag.database)
                 if stand is not None:
                     voer_uit(laag.zet_uit(stand))
-            if bus.verbonden and (stand_gemeld is None or nu - stand_gemeld >= STAND_INTERVAL):
+            # Melden bij de start, op verzoek van de opslag en anders elke minuut. De vlag
+            # van het verzoek gaat pas uit als de melding gelukt is: zonder verbinding met
+            # de broker blijft het verzoek staan tot de volgende ronde.
+            if bus.verbonden and (stand_gemeld is None or stand_gevraagd.is_set()
+                                  or nu - stand_gemeld >= STAND_INTERVAL):
                 if bus.publiceer(TOPIC_HERSTART, json.dumps(
                         {"ts": int(time.time()), "actief": laag.actief()}), qos=1):
                     stand_gemeld = nu
+                    stand_gevraagd.clear()
 
             # Ongeveer elke seconde: wat door de tijd verandert (stil, vensters, herinneringen).
             if nu - laatste_tik >= 1.0:
