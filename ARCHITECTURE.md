@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.81 – concept** · 17 november 2026
+**Versie 0.82 – concept** · 17 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -887,6 +887,9 @@ Pi gecontroleerd, zonder belasting in de plug:
 - *Begintoestand* (punt 4). Stond op `match_input`; omgezet naar `off` met
   `Switch.SetConfig`. Dit moet bij elke nieuwe plug één keer gebeuren.
 - De plug heeft geen wachtwoord op de API, net als de bilge-Shelly.
+- *Tweede plug (v0.82).* Zelfde model en firmware, vast adres **192.168.1.122**. Op
+  dezelfde manier gecontroleerd: de uitschakeltijd per opdracht werkt, en de begintoestand
+  is van `match_input` naar `off` gezet.
 
 **Invulling bij het bouwen (v0.79).**
 - *Code.* De decoder en het adres van de schakelopdracht staan in
@@ -3088,7 +3091,8 @@ maand).
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.81** | 2026-11-17 | Claude Code, Fable 5.2 | OPEN-34 besloten: `voorwaarde` is verplicht bij een relais. De herziening van v0.80 gebouwd in code v0.27.0: de plug levert `walstroom` (spanning > 180 V), het veld `voorwaarde` bij het relais, en de alarmlaag schakelt alleen aan zolang elke voorwaarde geldt. Zonder MultiPlus-dongle meldt een `stil`-regel op de plug dat de walstroom weg is. Nog niet beproefd op de Pi. |
+| **0.82** | 2026-11-17 | Claude Code, Fable 5.2 | Relais (§5.2.6): de tweede Shelly Plug M Gen3 staat op 192.168.1.122; gecontroleerd als de eerste (uitschakeltijd werkt, begintoestand op `off` gezet). |
+| 0.81 | 2026-11-17 | Claude Code, Fable 5.2 | OPEN-34 besloten: `voorwaarde` is verplicht bij een relais. De herziening van v0.80 gebouwd in code v0.27.0: de plug levert `walstroom` (spanning > 180 V), het veld `voorwaarde` bij het relais, en de alarmlaag schakelt alleen aan zolang elke voorwaarde geldt. Zonder MultiPlus-dongle meldt een `stil`-regel op de plug dat de walstroom weg is. Nog niet beproefd op de Pi. |
 | 0.80 | 2026-11-17 | Claude Code, Fable 5.2 | Relais (§5.2.6 punt 5) herzien, op aanwijzing van de gebruiker: elke plug levert `walstroom`, afgeleid van zijn spanning (> 180 V = 1); het veld `voorwaarde` bij het relais bepaalt wat moet gelden om het aan te zetten, bijv. `{ multiplus.walstroom = 1 }`. OPEN-33 besloten, OPEN-34 toegevoegd (is `voorwaarde` verplicht). Ontwerp; nog niet gebouwd. |
 | 0.79 | 2026-11-17 | Claude Code, Fable 5.2 | Relais gebouwd (§5.2.6, met de invulling bij het bouwen) in code v0.27.0: sensortype `shelly-relais` (pollen en schakelen door de Shelly-reader), de grootheden `relais` en `vermogen`, en de actie `relais` in de alarmlaag (uitschakeltijd 10 minuten, herhaling elke 5 minuten, alleen met walstroom, uit bij een stille sensor). `check-config` weigert de actie zonder sensor die `walstroom` levert. OPEN-33 toegevoegd: de plug zelf als sensor voor de walstroom. Nog niet beproefd op de Pi. |
 | 0.78 | 2026-11-17 | Claude Code, Fable 5.2 | Relais (§5.2.6): de eerste Shelly Plug M Gen3 staat op 192.168.1.121 en is vanaf de Pi gecontroleerd. De namen in de API kloppen (`output`, `apower`, `voltage`, `current`); de uitschakeltijd per opdracht werkt (`toggle_after`); de begintoestand na spanningsuitval is op `off` gezet. Nog niet gebouwd. |
