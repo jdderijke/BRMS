@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.77 – concept** · 17 november 2026
+**Versie 0.78 – concept** · 17 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -737,9 +737,8 @@ is alleen in `brms.toml` te zien; overal waar de waarde getoond wordt staat sb o
 #### 5.2.6 Relais (v0.31, uitgewerkt in v0.63)
 
 *Ontworpen; nog niet gebouwd. Model (v0.63): Shelly Plug M Gen3, een tussenstekker met
-energiemeting (3000 W weerstandsbelasting, 13 A, −20 tot +40 °C). Nog te controleren met
-de plug zelf: de namen in het antwoord van de API en de uitschakeltijd per opdracht
-(punt 3).*
+energiemeting (3000 W weerstandsbelasting, 13 A, −20 tot +40 °C). De API is met de plug
+zelf gecontroleerd (v0.78), zie "Bevindingen met de plug" onder de specificatie.*
 
 **Aanleiding.** Een alarm moet een apparaat kunnen schakelen (§5.5.3), als eerste een
 elektrische kachel van 1500 W bij vorstgevaar; later mogelijk boordverlichting.
@@ -830,6 +829,21 @@ thermostaat, omgevallen, defect).
 6. Na een **herstart** van de alarmlaag is er geen actief alarm (§5.5.2 punt 6); het relais
    gaat binnen de uitschakeltijd uit, en weer aan zodra het alarm opnieuw afgaat.
 7. Handmatig schakelen via het web is niet voorzien.
+
+**Bevindingen met de plug (v0.78).** De eerste plug (model `S3PL-30110EU`, firmware
+1.8.99) hangt aan de wifi van de RUT241 met het vaste adres **192.168.1.121**. Vanaf de
+Pi gecontroleerd, zonder belasting in de plug:
+- *Namen in de API.* `Switch.GetStatus?id=0` geeft `output` (stand van het relais),
+  `apower` (W), `voltage` (V) en `current` (A). Dat zijn de bronnen voor `relais`,
+  `vermogen`, `spanning` en `stroom` van punt 2. Het antwoord bevat ook de energieteller
+  (`aenergy`), de netfrequentie en de temperatuur in de plug; die worden niet opgeslagen.
+- *Uitschakeltijd per opdracht* (punt 3). `Switch.Set?id=0&on=true&toggle_after=<seconden>`
+  werkt: met 10 seconden ging het relais aan en na 10 seconden vanzelf weer uit (de
+  status meldt dan `source` = `timer`). De uitweg van punt 3, een vaste tijd in de Shelly,
+  is dus niet nodig.
+- *Begintoestand* (punt 4). Stond op `match_input`; omgezet naar `off` met
+  `Switch.SetConfig`. Dit moet bij elke nieuwe plug één keer gebeuren.
+- De plug heeft geen wachtwoord op de API, net als de bilge-Shelly.
 
 ### 5.3 Opslag
 
@@ -3009,7 +3023,8 @@ maand).
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.77** | 2026-11-17 | Claude Code, Fable 5.2 | Bootpagina gebouwd (§5.6, met de invulling bij het bouwen) in code v0.26.0: blok `[boot]` met `tekening` in de configuratie, `/` is de bootpagina als dat blok er is, grafieken op `/grafieken`, de tekening op `/boot/tekening.svg`, de waarden via `/api/boot`, de bootgrafiek op de grafiekenpagina. Een ontbrekende tekening is een waarschuwing, geen fout. Beproefd in de browser op de pc met nagemaakte metingen; nog niet op de Pi. |
+| **0.78** | 2026-11-17 | Claude Code, Fable 5.2 | Relais (§5.2.6): de eerste Shelly Plug M Gen3 staat op 192.168.1.121 en is vanaf de Pi gecontroleerd. De namen in de API kloppen (`output`, `apower`, `voltage`, `current`); de uitschakeltijd per opdracht werkt (`toggle_after`); de begintoestand na spanningsuitval is op `off` gezet. Nog niet gebouwd. |
+| 0.77 | 2026-11-17 | Claude Code, Fable 5.2 | Bootpagina gebouwd (§5.6, met de invulling bij het bouwen) in code v0.26.0: blok `[boot]` met `tekening` in de configuratie, `/` is de bootpagina als dat blok er is, grafieken op `/grafieken`, de tekening op `/boot/tekening.svg`, de waarden via `/api/boot`, de bootgrafiek op de grafiekenpagina. Een ontbrekende tekening is een waarschuwing, geen fout. Beproefd in de browser op de pc met nagemaakte metingen; nog niet op de Pi. |
 | 0.76 | 2026-11-17 | Claude Code, Fable 5.2 | Bootpagina herzien (§5.6): de plekken staan niet meer in `brms.toml` maar in één SVG-tekening van de gebruiker met de boot en op elke plek de tekst `sensor.grootheid`; `[boot]` heeft alleen het veld `tekening`; de tekening wordt zonder herstart opnieuw gelezen. De pagina zet de waarden in een eigen letter met een vakje in de themakleuren. OPEN-28 (bootgrafiek), OPEN-29 (slagzij aan één kant) en OPEN-30 (rood en vet bij alarm, `--` in lichtgrijs bij een stille sensor) besloten; OPEN-31 vervallen; OPEN-32 besloten (`--` na 15 minuten zonder meting). Nog niet gebouwd; de code is niet gewijzigd. |
 | 0.75 | 2026-11-17 | Claude Code, Fable 5.2 | Bootpagina ontworpen (§5.6): plattegrond van de boot met de actuele waarden op hun plek, als eerste pagina (`/`); Grafieken naar `/grafieken`. Plaatje met doorzichtige achtergrond naast `brms.toml`, plekken in `[boot]` / `[[boot.waarde]]`; waarde in alarm rood en dik; klik opent de grafiek. OPEN-28 t/m OPEN-31 toegevoegd. Nog niet gebouwd; de code is niet gewijzigd. |
 | 0.74 | 2026-11-16 | Claude Code, Fable 5.2 | Uitrol (§10.1 punt 1): de repo is openbaar, `deploy/install.sh` haalt de code op via https in plaats van via SSH met een deploy key. Bij een bestaande clone zet `install.sh` het adres van `origin` om. De deploy key staat bij de verworpen alternatieven. README.md: beschrijving, schermafdrukken, installatie en opdrachten. De code in `brms/` is niet gewijzigd. |
