@@ -778,10 +778,29 @@ class TestBoot(unittest.TestCase):
         # Geen waarde: "--". Rood alleen waar het alarm "sensor stil" actief is.
         self.assertEqual(kajuit, {"waarde": None, "ts": None, "alarm": True})
         self.assertEqual(motorruim, {"waarde": None, "ts": None, "alarm": False})
-        # Levert de sensor (weer) een waarde, dan kleurt "sensor stil" die niet rood.
-        self.live.voeg_toe(maak(self.nu - 1, MAC, "temperatuur", 8.0))
+
+    def test_alarm_stil_maakt_de_waarde_direct_stil(self):
+        # De regel "sensor stil" kan een kortere duur hebben dan het kwartier van de
+        # pagina (bijv. 5 minuten). Zodra dat alarm actief is, staat er "--" in rood, ook
+        # al is de laatste waarde nog geen kwartier oud (v0.83).
+        self.live.voeg_toe(maak(self.nu - 400, MAC, "temperatuur", 8.0))
+        self.live.voeg_toe(maak(self.nu - 400, MAC, "vocht", 60.0))
+        self.live.voeg_toe(maak(self.nu - 400, MAC2, "temperatuur", 3.0))
+        db = Database(self.pad)
+        db.alarm_begin(self.nu - 100, "stil", MAC, None, None)
+        db.sluit()
+        temperatuur, vocht, motorruim = self._waarden(
+            (MAC, "temperatuur"), (MAC, "vocht"), (MAC2, "temperatuur"))
+        # Alle waarden van de stille sensor; een andere sensor houdt zijn waarde.
+        self.assertEqual([temperatuur, vocht], [{"waarde": None, "ts": None, "alarm": True}] * 2)
+        self.assertEqual(motorruim["waarde"], 3.0)
+        # Na het einde van het alarm (de sensor levert weer) staat de waarde er weer.
+        db = Database(self.pad)
+        db.alarm_einde(self.nu - 2, "stil", MAC, "herstel")
+        db.sluit()
+        self.live.voeg_toe(maak(self.nu - 1, MAC, "temperatuur", 8.5))
         self.assertEqual(self._waarden((MAC, "temperatuur"))[0],
-                         {"waarde": 8.0, "ts": self.nu - 1, "alarm": False})
+                         {"waarde": 8.5, "ts": self.nu - 1, "alarm": False})
 
     def test_onbekend_en_ongeldig(self):
         # Een onbekende sensor of grootheid: geen waarde, geen alarm, geen fout.

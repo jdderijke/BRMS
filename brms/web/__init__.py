@@ -752,7 +752,8 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
 
         De waarde komt uit het live-geheugen (de laatste meting van de bus); is dat leeg
         (kort na een herstart van de webservice), dan uit de laatste rij in de database.
-        Een meting ouder dan BOOT_STIL telt niet: de sensor geldt dan als stil.
+        Een meting ouder dan BOOT_STIL telt niet: de sensor geldt dan als stil. Dat geldt
+        ook, en direct, zolang er een alarm "sensor stil" actief is voor de sensor.
         Een onbekende sensor of grootheid geeft een waarde null zonder alarm.
         """
         inhoud = request.get_json(silent=True)
@@ -781,11 +782,14 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
         waarden = []
         for r in reeksen:
             ts, waarde = laatste.get(r, (None, None))
-            if ts is None or ts < grens:
-                # Stil of ontbrekend: geen waarde. Rood alleen als er een alarm "sensor
-                # stil" actief is voor deze sensor (grootheid None in de tabel).
-                waarden.append({"waarde": None, "ts": None,
-                                "alarm": r is not None and (r[0], None) in actief})
+            # Een actief alarm "sensor stil" voor deze sensor (grootheid None in de tabel).
+            stil_alarm = r is not None and (r[0], None) in actief
+            if ts is None or ts < grens or stil_alarm:
+                # Stil of ontbrekend: geen waarde. Rood alleen als het alarm "sensor stil"
+                # actief is. Dat alarm maakt de sensor ook direct stil (v0.83): de regel
+                # kan een kortere duur hebben dan BOOT_STIL, en de laatste waarde van een
+                # sensor die als stil gemeld is, hoort er niet meer als actueel te staan.
+                waarden.append({"waarde": None, "ts": None, "alarm": stil_alarm})
             else:
                 waarden.append({"waarde": waarde, "ts": ts, "alarm": r in actief})
         return jsonify(nu=nu, waarden=waarden,
