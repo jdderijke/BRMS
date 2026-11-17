@@ -151,9 +151,10 @@ MAX_PERIODE = 31 * 24 * 3600
 
 # --- bootpagina (§5.6 "Bootpagina") ---
 # Is de laatste meting van een waarde ouder dan dit (seconden), dan geldt ze als stil en
-# toont de bootpagina "--" (besluit OPEN-32): 15 minuten, drie opslagintervallen, zodat
-# een enkele gemiste meting nog geen "--" geeft.
-BOOT_STIL = 15 * 60
+# toont de bootpagina "--": 5 minuten (besluit OPEN-35, v0.85; eerder 15 minuten, OPEN-32).
+# Een waarde van een sensor die is uitgevallen, staat er zo hooguit 5 minuten, ook zonder
+# alarmregel. De tijd telt vanaf de laatste meting op de bus: uit de database komt niets.
+BOOT_STIL = 5 * 60
 
 
 class _Reeks:
@@ -402,35 +403,6 @@ def lees_alarmen(pad: str, sensor_id: str, grootheid: str, van: int, tot: int) -
         # Bijv. de tabel bestaat nog niet (de opslag heeft nog niet gedraaid sinds de update).
         log.debug("alarmen niet leesbaar: %s", e)
         return []
-    finally:
-        con.close()
-
-
-def lees_laatste(pad: str, reeksen: list[tuple[str, str]], vanaf: int) -> dict:
-    """De laatste opgeslagen rij per reeks (sensor-ID, grootheid), niet ouder dan `vanaf`:
-    {(sensor_id, grootheid): (ts, waarde)}. Een reeks zonder zo'n rij staat er niet in.
-
-    Voor de bootpagina (§5.6 punt 7): na een herstart van de webservice is het
-    live-geheugen leeg en toont de pagina de laatste rij uit de database, tot er weer
-    metingen over de bus komen. Bestaat de database of de tabel (nog) niet: leeg.
-    """
-    if not reeksen or not pathlib.Path(pad).exists():
-        return {}
-    con = sqlite3.connect(pathlib.Path(pad).resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
-    try:
-        uit = {}
-        for sensor_id, grootheid in reeksen:
-            # De tabel is gesorteerd op (sensor_id, grootheid, ts): de laatste rij van een
-            # reeks is één stap in de index (§5.3.1).
-            rij = con.execute(
-                "SELECT ts, waarde FROM meting WHERE sensor_id = ? AND grootheid = ? AND ts >= ? "
-                "ORDER BY ts DESC LIMIT 1", (sensor_id, grootheid, vanaf)).fetchone()
-            if rij is not None:
-                uit[(sensor_id, grootheid)] = (rij[0], rij[1])
-        return uit
-    except sqlite3.OperationalError as e:
-        log.debug("laatste waarden niet leesbaar: %s", e)
-        return {}
     finally:
         con.close()
 
@@ -750,8 +722,9 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
                                   grootheid, of – zonder waarde – op het stilvallen van
                                   deze sensor}}
 
-        De waarde komt uit het live-geheugen (de laatste meting van de bus); is dat leeg
-        (kort na een herstart van de webservice), dan uit de laatste rij in de database.
+        De waarde komt uit het live-geheugen (de laatste meting van de bus), en alleen
+        daaruit: kort na een herstart van de webservice is er nog geen waarde (besluit
+        OPEN-35; de database wordt hier alleen voor de alarmstand gelezen).
         Een meting ouder dan BOOT_STIL telt niet: de sensor geldt dan als stil. Dat geldt
         ook, en direct, zolang er een alarm "sensor stil" actief is voor de sensor.
         Een onbekende sensor of grootheid geeft een waarde null zonder alarm.
@@ -775,9 +748,10 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
             {"sensor_id": r[0], "grootheid": r[1], "aantal": 1} if r else
             {"sensor_id": "", "grootheid": ""} for r in reeksen])
         laatste = {r: tuple(p[-1]) for r, p in zip(reeksen, punten) if r and p}
-        # Wat de bus (nog) niet heeft, uit de database.
-        ontbreekt = [r for r in dict.fromkeys(reeksen) if r and r not in laatste]
-        laatste.update(lees_laatste(cfg.opslag.database, ontbreekt, grens))
+        # Wat de bus (nog) niet heeft, blijft leeg: er komt niets uit de database (besluit
+        # OPEN-35). Na een herstart van de webservice staat er dus "--" tot de eerste
+        # meting binnen is, en nooit een waarde van vóór de herstart van een sensor die
+        # intussen is uitgevallen.
         actief = lees_actieve_alarmen(cfg.opslag.database)
         waarden = []
         for r in reeksen:

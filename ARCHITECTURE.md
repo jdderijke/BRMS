@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.83 – concept** · 17 november 2026
+**Versie 0.85 – concept** · 17 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -2078,12 +2078,12 @@ wáár een alarm is. Deze pagina wordt daarom de eerste pagina van het web.
      die sensor én die grootheid (tabel `alarm`, zonder einde).
    - **Stille of ontbrekende sensor:** in plaats van de waarde staat er `--`, in
      **lichtgrijs**. Staat er op die sensor een actief alarm "sensor stil", dan is de
-     `--` rood en vet. Een waarde geldt als stil als de laatste meting ouder is dan
-     **15 minuten** (besluit OPEN-32): drie opslagintervallen (§5.3.2), zodat een enkele
-     gemiste meting nog geen `--` geeft. Een actief alarm "sensor stil" maakt alle
-     waarden van die sensor **direct** stil (v0.83, code v0.27.1): een regel met een
-     kortere duur dan 15 minuten gaf wel de melding, maar de oude waarden bleven tot het
-     kwartier staan alsof ze actueel waren.
+     `--` rood en vet. Een waarde geldt als stil als de laatste meting op de bus ouder
+     is dan **5 minuten** (besluit OPEN-35, v0.85; eerder 15 minuten, OPEN-32). Een
+     actief alarm "sensor stil" maakt alle waarden van die sensor **direct** stil (v0.83,
+     code v0.27.1), ook als de regel een kortere duur heeft. Een Shelly met een
+     poll-interval langer dan 5 minuten zou tussen twee polls `--` tonen; de standaard is
+     30 s.
    - Overige tekst in de tekening (de titel) krijgt de tekstkleur van het thema.
 5. **Slagzij.** `motorruimte.slagzij` staat twee keer in de tekening: aan bakboord
    (boven) en aan stuurboord (onder). De waarde staat alleen aan de kant waar de boot
@@ -2105,8 +2105,11 @@ wáár een alarm is. Deze pagina wordt daarom de eerste pagina van het web.
    - Verder is het een gewone grafiek: bron, venster en reeksen zijn te wijzigen.
 7. **Verversen.** De pagina vraagt elke **5 s** met één aanvraag de waarden op die in de
    tekening staan. De webservice geeft per waarde de laatste meting met haar tijdstip
-   uit het live-geheugen (punt 4 van de grafiekenpagina); is dat na een herstart nog
-   leeg, dan de laatste rij uit de database. De alarmstand komt uit de tabel `alarm`.
+   uit het live-geheugen (punt 4 van de grafiekenpagina), en alleen daaruit (besluit
+   OPEN-35, v0.85): na een herstart van de webservice staat er `--` tot de eerste meting
+   van de bus binnen is. Eerder kwam dan de laatste rij uit de database; van een sensor
+   die niet meer zond, stond er zo minutenlang een waarde van de vorige sessie. De
+   alarmstand komt uit de tabel `alarm`.
 8. **Telefoon rechtop.** De tekening staat dan een kwartslag gedraaid, met de boeg naar
    boven; de waarden en de overige tekst blijven rechtop staan op hun plek. Liggend zou
    de boot op een smal scherm te klein zijn om de waarden naast elkaar te lezen.
@@ -3061,8 +3064,9 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 | 29 | ~~Bootpagina: de slagzij aan één of aan beide kanten~~ – **besloten in v0.76**: alleen aan de kant waar de boot naartoe helt (bakboord boven, stuurboord onder) | §5.6 |
 | 30 | ~~Bootpagina: wanneer een waarde rood is~~ – **besloten in v0.76**: rood en vet bij een actief alarm op die sensor en die grootheid; `--` in lichtgrijs bij een stille of ontbrekende sensor zonder alarm | §5.6 |
 | 31 | ~~Bootpagina: `heater1` en `heater2`~~ – **vervallen in v0.76**: de kachels staan niet in de eerste tekening; ze komen er in de tekening bij als het relais gebouwd is | §5.6, §5.2.6 |
-| 32 | ~~Bootpagina: na hoeveel tijd zonder meting toont de pagina `--`~~ – **besloten in v0.76**: na 15 minuten | §5.6 |
+| 32 | ~~Bootpagina: na hoeveel tijd zonder meting toont de pagina `--`~~ – **besloten in v0.76**: na 15 minuten; **herzien in v0.85**: na 5 minuten (OPEN-35) | §5.6 |
 | 33 | ~~De plug zelf als sensor voor de walstroom~~ – **besloten in v0.80**: elke plug levert `walstroom` (spanning > 180 V = 1); welke bron geldt voor het aanzetten, kiest de gebruiker met het veld `voorwaarde` bij het relais | §5.2.6 punt 5 |
+| 35 | ~~Bootpagina: oude waarden na een herstart~~ – **besloten in v0.85**: na een herstart geen waarden meer uit de database (`--` tot de eerste meting van de bus), en een waarde geldt als stil na 5 minuten in plaats van 15 | §5.6 punt 4 en 7 |
 | 34 | ~~Is `voorwaarde` bij een relais verplicht?~~ – **besloten in v0.81**: verplicht | §5.2.6 punt 5 |
 
 Daarnaast uit `CLAUDE.md`: de accu is nu 4× Victron AGM 12 V 110 Ah en wordt later deze
@@ -3094,7 +3098,9 @@ maand).
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.83** | 2026-11-17 | Claude Code, Fable 5.2 | Bootpagina (§5.6 punt 4), fout hersteld in code v0.27.1: bij een actief alarm "sensor stil" staat er direct `--` in rood en vet, ook als de laatste waarde nog geen 15 minuten oud is. Gevonden door de pluggen uit het stopcontact te trekken (regel `stil` met een duur van 5 minuten). |
+| **0.85** | 2026-11-17 | Claude Code, Fable 5.2 | OPEN-35 besloten en gebouwd in code v0.27.2 (§5.6 punt 4 en 7): de bootpagina leest na een herstart geen waarden meer uit de database, en een waarde geldt als stil na 5 minuten in plaats van 15. |
+| 0.84 | 2026-11-17 | Claude Code, Fable 5.2 | OPEN-35 toegevoegd: de bootpagina toont na een herstart nog minutenlang oude waarden van een sensor die niet meer zendt (laatste rij uit de database; "sensor stil" begint na een herstart opnieuw te tellen). |
+| 0.83 | 2026-11-17 | Claude Code, Fable 5.2 | Bootpagina (§5.6 punt 4), fout hersteld in code v0.27.1: bij een actief alarm "sensor stil" staat er direct `--` in rood en vet, ook als de laatste waarde nog geen 15 minuten oud is. Gevonden door de pluggen uit het stopcontact te trekken (regel `stil` met een duur van 5 minuten). |
 | 0.82 | 2026-11-17 | Claude Code, Fable 5.2 | Relais (§5.2.6): de tweede Shelly Plug M Gen3 staat op 192.168.1.122; gecontroleerd als de eerste (uitschakeltijd werkt, begintoestand op `off` gezet). |
 | 0.81 | 2026-11-17 | Claude Code, Fable 5.2 | OPEN-34 besloten: `voorwaarde` is verplicht bij een relais. De herziening van v0.80 gebouwd in code v0.27.0: de plug levert `walstroom` (spanning > 180 V), het veld `voorwaarde` bij het relais, en de alarmlaag schakelt alleen aan zolang elke voorwaarde geldt. Zonder MultiPlus-dongle meldt een `stil`-regel op de plug dat de walstroom weg is. Nog niet beproefd op de Pi. |
 | 0.80 | 2026-11-17 | Claude Code, Fable 5.2 | Relais (§5.2.6 punt 5) herzien, op aanwijzing van de gebruiker: elke plug levert `walstroom`, afgeleid van zijn spanning (> 180 V = 1); het veld `voorwaarde` bij het relais bepaalt wat moet gelden om het aan te zetten, bijv. `{ multiplus.walstroom = 1 }`. OPEN-33 besloten, OPEN-34 toegevoegd (is `voorwaarde` verplicht). Ontwerp; nog niet gebouwd. |

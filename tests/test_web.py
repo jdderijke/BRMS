@@ -646,7 +646,7 @@ class TestBoot(unittest.TestCase):
         self.tekening = os.path.join(self._map.name, "boot.svg")
         pathlib.Path(self.tekening).write_text(self.SVG, encoding="utf-8")
         self.live = web.LiveBuffer()
-        # De klok van de Pi staat op 10.000; een meting van vóór 9.100 is ouder dan 15 minuten.
+        # De klok van de Pi staat op 10.000; een meting van vóór 9.700 is ouder dan 5 minuten.
         self.nu = 10_000
         self.cfg = Config(MqttConfig(), OpslagConfig(self.pad),
                           {MAC: Sensor(MAC, "bthome", "kajuit"), MAC2: Sensor(MAC2, "ruuvi", "motorruim")},
@@ -666,7 +666,7 @@ class TestBoot(unittest.TestCase):
         tekst = self.client.get("/").get_data(as_text=True)
         # De bootpagina: de titel, de naam van de tekening en de sensoren met hun grootheden.
         for verwacht in ["<title>BRMS – Boot</title>", '"boot.svg"', "kajuit", '"temperatuur"',
-                         "const STIL_NA = 900;"]:
+                         "const STIL_NA = 300;"]:
             self.assertIn(verwacht, tekst)
         self.assertNotIn("chart.umd.min.js", tekst)
         # In het menu staat Boot op / en Grafieken op /grafieken.
@@ -732,24 +732,23 @@ class TestBoot(unittest.TestCase):
              {"waarde": -1.8, "ts": self.nu - 5, "alarm": False},
              {"waarde": -1.8, "ts": self.nu - 5, "alarm": False}])
 
-    def test_na_een_herstart_de_laatste_rij_uit_de_database(self):
-        # Het live-geheugen is leeg; de database heeft rijen (per 5 minuten).
+    def test_na_een_herstart_niets_uit_de_database(self):
+        # Het live-geheugen is leeg (de webservice is net gestart); de database heeft
+        # verse rijen. Die komen niet op de pagina (besluit OPEN-35): van een sensor die
+        # intussen is uitgevallen, zou het een waarde van de vorige sessie zijn.
         db = Database(self.pad)
-        db.schrijf([(self.nu - 600, MAC, "temperatuur", 7.0), (self.nu - 300, MAC, "temperatuur", 7.5),
-                    (self.nu - 2000, MAC2, "temperatuur", 3.0)])
+        db.schrijf([(self.nu - 60, MAC, "temperatuur", 7.5), (self.nu - 60, MAC2, "temperatuur", 3.0)])
         db.sluit()
         kajuit, motorruim = self._waarden((MAC, "temperatuur"), (MAC2, "temperatuur"))
-        self.assertEqual(kajuit, {"waarde": 7.5, "ts": self.nu - 300, "alarm": False})
-        # Ouder dan 15 minuten telt niet: de sensor geldt als stil.
-        self.assertEqual(motorruim, {"waarde": None, "ts": None, "alarm": False})
-        # Komt er een meting over de bus, dan gaat die voor.
+        self.assertEqual([kajuit, motorruim], [{"waarde": None, "ts": None, "alarm": False}] * 2)
+        # Zodra er een meting over de bus komt, staat die er.
         self.live.voeg_toe(maak(self.nu - 1, MAC, "temperatuur", 7.7))
         self.assertEqual(self._waarden((MAC, "temperatuur"))[0]["waarde"], 7.7)
 
-    def test_stil_na_een_kwartier(self):
-        self.assertEqual(web.BOOT_STIL, 900)
-        self.live.voeg_toe(maak(self.nu - 900, MAC, "temperatuur", 8.0))    # precies 15 minuten: telt nog
-        self.live.voeg_toe(maak(self.nu - 901, MAC2, "temperatuur", 3.0))   # net te oud
+    def test_stil_na_vijf_minuten(self):
+        self.assertEqual(web.BOOT_STIL, 300)
+        self.live.voeg_toe(maak(self.nu - 300, MAC, "temperatuur", 8.0))    # precies 5 minuten: telt nog
+        self.live.voeg_toe(maak(self.nu - 301, MAC2, "temperatuur", 3.0))   # net te oud
         kajuit, motorruim = self._waarden((MAC, "temperatuur"), (MAC2, "temperatuur"))
         self.assertEqual(kajuit["waarde"], 8.0)
         self.assertEqual(motorruim, {"waarde": None, "ts": None, "alarm": False})
@@ -780,12 +779,12 @@ class TestBoot(unittest.TestCase):
         self.assertEqual(motorruim, {"waarde": None, "ts": None, "alarm": False})
 
     def test_alarm_stil_maakt_de_waarde_direct_stil(self):
-        # De regel "sensor stil" kan een kortere duur hebben dan het kwartier van de
-        # pagina (bijv. 5 minuten). Zodra dat alarm actief is, staat er "--" in rood, ook
-        # al is de laatste waarde nog geen kwartier oud (v0.83).
-        self.live.voeg_toe(maak(self.nu - 400, MAC, "temperatuur", 8.0))
-        self.live.voeg_toe(maak(self.nu - 400, MAC, "vocht", 60.0))
-        self.live.voeg_toe(maak(self.nu - 400, MAC2, "temperatuur", 3.0))
+        # De regel "sensor stil" kan een kortere duur hebben dan de 5 minuten van de
+        # pagina (bijv. 2 minuten). Zodra dat alarm actief is, staat er "--" in rood, ook
+        # al is de laatste waarde nog geen 5 minuten oud (v0.83).
+        self.live.voeg_toe(maak(self.nu - 200, MAC, "temperatuur", 8.0))
+        self.live.voeg_toe(maak(self.nu - 200, MAC, "vocht", 60.0))
+        self.live.voeg_toe(maak(self.nu - 200, MAC2, "temperatuur", 3.0))
         db = Database(self.pad)
         db.alarm_begin(self.nu - 100, "stil", MAC, None, None)
         db.sluit()
