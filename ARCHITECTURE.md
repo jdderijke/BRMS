@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.74 – concept** · 16 november 2026
+**Versie 0.76 – concept** · 17 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1929,6 +1929,104 @@ De gebruiker waaronder de services draaien moet journald mogen lezen (groep `adm
 `systemd-journal`); `install.sh` en `update.sh` controleren dat (`deploy/rechten.sh`). Op
 de Pi is `jandirk` al lid van `adm`.
 
+**Bootpagina (v0.75; herzien in v0.76; ontworpen, nog niet gebouwd).**
+
+*Redenering.* De grafiekenpagina laat zien wat de gebruiker zelf heeft samengesteld; om te
+weten hoe de boot erbij ligt, moet hij eerst reeksen kiezen. Een plattegrond van de boot
+met op elke plek de actuele waarde geeft dat overzicht in één blik, en laat direct zien
+wáár een alarm is. Deze pagina wordt daarom de eerste pagina van het web.
+
+*Verworpen.*
+- *De plekken en sensoren vast in de pagina (HTML).* De tekening en de plekken horen bij
+  deze ene boot; een andere sensor of een andere plek zou dan een codewijziging zijn.
+- *De plekken in `brms.toml`, in procenten van het plaatje (ontwerp v0.75).* Een plek
+  goed krijgen vraagt veel keren proberen, en elke poging een herstart op de Pi. In een
+  tekenprogramma zet de gebruiker de naam gewoon op de plek waar de waarde moet komen.
+- *Twee bestanden: een achtergrond en een overlay met de namen.* Eén tekening met de boot
+  erin past altijd op zichzelf en is één bestand om bij te houden.
+- *Een overlay als PNG.* Tekst is daarin alleen beeld; de namen teruglezen vraagt
+  tekstherkenning.
+- *De tekening in de repo (`static/`).* De repo is openbaar (§10.1) en de boot is een
+  tekening van de werf; ze hoort bij de configuratie, niet bij de code.
+- *Voor het donkere thema het plaatje omkeren of op een wit vlak zetten.* Omkeren maakt
+  van het hout en de bekleding vreemde kleuren; een wit vlak is in het donker een lamp.
+
+*Specificatie (herzien in v0.76).*
+1. **Plaats in het web.** De pagina heet **Boot** en staat op `/`; in het menu staat ze
+   bovenaan. De grafiekenpagina verhuist naar `/grafieken`. Het web heeft dan vijf
+   pagina's. **Zonder blok `[boot]` met het veld `tekening`** in `brms.toml` is er geen
+   bootpagina: "Boot" staat dan niet in het menu en `/` toont de grafiekenpagina, zoals
+   tot nu toe. `/grafieken` werkt in beide gevallen.
+2. **Tekening.** Eén **SVG-bestand** dat de gebruiker zelf tekent (beproefd met een dia
+   uit PowerPoint, opgeslagen als SVG): de boot van bovenaf, en op elke plek waar een
+   waarde moet komen de tekst **`sensor.grootheid`**, bijvoorbeeld
+   `motorruimte.slagzij`. De waarde komt op de plek van de **eerste letter** van die
+   tekst. Al het andere in de tekening (pijlen, een titel) blijft staan zoals getekend.
+   - Het bestand staat naast `brms.toml` (buiten git). In `brms.toml` staat alleen de
+     naam: blok `[boot]` met het veld `tekening` (ten opzichte van de map van
+     `brms.toml`). `brms check-config` controleert dat het bestand bestaat.
+   - De webservice levert het bestand uit zoals het op dat moment is. Een nieuwe versie
+     van de tekening is zichtbaar na het verversen van de pagina, **zonder herstart**.
+     De browser bewaart het bestand (enkele honderden kB, de boot zit erin) en haalt het
+     alleen opnieuw op als het gewijzigd is.
+   - **Donker thema:** de boot in de tekening heeft een **doorzichtige achtergrond**
+     buiten de romp (`Privateer_transparant.png`, eenmalig gemaakt uit het plaatje van de
+     werf, met een dunne grijze lijn om de romp). De tekening staat zo op de achtergrond
+     van de pagina, licht of donker; de boot houdt zijn kleuren.
+3. **Namen herkennen.** De pagina leest de teksten uit de tekening.
+   - Een tekst van de vorm `sensor.grootheid` waarvan de sensor bestaat en die grootheid
+     levert (§5.4.2), wordt een waarde. Hoofdletters tellen niet mee (PowerPoint maakt
+     van `vooronder` vanzelf `Vooronder`).
+   - PowerPoint knipt een naam soms in stukken (`s` + `b_achter.temperatuur`). Stukken
+     die op dezelfde regel direct op elkaar aansluiten, worden eerst aan elkaar geplakt.
+   - Een naam die niet herkend wordt, blijft als tekst staan: een tikfout valt zo op.
+   - Een sensor toevoegen of verplaatsen is alleen een wijziging van de tekening.
+
+   De eerste tekening (`Privateer.svg`) bevat: de temperatuur van `vooronder`,
+   `sb_achter`, `bb_achter`, `kajuit`, `motorruimte` en `buiten`; `bilge.bilgepomp`;
+   `BMV700-accumonitor.soc`; `Multiplus.walstroom`; en twee keer `motorruimte.slagzij`
+   (punt 5). De kachels (§5.2.6) staan er niet in; ze komen er in de tekening bij als
+   het relais gebouwd is.
+4. **Waarden.** De pagina zet elke waarde in een **eigen letter** (groter dan in de
+   tekening, leesbaar op een telefoon) met daarachter een **klein vakje in de kleuren
+   van het thema**, zodat de waarde ook op het hout en in het donkere thema te lezen is.
+   - Het getal staat met het vaste aantal decimalen en de eenheid (§5.3.3); een toestand
+     in woorden (`aan`/`uit`).
+   - **Gewoon:** de tekstkleur van het thema (zwart in het lichte thema).
+   - **In alarm: rood en vet.** Een waarde staat in alarm als er een actief alarm is op
+     die sensor én die grootheid (tabel `alarm`, zonder einde).
+   - **Stille of ontbrekende sensor:** in plaats van de waarde staat er `--`, in
+     **lichtgrijs**. Staat er op die sensor een actief alarm "sensor stil", dan is de
+     `--` rood en vet. Een waarde geldt als stil als de laatste meting ouder is dan
+     **15 minuten** (besluit OPEN-32): drie opslagintervallen (§5.3.2), zodat een enkele
+     gemiste meting nog geen `--` geeft.
+   - Overige tekst in de tekening (de titel) krijgt de tekstkleur van het thema.
+5. **Slagzij.** `motorruimte.slagzij` staat twee keer in de tekening: aan bakboord
+   (boven) en aan stuurboord (onder). De waarde staat alleen aan de kant waar de boot
+   naartoe helt, met de kant erbij (`1,8° bb`, §5.2.5 punt 10); de andere plek is leeg.
+   Algemeen: staat een grootheid met een kant twee keer in de tekening, dan is de
+   bovenste plek voor bakboord en de onderste voor stuurboord. Is de waarde afgerond
+   0,0, dan staat ze op beide plekken, zonder kant.
+6. **Klikken** op een waarde opent de grafiekenpagina met die sensor en die grootheid
+   in de **bootgrafiek**:
+   - De eerste klik maakt een nieuwe grafiek **bovenaan** de grafiekenpagina, de
+     bootgrafiek (live, zoals elke nieuwe grafiek). De bestaande grafieken blijven
+     ongewijzigd en staan eronder.
+   - Een volgende klik op de bootpagina voegt die waarde als reeks toe aan dezelfde
+     bootgrafiek. Een reeks die er al in staat, komt er niet nog eens bij; bij het
+     maximum van 8 reeksen (punt 4 van de grafiekenpagina) meldt de pagina dat.
+   - De bootgrafiek blijft staan tot de gebruiker hem **sluit met het kruisje**; hij
+     wordt met de indeling in de browser onthouden. Na het sluiten maakt een volgende
+     klik een nieuwe bootgrafiek.
+   - Verder is het een gewone grafiek: bron, venster en reeksen zijn te wijzigen.
+7. **Verversen.** De pagina vraagt elke **5 s** met één aanvraag de waarden op die in de
+   tekening staan. De webservice geeft per waarde de laatste meting met haar tijdstip
+   uit het live-geheugen (punt 4 van de grafiekenpagina); is dat na een herstart nog
+   leeg, dan de laatste rij uit de database. De alarmstand komt uit de tabel `alarm`.
+8. **Telefoon rechtop.** De tekening staat dan een kwartslag gedraaid, met de boeg naar
+   boven; de waarden en de overige tekst blijven rechtop staan op hun plek. Liggend zou
+   de boot op een smal scherm te klein zijn om de waarden naast elkaar te lezen.
+
 **Aanmelding (besluit OPEN-15, v0.69).** Er komt voorlopig geen aanmelding op de
 webinterface. Van buitenaf is Tailscale de enige ingang (§9); aan boord luistert de
 webinterface op alle netwerkaansluitingen van de Pi, en is het wifi-wachtwoord van de
@@ -2852,6 +2950,11 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 | 25 | ~~Tabel van grootheden~~ – **besloten in v0.9** | §5.3.3 |
 | 26 | BLE passief scannen in plaats van actief (spaart een beetje sensorbatterij; vraagt extra BlueZ-instellingen) | §5.2.1 |
 | 27 | ~~Energieteller van het Shelly-relais (Wh) ook opslaan~~ – **besloten in v0.64**: niet opslaan; vermogen, spanning en stroom volstaan | §5.2.6 |
+| 28 | ~~Bootpagina: wat een klik op een waarde doet met de indeling van de grafiekenpagina~~ – **besloten in v0.76**: één bootgrafiek bovenaan, waar elke klik een reeks aan toevoegt, tot de gebruiker hem sluit | §5.6 |
+| 29 | ~~Bootpagina: de slagzij aan één of aan beide kanten~~ – **besloten in v0.76**: alleen aan de kant waar de boot naartoe helt (bakboord boven, stuurboord onder) | §5.6 |
+| 30 | ~~Bootpagina: wanneer een waarde rood is~~ – **besloten in v0.76**: rood en vet bij een actief alarm op die sensor en die grootheid; `--` in lichtgrijs bij een stille of ontbrekende sensor zonder alarm | §5.6 |
+| 31 | ~~Bootpagina: `heater1` en `heater2`~~ – **vervallen in v0.76**: de kachels staan niet in de eerste tekening; ze komen er in de tekening bij als het relais gebouwd is | §5.6, §5.2.6 |
+| 32 | ~~Bootpagina: na hoeveel tijd zonder meting toont de pagina `--`~~ – **besloten in v0.76**: na 15 minuten | §5.6 |
 
 Daarnaast uit `CLAUDE.md`: de accu is nu 4× Victron AGM 12 V 110 Ah en wordt later deze
 winter vervangen door LiFePO4 (2× 300 Ah); bij die wissel de BMV-instellingen en de grens
@@ -2882,7 +2985,9 @@ maand).
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.74** | 2026-11-16 | Claude Code, Fable 5.2 | Uitrol (§10.1 punt 1): de repo is openbaar, `deploy/install.sh` haalt de code op via https in plaats van via SSH met een deploy key. Bij een bestaande clone zet `install.sh` het adres van `origin` om. De deploy key staat bij de verworpen alternatieven. README.md: beschrijving, schermafdrukken, installatie en opdrachten. De code in `brms/` is niet gewijzigd. |
+| **0.76** | 2026-11-17 | Claude Code, Fable 5.2 | Bootpagina herzien (§5.6): de plekken staan niet meer in `brms.toml` maar in één SVG-tekening van de gebruiker met de boot en op elke plek de tekst `sensor.grootheid`; `[boot]` heeft alleen het veld `tekening`; de tekening wordt zonder herstart opnieuw gelezen. De pagina zet de waarden in een eigen letter met een vakje in de themakleuren. OPEN-28 (bootgrafiek), OPEN-29 (slagzij aan één kant) en OPEN-30 (rood en vet bij alarm, `--` in lichtgrijs bij een stille sensor) besloten; OPEN-31 vervallen; OPEN-32 besloten (`--` na 15 minuten zonder meting). Nog niet gebouwd; de code is niet gewijzigd. |
+| 0.75 | 2026-11-17 | Claude Code, Fable 5.2 | Bootpagina ontworpen (§5.6): plattegrond van de boot met de actuele waarden op hun plek, als eerste pagina (`/`); Grafieken naar `/grafieken`. Plaatje met doorzichtige achtergrond naast `brms.toml`, plekken in `[boot]` / `[[boot.waarde]]`; waarde in alarm rood en dik; klik opent de grafiek. OPEN-28 t/m OPEN-31 toegevoegd. Nog niet gebouwd; de code is niet gewijzigd. |
+| 0.74 | 2026-11-16 | Claude Code, Fable 5.2 | Uitrol (§10.1 punt 1): de repo is openbaar, `deploy/install.sh` haalt de code op via https in plaats van via SSH met een deploy key. Bij een bestaande clone zet `install.sh` het adres van `origin` om. De deploy key staat bij de verworpen alternatieven. README.md: beschrijving, schermafdrukken, installatie en opdrachten. De code in `brms/` is niet gewijzigd. |
 | 0.73 | 2026-11-16 | Claude Code, Fable 5.2 | Richten van de camera (§5.7 punt 19): beproefd door de gebruiker, werkt met de Foscam FI9826W. Alleen de status; ontwerp en code zijn niet gewijzigd. |
 | 0.72 | 2026-11-16 | Claude Code, Fable 5.2 | Richten van de camera gebouwd (§5.7 punt 19, met de invulling bij het bouwen) in code v0.25.0: velden `richten` en `richt_stap`, opdracht `brms/opdracht/camera/richt`, de commando's van Foscam met controle van het antwoord, `/richt/<camera_id>` in de webservice en vier richtknoppen in het live-beeld. Nog niet beproefd met de camera zelf. |
 | 0.71 | 2026-11-16 | Claude Code, Fable 5.2 | Camera (§5.7): voorlopig een binnencamera, de Foscam FI9826W; buitencamera en voeding later. Richten van de camera ontworpen (§5.7 punt 19, §5.6 punt 2, §3.3): veld `richten` (merk, nu alleen `"foscam"`) en `richt_stap` per camera; vier richtknoppen tijdens het live-beeld, alleen bij een camera met `richten`; stap per klik, het stoppen door de camera-reader; opdracht `brms/opdracht/camera/richt`; geen vaste stand. Verworpen: adressen per richting, ONVIF, ingedrukt houden, terug naar een vaste stand. Ontwerp; nog niet gebouwd. |
