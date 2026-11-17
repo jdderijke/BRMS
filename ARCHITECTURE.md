@@ -161,7 +161,7 @@ staat; daarom QoS 1.
 |---|---|---|---|
 | Meting | `brms/meting/<sensor_id>/<grootheid>` | `{"ts", "sensor_id", "grootheid", "waarde", "soort"}` | 1 voor toestand, 0 voor doorlopend en toename |
 | Opname | `brms/opname/<camera_id>` | `{"ts", "camera_id", "type", "duur", "bestand", "bytes", "aanleiding"}` | 1 |
-| Opdracht | `brms/opdracht/<doel>/<actie>`, bijv. `brms/opdracht/camera/poll-nu`, `brms/opdracht/camera/richt` (§5.7 punt 19), `brms/opdracht/shelly/poll-nu`, `brms/opdracht/opslag/verwijder`, `brms/opdracht/trace/aan`, `brms/opdracht/simulatie/aan` (§10.3), `brms/opdracht/relais/zet` (§5.2.6), `brms/opdracht/alarm/schakel` (§5.5.3) | afhankelijk van de actie, bijv. `{"type": "video", "aanleiding": "alarm:beweging"}` | 1 |
+| Opdracht | `brms/opdracht/<doel>/<actie>`, bijv. `brms/opdracht/camera/poll-nu`, `brms/opdracht/camera/richt` (§5.7 punt 19), `brms/opdracht/shelly/poll-nu`, `brms/opdracht/opslag/verwijder`, `brms/opdracht/trace/aan`, `brms/opdracht/simulatie/aan` (§10.3), `brms/opdracht/relais/zet` en `brms/opdracht/relais/stand` (§5.2.6), `brms/opdracht/alarm/schakel` en `brms/opdracht/alarm/stand` (§5.5.3) | afhankelijk van de actie, bijv. `{"type": "video", "aanleiding": "alarm:beweging"}` | 1 |
 | Alarm (v0.31) | `brms/alarm/<alarm_id>` | `{"ts", "alarm_id", "sensor_id", "grootheid", "gebeurtenis", "waarde"}`; `gebeurtenis` is `begin`, `herstel` of `uitgezet` (§5.5.3). De alarmlaag meldt bij zijn start en daarna elke minuut op `brms/alarm/herstart` welke alarmen actief zijn: `{"ts", "actief": [[alarm_id, sensor_id], ...]}` (v0.34, §5.5.3 punt 8). De opslag vraagt bij zijn eigen start om die stand op `brms/opdracht/alarm/stand` met `{"ts"}`; de alarmlaag antwoordt direct (v0.86). | 1 |
 | Simulatie (v0.55) | `brms/simulatie/<dienst>` | `{"ts", "dienst", "sensoren": [{"sensor_id", "soort", "einde"}, ...]}`: welke sensoren een reader simuleert; `soort` is `test` of `demo`, `einde` in Unix-seconden (leeg bij een demo). Bij de start van de reader, bij elke verandering en elke 30 s (§10.3 punt 10). | 1 |
 | Trace (v0.16) | `brms/trace/<sensor_id>` | `{"ts", "sensor_id", "dienst", "stap", "tekst"}`, optioneel `"deel"` – alleen zolang trace voor die sensor aanstaat (§10.2) | 0 |
@@ -878,10 +878,18 @@ thermostaat, omgevallen, defect).
    relais gaat weer aan zodra het alarm opnieuw afgaat.
    - *Aanleiding.* Zonder die opdracht bleef de kachel na een herstart aan tot de Shelly
      zelf uitschakelde, terwijl het alarm al van de pagina's was.
-   - De opdracht gaat twee keer uit: bij de start en 15 seconden later. Bij een herstart
-     van alle services luistert de Shelly-reader de eerste keer soms nog niet. Mist hij
-     beide, dan schakelt de Shelly zelf uit na de uitschakeltijd.
-   - Een relais dat intussen door een nieuw alarm is aangezet, krijgt geen "uit".
+   - **De Shelly-reader vraagt om de stand (v0.88).** Bij een herstart van alle services
+     is de alarmlaag een seconde eerder klaar dan de Shelly-reader, die de "uit" dan
+     mist. Daarom vraagt de Shelly-reader bij zijn eigen start om de stand
+     (`brms/opdracht/relais/stand` met `{"ts"}`), en geeft de alarmlaag direct voor elk
+     relais opnieuw de opdracht: "aan" met de uitschakeltijd, of "uit". Dezelfde aanpak
+     als bij de opslag (§5.5.3 punt 8). Het relais gaat zo binnen een paar seconden na
+     de herstart uit, in welke volgorde de services ook starten.
+   - Herstart alleen de Shelly-reader terwijl een alarm actief is, dan hoort hij zo ook
+     direct dat het relais aan moet blijven.
+   - Mist de reader toch alles, dan schakelt de Shelly zelf uit na de uitschakeltijd.
+   - *Afgewezen:* de "uit" bij de start na 15 seconden herhalen (zo gebouwd in v0.87).
+     Op de Pi ging de plug daarmee pas na 16 seconden uit.
 7. Handmatig schakelen via het web is niet voorzien.
 
 **Bevindingen met de plug (v0.78).** De eerste plug (model `S3PL-30110EU`, firmware
@@ -1148,8 +1156,8 @@ hun eigen stappen.
 
 | Decimalen | Grootheden |
 |---|---|
-| 0 | `luchtdruk`, toestanden 0/1 (`walstroom`, `bilge`, `bilgepomp`, `relais`), `versnelling_x/y/z`, `rssi`, `beweging`, `resterende_tijd` |
-| 1 | `temperatuur`, `vocht`, `soc`, `zonnevermogen`, `vermogen`, `verbruikt`, `slagzij` |
+| 0 | `luchtdruk`, toestanden 0/1 (`walstroom`, `bilge`, `bilgepomp`, `relais`), `versnelling_x/y/z`, `rssi`, `beweging`, `resterende_tijd`, `slagzij` (hele graden sinds v0.88, eerder 1 decimaal: de hoek is op 1 à 2 graden nauwkeurig) |
+| 1 | `temperatuur`, `vocht`, `soc`, `zonnevermogen`, `vermogen`, `verbruikt` |
 | 2 | `spanning`, `batterijspanning`, `stroom`, `laadstroom_zon` |
 
 | Grootheid | Eenheid | Soort | Bron | Opmerking |
@@ -2107,10 +2115,14 @@ wáár een alarm is. Deze pagina wordt daarom de eerste pagina van het web.
    - Overige tekst in de tekening (de titel) krijgt de tekstkleur van het thema.
 5. **Slagzij.** `motorruimte.slagzij` staat twee keer in de tekening: aan bakboord
    (boven) en aan stuurboord (onder). De waarde staat alleen aan de kant waar de boot
-   naartoe helt, met de kant erbij (`1,8° bb`, §5.2.5 punt 10); de andere plek is leeg.
+   naartoe helt, met de kant erbij (`2° bb`, §5.2.5 punt 10); de andere plek is leeg.
    Algemeen: staat een grootheid met een kant twee keer in de tekening, dan is de
-   bovenste plek voor bakboord en de onderste voor stuurboord. Is de waarde afgerond
-   0,0, dan staat ze op beide plekken, zonder kant.
+   bovenste plek voor bakboord en de onderste voor stuurboord.
+   - De slagzij staat er in **hele graden** (v0.88, §5.3.3).
+   - Is de waarde afgerond **0**, dan staat er **niets** (v0.88; eerder `0,0°` op beide
+     plekken): een boot die recht ligt, hoeft dat niet te melden. Alleen bij een actief
+     alarm op die waarde staat de `0°` er wel, in rood.
+   - Een stille sensor toont `--`, zoals elke waarde (punt 4).
 6. **Klikken** op een waarde opent de grafiekenpagina met die sensor en die grootheid
    in de **bootgrafiek**:
    - De eerste klik maakt een nieuwe grafiek **bovenaan** de grafiekenpagina, de
@@ -3119,7 +3131,8 @@ maand).
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.87** | 2026-11-17 | Claude Code, Fable 5.2 | OPEN-36 besloten en gebouwd in code v0.27.4 (§5.2.6 punt 3, 4 en 6): de alarmlaag geeft bij zijn start "uit" aan elk relais (twee keer: direct en na 15 seconden); de uitschakeltijd is 2 minuten en de herhaling 1 minuut, eerder 10 en 5. |
+| **0.88** | 2026-11-17 | Claude Code, Fable 5.2 | Gebouwd in code v0.27.5. Relais (§5.2.6 punt 6): de Shelly-reader vraagt bij zijn start de alarmlaag om de stand van de relais, zodat een relais na een herstart binnen seconden uit gaat; de herhaling na 15 seconden vervalt. Slagzij (§5.3.3, §5.6 punt 5): in hele graden, en op de bootpagina staat bij afgerond 0 niets. |
+| 0.87 | 2026-11-17 | Claude Code, Fable 5.2 | OPEN-36 besloten en gebouwd in code v0.27.4 (§5.2.6 punt 3, 4 en 6): de alarmlaag geeft bij zijn start "uit" aan elk relais (twee keer: direct en na 15 seconden); de uitschakeltijd is 2 minuten en de herhaling 1 minuut, eerder 10 en 5. |
 | 0.86 | 2026-11-17 | Claude Code, Fable 5.2 | Alarmen na een herstart (§3.3, §5.5.3 punt 8), gebouwd in code v0.27.3: de opslag vraagt bij zijn start de alarmlaag om de stand, zodat alarmen van vóór de herstart binnen seconden zijn afgesloten in plaats van na een minuut. OPEN-36 toegevoegd: het relais na een herstart van de alarmlaag en een kortere uitschakeltijd. |
 | 0.85 | 2026-11-17 | Claude Code, Fable 5.2 | OPEN-35 besloten en gebouwd in code v0.27.2 (§5.6 punt 4 en 7): de bootpagina leest na een herstart geen waarden meer uit de database, en een waarde geldt als stil na 5 minuten in plaats van 15. |
 | 0.84 | 2026-11-17 | Claude Code, Fable 5.2 | OPEN-35 toegevoegd: de bootpagina toont na een herstart nog minutenlang oude waarden van een sensor die niet meer zendt (laatste rij uit de database; "sensor stil" begint na een herstart opnieuw te tellen). |

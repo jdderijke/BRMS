@@ -41,7 +41,9 @@ GROOTHEDEN: dict[str, Grootheid] = {
         Grootheid("versnelling_z", "mG", DOORLOPEND, 0),
         # Afgeleid uit de versnellingen (§5.2.5, brms/afleiden.py). Het getal heeft een
         # teken: positief = stuurboord, negatief = bakboord. Zie `zijde` hieronder.
-        Grootheid("slagzij", "graden", DOORLOPEND, 1),
+        # Hele graden (v0.88): de hoek is op 1 à 2 graden nauwkeurig (§5.2.5), een decimaal
+        # suggereert meer dan de sensor kan.
+        Grootheid("slagzij", "graden", DOORLOPEND, 0),
         Grootheid("beweging", "aantal", TOENAME, 0),
         Grootheid("batterijspanning", "V", DOORLOPEND, 2),
         Grootheid("rssi", "dBm", DOORLOPEND, 0),

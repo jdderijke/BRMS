@@ -128,11 +128,12 @@ function meetwaarde(grootheid, w) {
   return Number(w).toLocaleString("nl-NL", {minimumFractionDigits: d, maximumFractionDigits: d,
                                             useGrouping: false});
 }
-// Is de waarde, afgerond op de decimalen van de grootheid, nul? (-0,04° wordt 0,0°.)
+// Is de waarde, afgerond op de decimalen van de grootheid, nul? (-0,4° wordt 0°.)
 const afgerondNul = (grootheid, w) => Math.abs(w) < 0.5 * Math.pow(10, -GROOTHEDEN[grootheid].decimalen);
 // De waarde zoals hij in het vakje staat (§5.6 punt 4):
 //   toestand (0/1)            "aan" of "uit"
-//   grootheid met een kant    "1,8° bb" (de slagzij, §5.2.5 punt 10); afgerond nul: "0,0°"
+//   grootheid met een kant    "2° bb" (de slagzij, §5.2.5 punt 10); afgerond nul wordt
+//                             niet getoond (zie toon), de tekst "0°" is er voor de volledigheid
 //   anders                    het getal met de eenheid: "19,0 °C"
 function waardeTekst(grootheid, w) {
   const g = GROOTHEDEN[grootheid];
@@ -357,10 +358,13 @@ function toon() {
     vak.classList.remove("stil");
     vak.textContent = waardeTekst(p.grootheid, w.waarde);
     vak.title = wat + ", " + klok(w.ts) + (w.alarm ? " (alarm)" : "");
-    // De slagzij op twee plekken: alleen aan de kant waar de boot naartoe helt. Afgerond
-    // nul staat op beide plekken, zonder kant.
-    if (p.kant && !afgerondNul(p.grootheid, w.waarde))
-      vak.hidden = (w.waarde > 0) !== (p.kant === "positief");
+    // De slagzij (§5.6 punt 5). Afgerond nul wordt niet getoond (v0.88): een boot die
+    // recht ligt, hoeft geen "0°" te melden. Behalve bij een alarm: dat moet te zien zijn.
+    // Staat de slagzij op twee plekken, dan alleen aan de kant waar de boot naartoe helt.
+    if (GROOTHEDEN[p.grootheid].zijden) {
+      if (afgerondNul(p.grootheid, w.waarde)) vak.hidden = !w.alarm;
+      else if (p.kant) vak.hidden = (w.waarde > 0) !== (p.kant === "positief");
+    }
   });
   klem();
 }

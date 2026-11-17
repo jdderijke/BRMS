@@ -171,6 +171,51 @@ class TestReader(unittest.TestCase):
         self.assertEqual(asyncio.run(proef()), (True, True))
         self.assertEqual(opdrachten, [("192.168.1.121", True, 600.0)])
 
+    def test_de_reader_vraagt_bij_de_start_om_de_stand(self):
+        """Bij zijn start vraagt de reader de alarmlaag om de stand van de relais (§5.2.6
+        punt 6): één keer, en pas als de broker bereikbaar is."""
+        from unittest import mock
+
+        class Bus(NepBus):
+            def __init__(self, weigeren):
+                super().__init__()
+                self.weigeren = weigeren     # zo vaak is de broker nog niet bereikbaar
+
+            def abonneer(self, topic, qos, callback):
+                pass
+
+            def publiceer(self, topic, payload, qos=0):
+                if topic == shelly.TOPIC_RELAIS_STAND_VRAAG and self.weigeren:
+                    self.weigeren -= 1
+                    return False
+                return super().publiceer(topic, payload, qos)
+
+        async def niets(self, stop):
+            await stop.wait()                # geen echte Shelly in deze test
+
+        def proef(sensoren, weigeren=0):
+            cfg = Config(MqttConfig(), OpslagConfig("x"), sensoren)
+            bus = Bus(weigeren)
+
+            async def draai():
+                stop = asyncio.Event()
+                taak = asyncio.create_task(shelly.draai(cfg, bus, stop))
+                await asyncio.sleep(1.5)
+                stop.set()
+                await asyncio.wait_for(taak, 5)
+
+            with mock.patch.object(shelly.Poller, "draai", niets), \
+                    self.assertLogs("brms.readers.shelly", "INFO"):
+                asyncio.run(draai())
+            return [b for b in bus.berichten if b[0] == shelly.TOPIC_RELAIS_STAND_VRAAG]
+
+        self.assertEqual(len(proef({"kachel": KACHEL})), 1)
+        # De eerste keer is de broker er nog niet: een seconde later opnieuw.
+        self.assertEqual(len(proef({"kachel": KACHEL}, weigeren=1)), 1)
+        # Zonder relais valt er niets te vragen.
+        bilge = Sensor("bilge", "shelly-uni", "bilge", adres="192.168.1.120", interval=2.0)
+        self.assertEqual(proef({"bilge": bilge}), [])
+
     def test_mislukt_schakelen_is_geen_fout(self):
         def onbereikbaar(adres, aan, duur, timeout):
             raise OSError("timed out")
@@ -357,23 +402,34 @@ class TestAlarmlaag(unittest.TestCase):
     def test_uit_bij_de_start(self):
         # Na een herstart is er geen actief alarm: elk relais krijgt "uit" (§5.2.6 punt 6).
         laag = self._laag()
-        self.assertEqual(laag.relais_uit_bij_start(), [UIT])
-        # Heeft een nieuw alarm het relais intussen aangezet, dan blijft het aan.
+        self.assertEqual(laag.relais_stand(), [UIT])
+        # Heeft een alarm het relais aangezet, dan is de stand "aan" (voor de Shelly-reader
+        # die er bij zijn start om vraagt), en begint de herhaling opnieuw te tellen.
         self.assertEqual(self._meet(laag, 1.5), [AAN])
-        self.assertEqual(laag.relais_uit_bij_start(), [])
+        self.klok.t += RELAIS_HERHAAL - 1
+        self.assertEqual(laag.relais_stand(), [AAN])
+        self.klok.t += 1
+        self._wal(laag, 1.0)
+        self.assertEqual(self._meet(laag, 1.4), [])          # nog niet aan de beurt
+        self.klok.t += RELAIS_HERHAAL - 1
+        self.assertEqual(self._tik(laag), [AAN])
 
-    def test_de_service_zet_de_relais_uit_bij_de_start(self):
-        """De service-lus geeft "uit" bij de start en nog een keer kort daarna, voor als
-        de Shelly-reader de eerste keer nog niet luisterde."""
+    def test_de_service_geeft_de_stand_bij_de_start_en_op_verzoek(self):
+        """De service-lus geeft "uit" bij de start, en de stand opnieuw als de
+        Shelly-reader erom vraagt (bij zijn eigen start, §5.2.6 punt 6)."""
         from unittest import mock
         from brms import alarms, melding
 
         class Bus(NepBus):
+            def __init__(self):
+                super().__init__()
+                self.callbacks = {}
+
             def wachtrij(self, topic, qos):
                 return asyncio.Queue()
 
             def abonneer(self, topic, qos, callback):
-                pass
+                self.callbacks[topic] = callback
 
         sensoren = {MAC: Sensor(MAC, "bthome", "kajuit"),
                     MULTI: Sensor(MULTI, "victron-multiplus", "multiplus"), "kachel": KACHEL}
@@ -385,13 +441,15 @@ class TestAlarmlaag(unittest.TestCase):
             taak = asyncio.create_task(alarms.draai(cfg, bus, stop))
             await asyncio.sleep(0.3)
             eerst = [b for b in bus.berichten if b[0] == alarms.TOPIC_RELAIS_ZET]
-            await asyncio.sleep(2.0)
+            # Het verzoek van de Shelly-reader (in het echt vanuit de thread van paho).
+            vraag = alarms.TOPIC_RELAIS_STAND_VRAAG
+            bus.callbacks[vraag](vraag, b'{"ts": 1}')
+            await asyncio.sleep(1.5)
             stop.set()
             await asyncio.wait_for(taak, 5)
             return eerst
 
         with mock.patch.object(melding, "kanalen", lambda c: {}), \
-                mock.patch.object(alarms, "RELAIS_UIT_BIJ_START", (0.0, 1.0)), \
                 self.assertLogs("brms.alarms", "INFO") as log:
             eerst = asyncio.run(proef())
         uit = ("brms/opdracht/relais/zet", {"sensor_id": "kachel", "aan": False})

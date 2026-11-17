@@ -65,6 +65,9 @@ _TYPES = ("shelly-uni", RELAIS_TYPE)
 TOPIC_POLL_NU = "brms/opdracht/shelly/poll-nu"
 # Schakelopdracht voor een relais (§5.2.6 punt 3): {"sensor_id", "aan", "duur"}.
 TOPIC_RELAIS_ZET = "brms/opdracht/relais/zet"
+# Hierop vraagt de reader bij zijn start aan de alarmlaag om de stand van de relais
+# (§5.2.6 punt 6, v0.88); het antwoord komt als gewone opdrachten op TOPIC_RELAIS_ZET.
+TOPIC_RELAIS_STAND_VRAAG = "brms/opdracht/relais/stand"
 
 # Langste wachttijd op een antwoord, in seconden. Een Shelly op het lokale netwerk
 # antwoordt binnen een fractie van een seconde. Bij een kort interval geldt het interval
@@ -408,6 +411,22 @@ async def draai(config: Config, bus, stop: asyncio.Event) -> None:
 
     bus.abonneer(TOPIC_RELAIS_ZET, 1, bij_relais_zet)
 
+    async def vraag_relais_stand() -> None:
+        """Vraagt de alarmlaag bij de start om de stand van de relais (§5.2.6 punt 6,
+        v0.88). Bij een herstart van alle services geeft de alarmlaag zijn "uit" vaak net
+        voordat deze reader luistert; zonder deze vraag bleef een relais dan aan tot de
+        Shelly zelf uitschakelde. Herstart alleen deze reader terwijl een alarm actief
+        is, dan hoort hij zo ook direct dat het relais aan moet blijven.
+
+        Eén keer, zodra de broker bereikbaar is (publiceer geeft dan True): het
+        abonnement op de schakelopdrachten hierboven is dan al aangemeld, dus het
+        antwoord wordt niet gemist. Draait de alarmlaag nog niet, dan geeft hij de stand
+        zelf bij zijn start."""
+        while not stop.is_set():
+            if bus.publiceer(TOPIC_RELAIS_STAND_VRAAG, json.dumps({"ts": int(time.time())}), qos=1):
+                return
+            await asyncio.sleep(1.0)
+
     log.info("Shelly-reader gestart; %d Shelly's: %s", len(sensoren),
              ", ".join(f"{s.naam} ({s.id}) op {s.adres} elke {s.interval:g} s"
                        for s in sensoren.values()))
@@ -415,6 +434,9 @@ async def draai(config: Config, bus, stop: asyncio.Event) -> None:
     # Meldt op de bus welke Shelly's gesimuleerd worden (ook als dat er geen zijn); het web
     # toont daarmee "Actief", "Simulatie" of "Demo" (§10.3 punt 10).
     taken.append(asyncio.create_task(simulator.meld_steeds(stop)))
+    # Alleen als er een relais is: zonder relais valt er niets te vragen.
+    if any(s.type == RELAIS_TYPE for s in sensoren.values()):
+        taken.append(asyncio.create_task(vraag_relais_stand()))
     await stop.wait()
     # De pollers wachten op hun volgende poll; wekken, zodat ze het stopsein zien.
     for p in pollers.values():
