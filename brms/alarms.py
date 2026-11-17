@@ -111,11 +111,19 @@ TOPIC_SCHAKEL = "brms/opdracht/alarm/schakel"
 # Het relais (§5.2.6): de schakelopdracht aan de Shelly-reader, de uitschakeltijd die met
 # "aan" meegaat (de Shelly schakelt na die tijd zelf uit) en de tussenpoos waarmee "aan"
 # herhaald wordt zolang het alarm actief is. De herhaling is de helft van de
-# uitschakeltijd: één gemiste herhaling geeft nog geen onderbreking. Dezelfde 10 minuten
-# gelden als grens voor "de sensor levert nog waarden" en "de walstroom is bekend".
+# uitschakeltijd: één gemiste herhaling geeft nog geen onderbreking. Dezelfde 2 minuten
+# gelden als grens voor "de sensor levert nog waarden" en "de voorwaarde is bekend".
+# Besluit OPEN-36 (v0.87): 2 minuten en 1 minuut, eerder 10 en 5. Valt BRMS of de Pi weg,
+# dan stookt de kachel hooguit 2 minuten door.
 TOPIC_RELAIS_ZET = "brms/opdracht/relais/zet"
-RELAIS_DUUR = 600.0
-RELAIS_HERHAAL = 300.0
+RELAIS_DUUR = 120.0
+RELAIS_HERHAAL = 60.0
+# Bij zijn start geeft de alarmlaag "uit" aan elk relais (§5.2.6 punt 6, OPEN-36): na een
+# herstart is er geen actief alarm meer, dus een relais dat nog aan staat hoort uit. Dit
+# zijn de momenten, in seconden na de start. De tweede keer is er omdat bij een herstart
+# van alle services de Shelly-reader de eerste opdracht kan missen (hij luistert dan nog
+# niet); mist hij beide, dan schakelt de Shelly zelf uit na de uitschakeltijd.
+RELAIS_UIT_BIJ_START = (0.0, 15.0)
 # Zo lang wacht een melding hooguit op haar foto, in seconden (§5.7 punt 15).
 FOTO_WACHTTIJD = 15.0
 # Een foto groter dan dit gaat niet mee: Telegram neemt hooguit 10 MB aan.
@@ -402,8 +410,9 @@ class Alarmlaag:
                 self._relais.setdefault(regel.relais, []).append(regel.id)
         self._relais_naam = {r: cfg.sensoren[r].naam for r in self._relais}
         # De stand die de alarmlaag het laatst heeft opgedragen, en wanneer "aan" opnieuw
-        # gegeven moet worden. Na een herstart is dat "uit": er is dan geen actief alarm,
-        # en een relais dat nog aan staat, schakelt de Shelly zelf uit (punt 6).
+        # gegeven moet worden. Na een herstart is dat "uit": er is dan geen actief alarm.
+        # Een relais dat nog aan staat, krijgt bij de start "uit" (relais_uit_bij_start,
+        # punt 6); gaat dat mis, dan schakelt de Shelly zelf uit.
         self._relais_aan: dict[str, bool] = {r: False for r in self._relais}
         self._relais_volgende: dict[str, float] = {}
         # Waarom een relais uit blijft; alleen om een verandering één keer te loggen.
@@ -476,6 +485,16 @@ class Alarmlaag:
                 # Het alarm is actief, maar het relais mag niet aan: één keer zeggen waarom.
                 log.info("relais %s (%s) blijft uit: %s", naam, relais_id, belet)
             self._relais_belet_was[relais_id] = belet
+
+    def relais_uit_bij_start(self) -> list:
+        """"Uit" voor elk relais dat de alarmlaag (nog) niet zelf heeft aangezet (§5.2.6
+        punt 6, OPEN-36). Voor de start van de service: na een herstart is er geen actief
+        alarm, maar een relais kan nog aan staan van vóór de herstart; zonder deze
+        opdracht stookt de kachel door tot de Shelly zelf uitschakelt.
+
+        Een relais dat intussen door een nieuw alarm is aangezet, wordt overgeslagen:
+        dat moet juist aan blijven."""
+        return [RelaisOpdracht(r, False) for r in self._relais if not self._relais_aan[r]]
 
     @property
     def uit(self) -> set[str]:
@@ -872,9 +891,23 @@ async def draai(cfg: Config, bus, stop: asyncio.Event) -> None:
     stand_gemeld = None        # monotone tijd van de laatste geslaagde melding
     laatste_tik = 0.0
     uit_gelezen = time.monotonic()
+    # De relais bij de start uitzetten (§5.2.6 punt 6): de momenten die nog moeten komen,
+    # in seconden na de start (zie RELAIS_UIT_BIJ_START).
+    gestart = time.monotonic()
+    uit_bij_start = list(RELAIS_UIT_BIJ_START)
     try:
         while not stop.is_set():
             nu = time.monotonic()
+            # Alleen met verbinding: zonder broker komt de opdracht niet aan, en dan wacht
+            # dit moment op de volgende ronde.
+            if uit_bij_start and bus.verbonden and nu - gestart >= uit_bij_start[0]:
+                opdrachten = laag.relais_uit_bij_start()
+                # Eén regel in het log, bij de eerste keer; de herhaling zegt niets nieuws.
+                if opdrachten and len(uit_bij_start) == len(RELAIS_UIT_BIJ_START):
+                    log.info("start: relais uit (%s)",
+                             ", ".join(o.sensor_id for o in opdrachten))
+                del uit_bij_start[0]
+                voer_uit(opdrachten)
             # De schakelaars elke minuut opnieuw uit de database lezen: is een opdracht van
             # het web de alarmlaag of de opslag ontgaan, dan komt het zo vanzelf goed.
             if nu - uit_gelezen >= STAND_INTERVAL:

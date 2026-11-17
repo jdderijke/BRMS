@@ -155,7 +155,7 @@ naam = "motorruim"
 #                 voorwaarde = { multiplus.walstroom = 1 }   de MultiPlus meldt walstroom
 #                 voorwaarde = { kachel.walstroom = 1 }      de plug zelf ziet netspanning
 #               Meer voorwaarden in de tabel moeten allemaal gelden. Geldt er één niet, of
-#               is de waarde ouder dan 10 minuten (sensor stil), dan blijft het relais uit.
+#               is de waarde ouder dan 2 minuten (sensor stil), dan blijft het relais uit.
 #               Let op: de plug zelf ziet geen verschil tussen walstroom en 230 V uit de
 #               omvormer; alleen de MultiPlus weet dat.
 #   Levert: relais (1 = aan), vermogen (W: stookt de kachel echt?), spanning (V), stroom (A),
@@ -289,8 +289,10 @@ naam = "motorruim"
 #               - Alleen aan zolang de 'voorwaarde' van het relais geldt (bijv. walstroom,
 #                 zie de Shelly Plug bij de sensoren). Geldt die niet of is hij onbekend,
 #                 dan blijft het relais uit; het alarm en de melding gaan gewoon door.
-#               - "Aan" geldt 10 minuten en wordt elke 5 minuten herhaald. Valt BRMS weg of
+#               - "Aan" geldt 2 minuten en wordt elke minuut herhaald. Valt BRMS weg of
 #                 zwijgt de sensor, dan schakelt de plug zelf uit.
+#               - Bij een herstart van BRMS gaat het relais direct uit, en weer aan zodra
+#                 het alarm opnieuw afgaat.
 # Tijden: een getal met eenheid: "90s", "15m", "6u", "7d".
 
 [[alarm]]

@@ -347,10 +347,58 @@ class TestAlarmlaag(unittest.TestCase):
         return [x for x in laag.tik() if isinstance(x, RelaisOpdracht)]
 
     def test_opdracht_als_json(self):
-        self.assertEqual(json.loads(AAN.naar_json()), {"sensor_id": "kachel", "aan": True, "duur": 600.0})
+        # De uitschakeltijd is 2 minuten, de herhaling 1 minuut (besluit OPEN-36).
+        self.assertEqual((RELAIS_DUUR, RELAIS_HERHAAL), (120.0, 60.0))
+        self.assertEqual(json.loads(AAN.naar_json()), {"sensor_id": "kachel", "aan": True, "duur": 120.0})
         self.assertEqual(json.loads(UIT.naar_json()), {"sensor_id": "kachel", "aan": False})
         # Wat de alarmlaag stuurt, kan de Shelly-reader lezen.
-        self.assertEqual(shelly.lees_zet(AAN.naar_json().encode()), ("kachel", True, 600.0))
+        self.assertEqual(shelly.lees_zet(AAN.naar_json().encode()), ("kachel", True, 120.0))
+
+    def test_uit_bij_de_start(self):
+        # Na een herstart is er geen actief alarm: elk relais krijgt "uit" (§5.2.6 punt 6).
+        laag = self._laag()
+        self.assertEqual(laag.relais_uit_bij_start(), [UIT])
+        # Heeft een nieuw alarm het relais intussen aangezet, dan blijft het aan.
+        self.assertEqual(self._meet(laag, 1.5), [AAN])
+        self.assertEqual(laag.relais_uit_bij_start(), [])
+
+    def test_de_service_zet_de_relais_uit_bij_de_start(self):
+        """De service-lus geeft "uit" bij de start en nog een keer kort daarna, voor als
+        de Shelly-reader de eerste keer nog niet luisterde."""
+        from unittest import mock
+        from brms import alarms, melding
+
+        class Bus(NepBus):
+            def wachtrij(self, topic, qos):
+                return asyncio.Queue()
+
+            def abonneer(self, topic, qos, callback):
+                pass
+
+        sensoren = {MAC: Sensor(MAC, "bthome", "kajuit"),
+                    MULTI: Sensor(MULTI, "victron-multiplus", "multiplus"), "kachel": KACHEL}
+        cfg = Config(MqttConfig(), OpslagConfig("x"), sensoren, alarmen=(_regel(),))
+        bus = Bus()
+
+        async def proef():
+            stop = asyncio.Event()
+            taak = asyncio.create_task(alarms.draai(cfg, bus, stop))
+            await asyncio.sleep(0.3)
+            eerst = [b for b in bus.berichten if b[0] == alarms.TOPIC_RELAIS_ZET]
+            await asyncio.sleep(2.0)
+            stop.set()
+            await asyncio.wait_for(taak, 5)
+            return eerst
+
+        with mock.patch.object(melding, "kanalen", lambda c: {}), \
+                mock.patch.object(alarms, "RELAIS_UIT_BIJ_START", (0.0, 1.0)), \
+                self.assertLogs("brms.alarms", "INFO") as log:
+            eerst = asyncio.run(proef())
+        uit = ("brms/opdracht/relais/zet", {"sensor_id": "kachel", "aan": False})
+        self.assertEqual(eerst, [uit])
+        self.assertEqual([b for b in bus.berichten if b[0] == alarms.TOPIC_RELAIS_ZET], [uit, uit])
+        # Eén regel in het log, niet twee.
+        self.assertEqual(sum("start: relais uit (kachel)" in r for r in log.output), 1)
 
     def test_aan_bij_alarm_en_uit_bij_herstel(self):
         laag = self._laag()
@@ -361,7 +409,7 @@ class TestAlarmlaag(unittest.TestCase):
         self.assertEqual(self._meet(laag, 3.0), [UIT])
         self.assertEqual(self._meet(laag, 3.5), [])
 
-    def test_aan_wordt_elke_vijf_minuten_herhaald(self):
+    def test_aan_wordt_elke_minuut_herhaald(self):
         laag = self._laag()
         self.assertEqual(self._meet(laag, 1.5), [AAN])
         self.klok.t += RELAIS_HERHAAL - 1
@@ -382,7 +430,7 @@ class TestAlarmlaag(unittest.TestCase):
         for _ in range(3):
             self.klok.t += RELAIS_DUUR / 3
             opdrachten += self._wal(laag, 1.0)
-        # Onderweg één herhaling van "aan" (na 5 minuten), en "uit" zodra de laatste
+        # Onderweg één herhaling van "aan" (na een minuut), en "uit" zodra de laatste
         # waarde van de sensor zo oud is als de uitschakeltijd.
         self.assertEqual(opdrachten, [AAN, UIT])
         self.assertEqual(self._tik(laag), [])

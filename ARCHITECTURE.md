@@ -802,16 +802,20 @@ thermostaat, omgevallen, defect).
    (besluit OPEN-27, v0.64): het is een teller en geen meetwaarde, en het verbruik is
    achteraf uit `vermogen` te berekenen.
 3. **Schakelen:** opdracht `brms/opdracht/relais/zet` met
-   `{"sensor_id": ..., "aan": true, "duur": 600}`. De Shelly-reader voert hem uit via de
+   `{"sensor_id": ..., "aan": true, "duur": 120}`. De Shelly-reader voert hem uit via de
    API van de Shelly (de uitschakeltijd gaat met de opdracht mee) en pollt direct daarna,
    zodat de nieuwe stand meteen op de bus staat. Kan de plug geen uitschakeltijd per
    opdracht aan, dan wordt dezelfde tijd vast in de Shelly ingesteld.
 4. **Beveiliging:**
-   - "aan" gaat altijd met een **uitschakeltijd** (`duur`, **10 minuten**) die de Shelly
+   - "aan" gaat altijd met een **uitschakeltijd** (`duur`, **2 minuten**) die de Shelly
      zelf bewaakt: na die tijd schakelt hij vanzelf uit.
-   - Zolang het alarm actief is, **herhaalt** de alarmlaag de opdracht elke **5 minuten**.
+   - Zolang het alarm actief is, **herhaalt** de alarmlaag de opdracht elke **minuut**.
      Valt BRMS weg, dan gaat het relais binnen de uitschakeltijd uit. Eén gemiste
      herhaling geeft nog geen onderbreking.
+   - Deze tijden waren eerst 10 en 5 minuten (v0.63); ingekort bij besluit OPEN-36
+     (v0.87), omdat de kachel te lang doorstookte als BRMS wegviel. Een voorwaarde
+     (punt 5) moet nu een waarde hebben die jonger is dan 2 minuten; met een poll van
+     30 seconden is dat ruim genoeg.
    - De alarmlaag herhaalt alleen zolang de sensor van de alarmregel nog waarden levert
      (laatste waarde jonger dan de uitschakeltijd). Bij een **stille sensor** gaat het
      relais dus uit.
@@ -869,8 +873,15 @@ thermostaat, omgevallen, defect).
      over de walstroom is vastgelegd.
    - Zolang de MultiPlus-dongle er niet is, meldt een regel van soort `stil` op de plug
      dat de walstroom is weggevallen (de plug heeft dan geen voeding en zwijgt).
-6. Na een **herstart** van de alarmlaag is er geen actief alarm (§5.5.2 punt 6); het relais
-   gaat binnen de uitschakeltijd uit, en weer aan zodra het alarm opnieuw afgaat.
+6. Na een **herstart** van de alarmlaag is er geen actief alarm (§5.5.2 punt 6). De
+   alarmlaag geeft bij zijn start **"uit" aan elk relais** (besluit OPEN-36, v0.87); het
+   relais gaat weer aan zodra het alarm opnieuw afgaat.
+   - *Aanleiding.* Zonder die opdracht bleef de kachel na een herstart aan tot de Shelly
+     zelf uitschakelde, terwijl het alarm al van de pagina's was.
+   - De opdracht gaat twee keer uit: bij de start en 15 seconden later. Bij een herstart
+     van alle services luistert de Shelly-reader de eerste keer soms nog niet. Mist hij
+     beide, dan schakelt de Shelly zelf uit na de uitschakeltijd.
+   - Een relais dat intussen door een nieuw alarm is aangezet, krijgt geen "uit".
 7. Handmatig schakelen via het web is niet voorzien.
 
 **Bevindingen met de plug (v0.78).** De eerste plug (model `S3PL-30110EU`, firmware
@@ -3077,7 +3088,7 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 | 33 | ~~De plug zelf als sensor voor de walstroom~~ – **besloten in v0.80**: elke plug levert `walstroom` (spanning > 180 V = 1); welke bron geldt voor het aanzetten, kiest de gebruiker met het veld `voorwaarde` bij het relais | §5.2.6 punt 5 |
 | 35 | ~~Bootpagina: oude waarden na een herstart~~ – **besloten in v0.85**: na een herstart geen waarden meer uit de database (`--` tot de eerste meting van de bus), en een waarde geldt als stil na 5 minuten in plaats van 15 | §5.6 punt 4 en 7 |
 | 34 | ~~Is `voorwaarde` bij een relais verplicht?~~ – **besloten in v0.81**: verplicht | §5.2.6 punt 5 |
-| 36 | Relais na een herstart van de alarmlaag. Na de herstart is er geen actief alarm meer, maar een relais dat aan stond blijft aan tot de Shelly het zelf uitzet (uitschakeltijd, nu 10 minuten). De gebruiker vindt dat te lang. Te beslissen: (a) geeft de alarmlaag bij zijn start "uit" aan elk relais? (b) hoe lang wordt de uitschakeltijd, en daarmee de herhaling van "aan" (nu 10 en 5 minuten)? | §5.2.6 |
+| 36 | ~~Relais na een herstart van de alarmlaag, en een kortere uitschakeltijd~~ – **besloten in v0.87**: de alarmlaag geeft bij zijn start "uit" aan elk relais; de uitschakeltijd wordt 2 minuten en de herhaling van "aan" 1 minuut (eerder 10 en 5) | §5.2.6 punt 4 en 6 |
 
 Daarnaast uit `CLAUDE.md`: de accu is nu 4× Victron AGM 12 V 110 Ah en wordt later deze
 winter vervangen door LiFePO4 (2× 300 Ah); bij die wissel de BMV-instellingen en de grens
@@ -3108,7 +3119,8 @@ maand).
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.86** | 2026-11-17 | Claude Code, Fable 5.2 | Alarmen na een herstart (§3.3, §5.5.3 punt 8), gebouwd in code v0.27.3: de opslag vraagt bij zijn start de alarmlaag om de stand, zodat alarmen van vóór de herstart binnen seconden zijn afgesloten in plaats van na een minuut. OPEN-36 toegevoegd: het relais na een herstart van de alarmlaag en een kortere uitschakeltijd. |
+| **0.87** | 2026-11-17 | Claude Code, Fable 5.2 | OPEN-36 besloten en gebouwd in code v0.27.4 (§5.2.6 punt 3, 4 en 6): de alarmlaag geeft bij zijn start "uit" aan elk relais (twee keer: direct en na 15 seconden); de uitschakeltijd is 2 minuten en de herhaling 1 minuut, eerder 10 en 5. |
+| 0.86 | 2026-11-17 | Claude Code, Fable 5.2 | Alarmen na een herstart (§3.3, §5.5.3 punt 8), gebouwd in code v0.27.3: de opslag vraagt bij zijn start de alarmlaag om de stand, zodat alarmen van vóór de herstart binnen seconden zijn afgesloten in plaats van na een minuut. OPEN-36 toegevoegd: het relais na een herstart van de alarmlaag en een kortere uitschakeltijd. |
 | 0.85 | 2026-11-17 | Claude Code, Fable 5.2 | OPEN-35 besloten en gebouwd in code v0.27.2 (§5.6 punt 4 en 7): de bootpagina leest na een herstart geen waarden meer uit de database, en een waarde geldt als stil na 5 minuten in plaats van 15. |
 | 0.84 | 2026-11-17 | Claude Code, Fable 5.2 | OPEN-35 toegevoegd: de bootpagina toont na een herstart nog minutenlang oude waarden van een sensor die niet meer zendt (laatste rij uit de database; "sensor stil" begint na een herstart opnieuw te tellen). |
 | 0.83 | 2026-11-17 | Claude Code, Fable 5.2 | Bootpagina (§5.6 punt 4), fout hersteld in code v0.27.1: bij een actief alarm "sensor stil" staat er direct `--` in rood en vet, ook als de laatste waarde nog geen 15 minuten oud is. Gevonden door de pluggen uit het stopcontact te trekken (regel `stil` met een duur van 5 minuten). |
