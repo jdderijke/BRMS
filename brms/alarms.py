@@ -77,6 +77,7 @@ import asyncio
 import dataclasses
 import json
 import logging
+import math
 import os
 import pathlib
 import re
@@ -152,16 +153,35 @@ def getal(w: float) -> str:
     return f"{round(w, 2):g}".replace(".", ",")
 
 
-def waardetekst(grootheid: str, w: float) -> str:
+def waardetekst(grootheid: str, w: float, grens: bool = False) -> str:
     """Waarde met eenheid, bijv. '1,8 °C'. Een toestand (0/1) heeft geen eenheid.
 
-    De slagzij staat er zonder teken, met de kant erachter: '3,2° sb' of '1° bb'
+    De slagzij staat er zonder teken, met de kant erachter: '3° sb' of '1° bb'
     (§5.2.5 punt 10). Het teken (positief = stuurboord) staat alleen in brms.toml en in
     de database.
+
+    Een gemeten slagzij staat er in hele graden (v0.89), net als op de webpagina's
+    (§5.3.3): de hoek is op 1 à 2 graden nauwkeurig, een decimaal in een melding
+    suggereert meer dan de sensor kan. Dit geldt voor de Telegram- en e-mailmeldingen en
+    voor de pagina Alarmen, die deze functie ook gebruikt.
+
+    grens=True is voor een alarmgrens uit brms.toml (zie voorwaardetekst): die staat er
+    zoals de gebruiker hem heeft ingevuld. Een grens van 4,5 afronden naar '5°' zou een
+    andere grens tonen dan waarop het alarm afgaat.
     """
     zijde = grootheden.zijde(grootheid, w)
     if zijde is not None:
-        return f"{getal(abs(w))}°" + (f" {zijde}" if zijde else "")
+        grootte = abs(w)
+        if not grens:
+            # Afronden op het aantal decimalen van de grootheid (bij de slagzij 0, §5.3.3).
+            # Bewust niet met round(): die rondt een half af naar het even getal (2,5 -> 2),
+            # terwijl de webpagina 2,5 als 3 toont. floor(x + 0,5) rondt een half naar boven.
+            factor = 10 ** grootheden.GROOTHEDEN[grootheid].decimalen
+            grootte = math.floor(grootte * factor + 0.5) / factor
+            # Afgerond nul heeft geen kant: '0°', niet '0° sb'.
+            if grootte == 0:
+                zijde = ""
+        return f"{getal(grootte)}°" + (f" {zijde}" if zijde else "")
     eenheid = grootheden.GROOTHEDEN[grootheid].eenheid
     return getal(w) if eenheid in ("0/1", "aantal") else f"{getal(w)} {eenheid}"
 
@@ -185,12 +205,14 @@ def voorwaardetekst(regel: Alarmregel) -> str:
     if regel.soort == config.GRENS:
         # Slagzij (§5.2.5 punt 10): 'onder −5' betekent "meer dan 5 graden over bakboord".
         # In woorden is dat 'boven 5° bb'; 'onder 5° bb' zou het omgekeerde zeggen.
+        # grens=True: de grens staat er zoals hij in brms.toml staat, niet afgerond op
+        # hele graden zoals een gemeten slagzij (v0.89, zie waardetekst).
         if (regel.onder is not None and regel.onder < 0
                 and grootheden.zijde(regel.grootheid, regel.onder)):
-            return f"boven {waardetekst(regel.grootheid, regel.onder)}"
+            return f"boven {waardetekst(regel.grootheid, regel.onder, grens=True)}"
         if regel.onder is not None:
-            return f"onder {waardetekst(regel.grootheid, regel.onder)}"
-        return f"boven {waardetekst(regel.grootheid, regel.boven)}"
+            return f"onder {waardetekst(regel.grootheid, regel.onder, grens=True)}"
+        return f"boven {waardetekst(regel.grootheid, regel.boven, grens=True)}"
     if regel.soort == config.AANTAL:
         return f"{regel.aantal} of meer binnen {duurtekst(regel.venster)}"
     return f"geen waarden gedurende {duurtekst(regel.duur)}"

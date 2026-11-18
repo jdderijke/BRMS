@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.85 – concept** · 17 november 2026
+**Versie 0.89 – concept** · 18 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -699,9 +699,16 @@ is alleen in `brms.toml` te zien; overal waar de waarde getoond wordt staat sb o
       `correctie = { slagzij = -1.8 }`; staat er 1,8° bb, dan `slagzij = 1.8`. Na
       verplaatsen van de sensor opnieuw.
     - *Tonen:* op de webpagina, in meldingen en in het logboek staat de waarde zonder
-      teken, met `sb` of `bb` erachter: "3,2° sb", "1,0° bb". In een grafiek staan de
+      teken, met `sb` of `bb` erachter: "3° sb", "1° bb". In een grafiek staan de
       waarden langs de as op dezelfde manier. Het teken staat alleen in `brms.toml`
       (correctie en alarmgrenzen) en in de database.
+    - *Hele graden:* een gemeten slagzij staat overal in hele graden: op de webpagina's
+      sinds v0.88 (§5.3.3), in de meldingen (Telegram, e-mail) en op de pagina Alarmen
+      sinds v0.89. De hoek is op 1 à 2 graden nauwkeurig; een decimaal suggereert meer
+      dan de sensor kan. Een half rondt naar boven af; afgerond nul staat er als "0°",
+      zonder kant. Een **alarmgrens** in een melding ("boven 4,5° sb") staat er zoals hij
+      in `brms.toml` staat: afronden zou een andere grens tonen dan waarop het alarm
+      afgaat.
     - *Alarm:* twee regels van de soort `grens` (§5.5.3), één per kant. De grenzen
       hieronder zijn een voorbeeld.
 
@@ -1166,7 +1173,7 @@ hun eigen stappen.
 | `vocht` | % | doorlopend | BTHome, Ruuvi | relatieve luchtvochtigheid |
 | `luchtdruk` | hPa | doorlopend | Ruuvi (4-in-1) | |
 | `versnelling_x`, `versnelling_y`, `versnelling_z` | mG | doorlopend | Ruuvi | invoer voor `slagzij` |
-| `slagzij` | graden | doorlopend | afgeleid (§5.2.5) | positief = stuurboord, negatief = bakboord; getoond als "3,2° sb" (v0.66, vervangt `helling`) |
+| `slagzij` | graden | doorlopend | afgeleid (§5.2.5) | positief = stuurboord, negatief = bakboord; getoond als "3° sb" (v0.66, vervangt `helling`; hele graden sinds v0.88/v0.89) |
 | `beweging` | aantal | toename | Ruuvi | toename van de bewegingsteller |
 | `batterijspanning` | V | doorlopend | BTHome, Ruuvi | batterij van de sensor zelf |
 | `rssi` | dBm | doorlopend | alle BLE-apparaten | signaalsterkte, gemeten door de scanner |
@@ -2237,6 +2244,15 @@ vanzelf; een maximale ruimte voorkomt dat een reeks bewegingsalarmen de schijf v
   masten en steigers, en een lithium-accu laadt niet onder 0 °C. Lokaal uitlezen kan bij
   Reolink alleen met een omweg (een Reolink Home Hub of de brug `neolink`): een extra
   apparaat of een extra afhankelijkheid (P3), en elke opvraging kost batterij.
+- *De binnencamera (Foscam FI9826W) via wifi aan de RUT241* (v0.89). Geprobeerd door de
+  gebruiker op 2026-11-18, omdat wifi een kabel spaart (P5). Het videobeeld liep via wifi
+  te ver achter om bruikbaar te zijn; met een netwerkkabel is dat niet zo. De oorzaak van
+  de vertraging is niet onderzocht. Daarnaast was de wifi van deze camera lastig in te
+  stellen: Foscam VMS ondersteunt de wifi-instellingen van dit model niet ("Un-support",
+  een lege lijst met netwerken); het kan alleen met de CGI-commando's van de camera en
+  een account op beheerdersniveau. Een camera die altijd aan staat en een videostroom
+  levert, is met een kabel ook betrouwbaarder dan via wifi (P1). De camera hangt daarom
+  aan een netwerkkabel (punt 1).
 
 De eis achter beide afwijzingen: de camera staat altijd aan, heeft vaste voeding en geeft
 de Pi op elk moment een foto (snapshot-adres) en een H.264-stroom over RTSP (punt 1, 6 en
@@ -2267,6 +2283,11 @@ Verworpen bij het richten van de camera (punt 19, v0.71):
 1. IP-camera (wifi 2,4 GHz, RTSP/ONVIF, 12V), **altijd aan**. Voorlopig (v0.71) is dat
    een **binnencamera**, de Foscam FI9826W, die kan draaien en kantelen (punt 19). Een
    buitencamera en de voeding daarvoor komen later.
+   - De Foscam hangt met een **netwerkkabel** aan de RUT241, niet via wifi (v0.89): via
+     wifi liep het videobeeld te ver achter (zie de verworpen alternatieven). Voor BRMS
+     maakt het geen verschil: de camera blijft bereikbaar op het adres in `[[camera]]`.
+   - Voor de buitencamera is de aansluiting (wifi of kabel) nog niet gekozen; de
+     ervaring met de Foscam weegt daarbij mee.
 2. De camera-reader is een pollende reader (§5.2.1) met twee soorten opname:
 
    | | Foto | Video |
@@ -2670,6 +2691,8 @@ bereikbaar; metingen gaan wel door (P4). **[OPEN-18]** Moet uitval van BRMS zelf
 ## 9. Netwerk en toegang
 
 - Pi via ethernet aan Teltonika RUT241 (wifi van router als reserve).
+- De binnencamera (Foscam) ook met een netwerkkabel aan de RUT241 (v0.89, §5.7 punt 1);
+  de Shelly's via de wifi van de router.
 - Mobiel internet zit achter CGNAT → Tailscale op de Pi (key expiry uit), met subnet-route
   naar router en camera. Niets open op internet.
 - Geen noodingang buiten Tailscale om (v0.54): Teltonika RMS staat uit en het relais op de
@@ -3131,7 +3154,8 @@ maand).
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.88** | 2026-11-17 | Claude Code, Fable 5.2 | Gebouwd in code v0.27.5. Relais (§5.2.6 punt 6): de Shelly-reader vraagt bij zijn start de alarmlaag om de stand van de relais, zodat een relais na een herstart binnen seconden uit gaat; de herhaling na 15 seconden vervalt. Slagzij (§5.3.3, §5.6 punt 5): in hele graden, en op de bootpagina staat bij afgerond 0 niets. |
+| **0.89** | 2026-11-18 | Claude Code, Fable 5.2 | Slagzij in meldingen (§5.2.5 punt 10), gebouwd in code v0.27.6: een gemeten slagzij staat ook in de meldingen (Telegram, e-mail) en op de pagina Alarmen in hele graden; een alarmgrens blijft staan zoals in `brms.toml`. Camera (§5.7 punt 1, §9): de Foscam hangt met een netwerkkabel aan de RUT241 in plaats van via wifi, omdat het videobeeld via wifi te ver achterliep; wifi als verworpen alternatief vastgelegd. |
+| 0.88 | 2026-11-17 | Claude Code, Fable 5.2 | Gebouwd in code v0.27.5. Relais (§5.2.6 punt 6): de Shelly-reader vraagt bij zijn start de alarmlaag om de stand van de relais, zodat een relais na een herstart binnen seconden uit gaat; de herhaling na 15 seconden vervalt. Slagzij (§5.3.3, §5.6 punt 5): in hele graden, en op de bootpagina staat bij afgerond 0 niets. |
 | 0.87 | 2026-11-17 | Claude Code, Fable 5.2 | OPEN-36 besloten en gebouwd in code v0.27.4 (§5.2.6 punt 3, 4 en 6): de alarmlaag geeft bij zijn start "uit" aan elk relais (twee keer: direct en na 15 seconden); de uitschakeltijd is 2 minuten en de herhaling 1 minuut, eerder 10 en 5. |
 | 0.86 | 2026-11-17 | Claude Code, Fable 5.2 | Alarmen na een herstart (§3.3, §5.5.3 punt 8), gebouwd in code v0.27.3: de opslag vraagt bij zijn start de alarmlaag om de stand, zodat alarmen van vóór de herstart binnen seconden zijn afgesloten in plaats van na een minuut. OPEN-36 toegevoegd: het relais na een herstart van de alarmlaag en een kortere uitschakeltijd. |
 | 0.85 | 2026-11-17 | Claude Code, Fable 5.2 | OPEN-35 besloten en gebouwd in code v0.27.2 (§5.6 punt 4 en 7): de bootpagina leest na een herstart geen waarden meer uit de database, en een waarde geldt als stil na 5 minuten in plaats van 15. |

@@ -28,8 +28,8 @@ class Grootheid:
 
 # De decimalen (§5.3.3): 0 voor luchtdruk, toestanden (0/1), versnelling, rssi, beweging en
 # resterende tijd; 1 voor temperatuur, vocht, laadtoestand, (zonne)vermogen en verbruik;
-# 2 voor spanningen en stromen. Slagzij 1: op een tiende graad af te lezen voor de
-# kalibratie (§5.2.5 punt 10).
+# 2 voor spanningen en stromen. Slagzij 0 (hele graden, v0.88); de alarmlaag gebruikt
+# dit aantal ook voor de slagzij in een melding (v0.89, alarms.waardetekst).
 GROOTHEDEN: dict[str, Grootheid] = {
     g.naam: g
     for g in (

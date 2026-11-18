@@ -28,13 +28,14 @@ Het systeem draait maanden **onbeheerd**: betrouwbaarheid en eenvoud gaan boven 
 | Lader/omvormer, walstroom | Victron MultiPlus 12/3000/120-16 (VE.Bus) + VE.Bus Smart dongle (Instant Readout, AC-ingang = walstroom). MK3-USB alleen voor configuratie | MultiPlus/MK3 in bezit, dongle nog kopen |
 | Bilge | Shelly Plus Uni (12V), lokale API: spanning achter de bestaande vlotter = bilgepomp aan; geen tweede vlotter, later eventueel een waterdetector (ARCHITECTURE.md §5.2.4) | Shelly besteld |
 | Kachel | Shelly Plug M Gen3 (tussenstekker met energiemeting, wifi, lokale API) schakelt een elektrische kachel van 1500 W bij vorst; alleen met walstroom (ARCHITECTURE.md §5.2.6) | Nog kopen |
-| Camera | Voorlopig een binnencamera: Foscam FI9826W (wifi, RTSP, kan draaien en kantelen), altijd aan. Buitencamera (wifi 2,4 GHz, RTSP/ONVIF, 12V) en de voeding daarvoor later (zie ARCHITECTURE.md §5.7) | Foscam in bezit |
+| Camera | Voorlopig een binnencamera: Foscam FI9826W (RTSP, kan draaien en kantelen), altijd aan, met een netwerkkabel aan de RUT241: via wifi liep het videobeeld te ver achter. Buitencamera (wifi 2,4 GHz, RTSP/ONVIF, 12V) en de voeding daarvoor later (zie ARCHITECTURE.md §5.7) | Foscam in bezit |
 | Voeding | 12V boordnet → zekering → BatteryProtect → DC-DC 12→5V 3A | Nog kopen |
 
 Energie: systeem ca. 11 W (~21 Ah/dag). Walstroom aanwezig maar kan wegvallen; accu overbrugt ca. 5 dagen.
 
 ## Netwerk en toegang
 - Pi via ethernet aan RUT241 (wifi van router als reserve).
+- Binnencamera (Foscam) ook met een netwerkkabel aan de RUT241, niet via wifi (ARCHITECTURE.md §5.7 punt 1).
 - Mobiel internet zit achter CGNAT → **Tailscale** op de Pi (key expiry uit), subnet-route
   voor router en camera. Niets open op internet.
 - Geen noodingang buiten Tailscale om: Teltonika RMS wordt niet gebruikt (geen extra externe

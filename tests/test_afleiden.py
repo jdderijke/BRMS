@@ -207,9 +207,18 @@ class TestTekst(unittest.TestCase):
         self.assertIsNone(grootheden.zijde("temperatuur", -1.0))
 
     def test_waardetekst(self):
-        self.assertEqual(alarms.waardetekst("slagzij", 3.2), "3,2° sb")
+        # Een gemeten slagzij staat in hele graden (v0.89), ook in een melding.
+        self.assertEqual(alarms.waardetekst("slagzij", 3.2), "3° sb")
         self.assertEqual(alarms.waardetekst("slagzij", -1.0), "1° bb")
+        self.assertEqual(alarms.waardetekst("slagzij", -6.7), "7° bb")
+        # Een half rondt naar boven af, zoals op de webpagina (niet naar het even getal).
+        self.assertEqual(alarms.waardetekst("slagzij", 2.5), "3° sb")
+        # Afgerond nul heeft geen kant.
         self.assertEqual(alarms.waardetekst("slagzij", 0.0), "0°")
+        self.assertEqual(alarms.waardetekst("slagzij", 0.4), "0°")
+        self.assertEqual(alarms.waardetekst("slagzij", -0.4), "0°")
+        # Een alarmgrens staat er zoals hij in brms.toml staat, niet afgerond.
+        self.assertEqual(alarms.waardetekst("slagzij", 4.5, grens=True), "4,5° sb")
         self.assertEqual(alarms.waardetekst("temperatuur", -1.8), "-1,8 °C")   # ongewijzigd
 
     def test_voorwaardetekst(self):
@@ -219,6 +228,8 @@ class TestTekst(unittest.TestCase):
         self.assertEqual(alarms.voorwaardetekst(regel(boven=5.0)), "boven 5° sb")
         # 'onder −5' is in woorden "meer dan 5 graden over bakboord".
         self.assertEqual(alarms.voorwaardetekst(regel(onder=-5.0)), "boven 5° bb")
+        # Een grens met een decimaal blijft zo staan (v0.89): het alarm gaat af op 4,5.
+        self.assertEqual(alarms.voorwaardetekst(regel(boven=4.5)), "boven 4,5° sb")
 
 
 if __name__ == "__main__":
