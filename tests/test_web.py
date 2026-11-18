@@ -417,9 +417,18 @@ class TestOpnames(unittest.TestCase):
 
     def test_pagina_heeft_het_dagoverzicht(self):
         tekst = self.client.get("/opnames").get_data(as_text=True)
-        for verwacht in ['<option value="dag">dagoverzicht</option>', "DUUR_INTERVAL = 500",
-                         "DUUR_GEBEURTENIS = 5000", 'id="verder"']:
+        for verwacht in ['<option value="dag">dagoverzicht</option>',
+                         "DUUR_GEBEURTENIS = 5000", 'id="verder"',
+                         # De twee keuzelijsten van het dagoverzicht (§5.6 punt 2, v0.91):
+                         # hoe lang een intervalfoto in beeld staat en hoeveel intervallen
+                         # het overzicht per foto verspringt, met hun standaardwaarden.
+                         'id="verversen"', 'id="verspringen"',
+                         "VERVERSEN = [0.2, 0.5, 1.0, 1.5, 2.0]", "VERVERSEN_STANDAARD = 1.0",
+                         "VERSPRINGEN = [1, 2, 3, 5, 10]", "VERSPRINGEN_STANDAARD = 1"]:
             self.assertIn(verwacht, tekst)
+        # De sprong is een veelvoud van het foto-interval van de camera; dat staat daarom
+        # in de pagina (de camera's van deze test hebben het standaardinterval van 3 minuten).
+        self.assertIn('"foto_interval": 180', tekst)
 
     def test_ongeldige_vragen(self):
         for vraag, code in [("van=5&tot=5", 400), ("van=0&tot=9&camera=onbekend", 404),

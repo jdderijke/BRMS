@@ -25,9 +25,11 @@
   camera heeft deze knoppen niet.
 
   Dagoverzicht (tweede weergave): de opnames van de dag worden van oud naar nieuw
-  afgespeeld als een versnelde film. Een intervalfoto staat 0,5 s in beeld, een foto bij
-  een gebeurtenis (alarm, op verzoek) 5 s, en een video wordt helemaal afgespeeld (met
-  "verder" over te slaan). Een foto die tijdens een video van dezelfde camera is gemaakt,
+  afgespeeld als een versnelde film. Een intervalfoto staat standaard 1 s in beeld (keuze
+  "Verversen": 0,2 tot 2 s), een foto bij een gebeurtenis (alarm, op verzoek) 5 s, en een
+  video wordt helemaal afgespeeld (met "verder" over te slaan). Met "Verspringen" slaat het
+  overzicht intervalfoto's over: het toont er dan één per 2, 3, 5 of 10 keer het
+  foto-interval van de camera. Dat scheelt tijd en data over de mobiele verbinding. Een foto die tijdens een video van dezelfde camera is gemaakt,
   doet niet mee: de video laat dat stuk van de dag al zien. Dat gebeurt allemaal in de
   browser: de Pi maakt er geen videobestand van.
 
@@ -67,6 +69,10 @@
                   margin: 0 5px 0 12px; background: var(--fout); }
   #uitleg-dag i.video { background: var(--link); }
   #teller { color: var(--zacht); font-variant-numeric: tabular-nums; }
+  /* De twee keuzelijsten van het dagoverzicht (verversen, verspringen): klein, zodat ze
+     naast de knoppen op de afspeelbalk passen. */
+  #speler label { color: var(--zacht); font-size: 13px; white-space: nowrap; }
+  #speler label select { font-size: 13px; padding: 2px 4px; }
   /* De vier richtknoppen (§5.7 punt 19): dicht bij elkaar en even breed, zodat ze ook op
      een telefoon goed te raken zijn. */
   #richt-knoppen { display: inline-flex; gap: 4px; margin-left: 6px; }
@@ -160,6 +166,11 @@
         <button id="volgend-beeld" title="Eén opname verder (pijl rechts)">▶</button>
         <button id="verder" title="Deze video overslaan" hidden>verder ▶▶</button>
         <span id="teller"></span>
+        <!-- Het tempo van het overzicht (§5.6 punt 2, v0.91); het script vult de keuzes. -->
+        <label title="Hoe lang een intervalfoto in beeld staat">Verversen
+          <select id="verversen"></select></label>
+        <label title="Hoeveel tijd het overzicht per intervalfoto verspringt: een veelvoud van het foto-interval van de camera. Foto's bij een gebeurtenis en video's worden nooit overgeslagen.">Verspringen
+          <select id="verspringen"></select></label>
         <span class="ruimte"></span>
         <span id="uitleg-dag"><i></i>foto bij een gebeurtenis<i class="video"></i>video</span>
       </div>
@@ -367,8 +378,21 @@ function stap(richting) {
 
 // --- dagoverzicht ----------------------------------------------------------------------
 // De opnames van de dag als versnelde film (§5.6 punt 2), van oud naar nieuw.
-const DUUR_INTERVAL = 500;       // ms dat een intervalfoto in beeld staat
 const DUUR_GEBEURTENIS = 5000;   // ms voor een foto bij een gebeurtenis (alarm, op verzoek)
+// Het tempo van het overzicht is te kiezen met twee keuzelijsten op de afspeelbalk
+// (§5.6 punt 2, v0.91). Aanleiding: over de mobiele verbinding van de boot komt een foto
+// trager binnen dan het overzicht hem wil tonen (een nachtfoto is ruim 1 MB), en een hele
+// dag foto voor foto duurt dan te lang.
+//   Verversen    zoveel seconden staat een intervalfoto in beeld.
+//   Verspringen  zoveel keer het foto-interval van de camera ligt er tussen twee getoonde
+//                intervalfoto's; bij 2× en een interval van 3 minuten dus één foto per
+//                6 minuten. De foto's ertussen worden niet opgehaald.
+const VERVERSEN = [0.2, 0.5, 1.0, 1.5, 2.0];   // s
+const VERVERSEN_STANDAARD = 1.0;
+const VERSPRINGEN = [1, 2, 3, 5, 10];          // × het foto-interval
+const VERSPRINGEN_STANDAARD = 1;
+let verversen = VERVERSEN_STANDAARD;       // de gekozen tijd per intervalfoto (s)
+let verspringen = VERSPRINGEN_STANDAARD;   // het gekozen veelvoud van het foto-interval
 const VOORUIT = 4;               // zoveel volgende foto's alvast ophalen
 let weergave = "lijst";          // "lijst" of "dag"
 let film = [];                   // de opnames van de dag, de oudste eerst
@@ -395,6 +419,47 @@ function zonderDubbel(lijst) {
     && o.ts <= v.ts + (v.duur || 0)
     && o.ts >= v.ts - (gebeurtenis(o) ? MARGE_VOOR_VIDEO : 0)));
 }
+// Het foto-interval van een camera in seconden (uit brms.toml). Een camera die niet meer
+// in de configuratie staat, heeft er geen: dan 0, en wordt er niets overgeslagen.
+const fotoInterval = id => (CAMERAS.find(c => c.id === id) || {foto_interval: 0}).foto_interval;
+
+// Welke opname na die op plek `i` komt, met de keuze "Verspringen" (§5.6 punt 2, v0.91).
+// Geeft film.length als er geen meer is (einde van de dag).
+//
+// Bij 1× is dat gewoon de volgende. Bij een groter veelvoud worden intervalfoto's
+// overgeslagen tot er een is die ver genoeg in de tijd ligt. Dat gaat op tijd en niet op
+// aantal: ontbreken er foto's (camera even weg), dan blijft de sprong in de tijd gelijk.
+// De grens ligt een half interval vóór het hele veelvoud, omdat de tijdstippen van de
+// foto's een paar seconden schommelen (de tijd is die ná het ophalen van de foto).
+// Een foto bij een gebeurtenis en een video worden nooit overgeslagen: daar gaat het
+// overzicht juist om. Na zo'n gebeurtenis telt de sprong vanaf de gebeurtenis.
+function volgendePlek(i) {
+  const o = film[i];
+  if (!o || verspringen <= 1) return i + 1;
+  const grens = o.ts + (verspringen - 0.5) * fotoInterval(o.camera_id);
+  for (let j = i + 1; j < film.length; j++) {
+    const k = film[j];
+    if (k.type === "video" || gebeurtenis(k) || k.ts >= grens) return j;
+  }
+  return film.length;
+}
+
+// Vult de twee keuzelijsten. De tekst van "Verspringen" noemt de tijd die bij het
+// veelvoud hoort ("6 min (2×)"), uit het foto-interval van de gekozen camera (zonder
+// keuze: de eerste). Wordt opnieuw aangeroepen als er een andere camera gekozen wordt.
+function vulTempo() {
+  const getal = n => String(n).replace(".", ",");
+  el("verversen").replaceChildren(...VERVERSEN.map(s => new Option(getal(s.toFixed(1)) + " s", s)));
+  el("verversen").value = verversen;
+  const camera = liveCamera();
+  const interval = camera ? camera.foto_interval : 0;
+  // Hele minuten als "6 min", al het andere in seconden ("90 s").
+  const duur = s => s % 60 === 0 ? s / 60 + " min" : getal(s) + " s";
+  el("verspringen").replaceChildren(...VERSPRINGEN.map(n =>
+    new Option(interval ? duur(n * interval) + " (" + n + "×)" : n + "×", n)));
+  el("verspringen").value = verspringen;
+}
+
 // De plaats van een tijdstip op de tijdbalk, in procenten van de dag.
 const opBalk = ts => Math.min(100, Math.max(0, (ts - dagBegin) / 864)) + "%";
 
@@ -537,30 +602,36 @@ function toonPlek() {
     img.src = adres;
     img.alt = "Foto van " + cameraNaam(o.camera_id) + " om " + tijd(o.ts);
     zetVorm(foto);
-    if (speelt) wekker = setTimeout(volgende, gebeurtenis(o) ? DUUR_GEBEURTENIS : DUUR_INTERVAL);
+    // Een intervalfoto staat zo lang als bij "Verversen" gekozen is.
+    if (speelt) wekker = setTimeout(volgende, gebeurtenis(o) ? DUUR_GEBEURTENIS : verversen * 1000);
   };
   // Het bestand is er niet meer (bijvoorbeeld net opgeruimd): overslaan.
   foto.onerror = () => { if (mijn === beurt && speelt) volgende(); };
   foto.src = adres;
-  // De volgende foto's alvast ophalen terwijl deze in beeld is.
+  // De volgende foto's alvast ophalen terwijl deze in beeld is: de foto's die het
+  // overzicht hierna toont, dus met de gekozen sprong (wat overgeslagen wordt, wordt ook
+  // niet opgehaald).
   voorraad = [foto];
-  for (const volgend of film.slice(plek + 1, plek + 1 + VOORUIT))
-    if (volgend.type === "foto") {
+  for (let n = 0, j = volgendePlek(plek); n < VOORUIT && j < film.length; n++, j = volgendePlek(j))
+    if (film[j].type === "foto") {
       const alvast = new Image();
-      alvast.src = "/opname/" + volgend.bestand;
+      alvast.src = "/opname/" + film[j].bestand;
       voorraad.push(alvast);
     }
 }
 
+// Verder naar de volgende opname van het overzicht (met de gekozen sprong).
 function volgende() {
-  if (plek >= film.length - 1) { pauze(); return; }   // einde van de dag
-  plek++;
+  const naar = volgendePlek(plek);
+  if (naar >= film.length) { pauze(); return; }       // einde van de dag
+  plek = naar;
   toonPlek();
 }
 
 function speel() {
   if (!film.length) return;
-  if (plek >= film.length - 1) plek = 0;              // aan het einde: opnieuw van voren
+  // Aan het einde (er komt niets meer na deze opname): opnieuw van voren.
+  if (volgendePlek(plek) >= film.length) plek = 0;
   speelt = true;
   el("speel").textContent = "⏸ Pauze";
   // Een video die op pauze stond gaat verder waar hij was; al het andere begint opnieuw.
@@ -916,7 +987,8 @@ el("volgende").addEventListener("click", () => schuif(1));
 el("vandaag").addEventListener("click", () => zetDag(new Date()));
 el("dag").addEventListener("change", () => { gekozen = null; geselecteerd.clear(); laad(); });
 for (const id of ["camera", "type", "interval"])
-  el(id).addEventListener("change", () => { gekozen = null; laad(); zetLiveKnop(); });
+  // vulTempo: een andere camera kan een ander foto-interval hebben.
+  el(id).addEventListener("change", () => { gekozen = null; laad(); zetLiveKnop(); vulTempo(); });
 el("ouder").addEventListener("click", () => stap(1));
 el("nieuwer").addEventListener("click", () => stap(-1));
 el("alles").addEventListener("click", () => { for (const o of opnames) geselecteerd.add(sleutel(o)); toonLijst(); });
@@ -958,10 +1030,24 @@ el("speel").addEventListener("click", () => speelt ? pauze() : speel());
 el("vorig-beeld").addEventListener("click", () => verspring(plek - 1));
 el("volgend-beeld").addEventListener("click", () => verspring(plek + 1));
 // "verder": de video overslaan; het overzicht loopt door als het liep.
-el("verder").addEventListener("click", () => {
-  if (plek >= film.length - 1) { pauze(); return; }
-  plek++;
-  toonPlek();
+el("verder").addEventListener("click", volgende);
+// De twee keuzelijsten voor het tempo (§5.6 punt 2, v0.91). Een nieuwe keuze geldt vanaf
+// de volgende foto; het afspelen loopt door. De keuze wordt in deze browser onthouden.
+// Een bewaarde waarde die niet (meer) in de lijst staat, telt niet: dan de standaard.
+try {
+  const v = Number(localStorage.getItem("brms-opnames-verversen"));
+  const s = Number(localStorage.getItem("brms-opnames-verspringen"));
+  if (VERVERSEN.includes(v)) verversen = v;
+  if (VERSPRINGEN.includes(s)) verspringen = s;
+} catch (e) { /* geen opslag: de standaardwaarden */ }
+vulTempo();
+el("verversen").addEventListener("change", () => {
+  verversen = Number(el("verversen").value);
+  try { localStorage.setItem("brms-opnames-verversen", verversen); } catch (e) { /* mag mislukken */ }
+});
+el("verspringen").addEventListener("change", () => {
+  verspringen = Number(el("verspringen").value);
+  try { localStorage.setItem("brms-opnames-verspringen", verspringen); } catch (e) { /* mag mislukken */ }
 });
 // Een klik op de tijdbalk springt naar de eerste opname vanaf dat tijdstip.
 el("balk").addEventListener("click", e => {

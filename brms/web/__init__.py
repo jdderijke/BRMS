@@ -849,6 +849,9 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
             "opnames.html", pagina="opnames", titel="Opnames",
             cameras=[{"id": c.id, "naam": c.naam, "video": c.video_url is not None,
                       "video_duur": c.video_duur,
+                      # Het dagoverzicht kan intervalfoto's overslaan (§5.6 punt 2, v0.91):
+                      # de sprong is een veelvoud van dit interval (seconden).
+                      "foto_interval": c.foto_interval,
                       # Live-beeld heeft elke camera met een videostroom (§5.7 punt 18).
                       "live": c.video_url is not None,
                       # Richtknoppen alleen bij een camera die kan bewegen (§5.7 punt 19).

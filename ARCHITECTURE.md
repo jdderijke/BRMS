@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.90 – concept** · 18 november 2026
+**Versie 0.91 – concept** · 18 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1744,7 +1744,8 @@ schrijvers op dezelfde database en map.
    dagoverzicht is een tweede weergave van de opnamepagina, naast de lijst.
    - De pagina speelt de opnames van de gekozen dag (en de gekozen camera) af **van oud
      naar nieuw**, in de browser. Op de Pi wordt er geen videobestand van gemaakt.
-   - Een **intervalfoto** staat **0,5 s** in beeld.
+   - Een **intervalfoto** staat standaard **1 s** in beeld (v0.91; eerder vast 0,5 s);
+     zie "Tempo" hieronder.
    - Een **foto bij een gebeurtenis** (elke andere aanleiding: alarm, op verzoek) staat
      **5 s** in beeld.
    - Een **video** wordt op zijn plaats in de tijd **volledig afgespeeld**; daarna gaat
@@ -1766,6 +1767,28 @@ schrijvers op dezelfde database en map.
    - **Dataverbruik:** een dagoverzicht haalt alle foto's van die dag op: bij 480 foto's
      van bijna 300 kB ongeveer 140 MB, plus ongeveer 14 MB per video van een minuut. Vanaf de boot gaat
      dat van de databundel en vraagt het ruim 4 Mbit/s om bij te blijven.
+   - **Tempo** (v0.91, gebouwd in code v0.28.0). Gemeten over de mobiele verbinding
+     (18 november 2026): de RUT241 levert ongeveer 3 Mbit/s naar buiten, en een nachtfoto
+     is ruim 1,3 MB (ruis in het donker; een dagfoto ongeveer 0,3 MB). Een nachtfoto doet
+     er dan 3 tot 5 s over, terwijl het overzicht er elke 0,5 s een wilde tonen: een dag
+     afspelen duurde een kwartier in plaats van 4 minuten. Daarom is het tempo te kiezen,
+     met twee kleine keuzelijsten op de afspeelbalk:
+     - **Verversen:** hoe lang een intervalfoto in beeld staat: 0,2 / 0,5 / 1,0 / 1,5 /
+       2,0 s; standaard **1,0 s**.
+     - **Verspringen:** hoeveel tijd er tussen twee getoonde intervalfoto's ligt, als
+       veelvoud van het `foto_interval` van de camera: 1× / 2× / 3× / 5× / 10×; standaard
+       **1×** (elke foto). De keuzelijst noemt de tijd erbij, bij een interval van
+       3 minuten "3 min (1×)", "6 min (2×)" enzovoort. De overgeslagen foto's worden niet
+       opgehaald: bij 2× kost een dag de helft van de data.
+     - Het verspringen gaat op **tijd**, niet op aantal: ontbreken er foto's, dan blijft
+       de sprong in de tijd gelijk. Een **foto bij een gebeurtenis en een video worden
+       nooit overgeslagen**; na zo'n gebeurtenis telt de sprong vanaf de gebeurtenis.
+     - Een nieuwe keuze geldt vanaf de volgende foto. De knoppen "één opname terug of
+       verder" en de pijltjestoetsen blijven per opname gaan, zonder sprong. De keuzes
+       worden in de browser onthouden.
+     - Het foto-interval is dat van de gekozen camera (bij "alle camera's" voor de tekst
+       in de keuzelijst dat van de eerste; bij het verspringen telt per foto het interval
+       van de eigen camera).
 
    Invulling bij het bouwen (v0.43):
    - De weergave wordt gekozen met "Weergave: lijst / dagoverzicht" en in de browser
@@ -1785,7 +1808,9 @@ schrijvers op dezelfde database en map.
    - *Op de Pi een video van de dag maken (ffmpeg).* Omrekenen belast de Pi zwaar, kost
      opslag en moet opnieuw bij elke nieuwe of verwijderde opname.
    - *Kleinere foto's voor het overzicht (miniaturen).* Scheelt data, maar vraagt een
-     extra afhankelijkheid of een tweede opname per foto; kan later alsnog.
+     extra afhankelijkheid of een tweede opname per foto; kan later alsnog. Ook bij het
+     trage afspelen over de mobiele verbinding (v0.91) niet gekozen: het tempo kiezen
+     (verversen en verspringen) lost het op zonder iets op de Pi te veranderen.
 3. Het web leest uit SQLite en geeft opdrachten via MQTT (poll-nu, verwijderen); het
    schrijft niet zelf naar database of opnamemap.
 4. **Grafiekenpagina** (v0.22; indeling v0.25), de eerste pagina van het web. De
@@ -3146,6 +3171,7 @@ maand).
 
 | Versie | Datum | Auteur | Wijziging |
 |---|---|---|---|
+| **0.91** | 2026-11-18 | Claude Code, Fable 5.2 | Dagoverzicht (§5.6 punt 2), gebouwd in code v0.28.0: het tempo is te kiezen met twee keuzelijsten op de afspeelbalk. "Verversen": een intervalfoto staat 0,2 / 0,5 / 1,0 / 1,5 / 2,0 s in beeld (standaard 1,0 s; eerder vast 0,5 s). "Verspringen": 1× / 2× / 3× / 5× / 10× het foto-interval van de camera tussen twee getoonde intervalfoto's (standaard 1×); gebeurtenissen en video's worden nooit overgeslagen. Aanleiding: over de mobiele verbinding (ongeveer 3 Mbit/s) doet een nachtfoto van 1,3 MB er 3 tot 5 s over. |
 | 0.1 | 2026-11-08 | Claude Code, Opus 5.5 | Eerste concept, opgesteld uit `CLAUDE.md`; open vragen geïnventariseerd. |
 | 0.2 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-9 besloten: generieke tabel `meting`; stills als bestand met tabel `still` (§5.3.1), met aanleiding, redenering en verworpen alternatieven. OPEN-20 toegevoegd; OPEN-16 uitgebreid met stills. |
 | 0.3 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-10 besloten (§5.3.2): ontvangen, alarmeren en opslaan losgekoppeld; opslag per 5 min als gemiddelde voor doorlopende grootheden, toestanden nooit gemiddeld maar bij verandering; Shelly-poll 30 s. OPEN-21 toegevoegd (flashslijtage door OS). §5.2, §6 bijgewerkt. |
