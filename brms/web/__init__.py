@@ -96,7 +96,9 @@ MAX_HISTORIE = 200
 STANDAARD_AANTAL = 10
 MAX_AANTAL = 100
 # Zo lang (seconden) geldt een opgevraagde status van de services voor /api/status: elke
-# open pagina vraagt die elke 30 s, en elke vraag aan systemd is een apart proces.
+# open pagina vraagt die elke 5 s (§5.6 punt 3, v0.90; eerder 30 s), en elke vraag aan
+# systemd is een apart proces. Door dit onthouden start er hooguit eens per 10 s zo'n
+# proces, hoe vaak en vanaf hoeveel pagina's er ook gevraagd wordt.
 STATUS_BEWAREN = 10.0
 # Zo lang na het antwoord op "Herstart BRMS" herstart de webservice zichzelf (seconden):
 # het antwoord moet eerst de deur uit.

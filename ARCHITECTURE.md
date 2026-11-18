@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.89 – concept** · 18 november 2026
+**Versie 0.90 – concept** · 18 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -1930,7 +1930,17 @@ ook op een telefoon gebruikt.
 3. De **statusstip** en het menu laten op elke pagina zien of er iets mis is: bij
    "Alarmen" staat het aantal actieve alarmen; de stip is rood als een service niet
    draait of de broker onbereikbaar is, oranje bij een actief alarm, anders groen. De
-   pagina vraagt dit elke 30 s op (`/api/status`).
+   pagina vraagt dit elke **5 s** op (`/api/status`).
+   - *Waarom 5 s (v0.90, eerder 30 s).* De bootpagina ververst haar waarden elke 5 s
+     (punt 7) en de grafieken elke 2 s. Met 30 s stond een waarde al lang rood en vet
+     voordat de stip en de teller het alarm toonden, en na het einde van een alarm bleven
+     ze tot een halve minuut staan (gemeld door de gebruiker, 2026-11-18). Met hetzelfde
+     interval als de bootpagina veranderen ze vrijwel tegelijk.
+   - *Kosten.* Het antwoord is één korte telling in de database. De status van de
+     services onthoudt de webservice 10 s, zodat er niet vaker een vraag aan systemd
+     gaat. Over 4G is het enkele MB per dag, en alleen zolang er een pagina open staat.
+   - *Verworpen:* het aantal alarmen meesturen met het antwoord van `/api/boot`. Dat
+     helpt alleen op de bootpagina; op de andere pagina's bleef de stip achterlopen.
 4. **Thema:** onderin de zijbalk de keuze *Automatisch* (volgt het toestel), *Licht* of
    *Donker*. De keuze wordt in de browser onthouden (`localStorage`), per apparaat. Een
    aparte instellingenpagina is er niet: dit is de enige instelling van de weergave.
@@ -3154,7 +3164,8 @@ maand).
 | 0.16 | 2026-11-09 | Claude Code, Opus 5.5 | Monitor met trace (§10.2): `brms monitor [sensor]` in tmux; trace per sensor op aanvraag via `brms/opdracht/trace/aan` (vaste looptijd), traceberichten op `brms/trace/<sensor_id>` (§3.3); trace-uitgang voor elke reader (§5.2.1 punt 7) en de opslag. |
 | 0.17 | 2026-11-09 | Claude Code, Opus 5.5 | Systeempakketten in één lijst `deploy/pakketten.txt` (§10.1 punt 3 en 6); `install.sh` en `update.sh` installeren wat ontbreekt. |
 | 0.18 | 2026-11-09 | Claude Code, Opus 5.5 | Grootheden en correcties per sensor (§5.4.2): optionele lijst `grootheden`, correctie met factor en offset, elke decoder legt vast wat hij levert, `brms grootheden [type]`, controles in `check-config`. Opdracht `brms`: service-opdrachten weigeren te starten naast de systemd-service (§10.1 punt 8). |
-| **0.89** | 2026-11-18 | Claude Code, Fable 5.2 | Slagzij in meldingen (§5.2.5 punt 10), gebouwd in code v0.27.6: een gemeten slagzij staat ook in de meldingen (Telegram, e-mail) en op de pagina Alarmen in hele graden; een alarmgrens blijft staan zoals in `brms.toml`. Camera (§5.7 punt 1, §9): de Foscam hangt met een netwerkkabel aan de RUT241 in plaats van via wifi, omdat het videobeeld via wifi te ver achterliep; wifi als verworpen alternatief vastgelegd. |
+| **0.90** | 2026-11-18 | Claude Code, Fable 5.2 | Statusstip en teller bij "Alarmen" (§5.6 punt 3), gebouwd in code v0.27.7: de pagina vraagt `/api/status` elke 5 s in plaats van elke 30 s, zodat de alarmindicatoren niet meer achterlopen op de rode waarden van de bootpagina. |
+| 0.89 | 2026-11-18 | Claude Code, Fable 5.2 | Slagzij in meldingen (§5.2.5 punt 10), gebouwd in code v0.27.6: een gemeten slagzij staat ook in de meldingen (Telegram, e-mail) en op de pagina Alarmen in hele graden; een alarmgrens blijft staan zoals in `brms.toml`. Camera (§5.7 punt 1, §9): de Foscam hangt met een netwerkkabel aan de RUT241 in plaats van via wifi, omdat het videobeeld via wifi te ver achterliep; wifi als verworpen alternatief vastgelegd. |
 | 0.88 | 2026-11-17 | Claude Code, Fable 5.2 | Gebouwd in code v0.27.5. Relais (§5.2.6 punt 6): de Shelly-reader vraagt bij zijn start de alarmlaag om de stand van de relais, zodat een relais na een herstart binnen seconden uit gaat; de herhaling na 15 seconden vervalt. Slagzij (§5.3.3, §5.6 punt 5): in hele graden, en op de bootpagina staat bij afgerond 0 niets. |
 | 0.87 | 2026-11-17 | Claude Code, Fable 5.2 | OPEN-36 besloten en gebouwd in code v0.27.4 (§5.2.6 punt 3, 4 en 6): de alarmlaag geeft bij zijn start "uit" aan elk relais (twee keer: direct en na 15 seconden); de uitschakeltijd is 2 minuten en de herhaling 1 minuut, eerder 10 en 5. |
 | 0.86 | 2026-11-17 | Claude Code, Fable 5.2 | Alarmen na een herstart (§3.3, §5.5.3 punt 8), gebouwd in code v0.27.3: de opslag vraagt bij zijn start de alarmlaag om de stand, zodat alarmen van vóór de herstart binnen seconden zijn afgesloten in plaats van na een minuut. OPEN-36 toegevoegd: het relais na een herstart van de alarmlaag en een kortere uitschakeltijd. |

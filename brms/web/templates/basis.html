@@ -124,10 +124,17 @@ try {
 })();
 
 // --- status ------------------------------------------------------------------------------
-// Elke 30 s: hoeveel alarmen er actief zijn, of alle services draaien en of de broker
+// Elke 5 s: hoeveel alarmen er actief zijn, of alle services draaien en of de broker
 // bereikbaar is (/api/status). Dat bepaalt de stip rechtsboven en de teller bij "Alarmen".
+//
+// Waarom 5 s (§5.6 punt 3, v0.90; eerder 30 s): de bootpagina ververst haar waarden ook
+// elke 5 s. Met 30 s stond een waarde al lang rood en vet voordat de stip en de teller het
+// alarm lieten zien, en bleven ze na het einde van een alarm tot een halve minuut staan.
+// Het kost weinig: het antwoord is één korte telling in de database, en de webservice
+// onthoudt de status van de services zelf 10 s (STATUS_BEWAREN in brms/web/__init__.py),
+// zodat systemd niet vaker gevraagd wordt.
 const BRMS = {
-  STATUS_INTERVAL: 30000,
+  STATUS_INTERVAL: 5000,
   async status() {
     const stip = document.getElementById("stip"), tekst = document.getElementById("stiptekst");
     const teller = document.getElementById("teller-alarmen");
