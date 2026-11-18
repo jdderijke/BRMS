@@ -24,13 +24,37 @@ the documentation are in Dutch.*
   Gen3); alleen met walstroom, en de stekker schakelt zelf uit als BRMS wegvalt.
 - **Kijken** – webinterface met grafieken (live en historisch), opnames van de camera's,
   live-beeld en een logboek van het systeem. Desgewenst met een bootpagina als eerste
-  pagina: je eigen tekening van de boot (SVG) met op elke plek de actuele waarde.
+  pagina: je eigen tekening van de boot (SVG) met op elke plek de actuele waarde. Licht
+  en donker thema, ook bruikbaar op een telefoon.
 - **Onbeheerd draaien** – eigen Python-code met weinig afhankelijkheden, systemd-services
   die vanzelf herstarten, geen clouddienst nodig, niets open op internet.
 
 ## Schermafdrukken
 
 De schermafdrukken tonen de echte webinterface met gesimuleerde metingen.
+
+**Boot** – je eigen tekening van de boot, met op elke plek de actuele waarde: temperatuur
+per ruimte, laadtoestand van de accu, de bilgepomp, spanning en vermogen van de kachels en
+de slagzij. Een waarde met een actief alarm staat rood en vet (hier: 6° slagzij over
+bakboord); een sensor die zwijgt toont `--`. Een klik op een waarde opent de grafiek ervan.
+
+![Bootpagina: tekening van de boot met de actuele waarden](docs/screenshots/boot.png)
+
+De tekening is één SVG-bestand, bijvoorbeeld een dia uit PowerPoint die je opslaat als SVG.
+Op elke plek waar een waarde moet komen, zet je de tekst `sensor.grootheid`, bijvoorbeeld
+`kajuit.temperatuur`; BRMS vervangt die tekst door de waarde. Een sensor toevoegen of
+verplaatsen is dus alleen een wijziging van de tekening. Aanzetten gaat met twee regels in
+`brms.toml`:
+
+```toml
+[boot]
+tekening = "boot.svg"     # het bestand staat naast brms.toml
+```
+
+Op een telefoon die rechtop staat, draait de tekening een kwartslag: de boeg wijst naar
+boven en de waarden blijven leesbaar.
+
+<img src="docs/screenshots/boot-telefoon.png" alt="Bootpagina op een telefoon: de boeg wijst naar boven" width="300">
 
 **Grafieken** – een week temperatuur van drie sensoren. De rode vlakken zijn de perioden
 waarin het alarm "Vorst" actief was; de stippellijnen zijn de alarmgrens en de herstelgrens.
@@ -52,6 +76,25 @@ opgetreden.
 verzoek, en live-beeld.
 
 ![Opnames: foto's en video's van de camera in de kajuit](docs/screenshots/opnames.png)
+
+### Donker thema
+
+Elke pagina is er in een licht en een donker thema. Onderin het menu kies je **Auto**
+(volgt de instelling van het toestel), **Licht** of **Donker**; de keuze wordt per browser
+onthouden. Handig als je 's avonds nog even kijkt hoe de boot erbij ligt.
+
+De bootpagina: de vakjes met de waarden en de tekst in de tekening kleuren mee, de
+tekening zelf blijft zoals je haar getekend hebt.
+
+![Bootpagina in het donkere thema](docs/screenshots/boot-donker.png)
+
+De grafieken, met dezelfde week temperatuur en het vorstalarm:
+
+![Grafieken in het donkere thema](docs/screenshots/grafieken-donker.png)
+
+De alarmen, met het actieve alarm voor de slagzij:
+
+![Alarmen in het donkere thema](docs/screenshots/alarmen-donker.png)
 
 ## Wat je nodig hebt
 
