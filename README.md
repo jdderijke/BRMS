@@ -40,21 +40,37 @@ bakboord); een sensor die zwijgt toont `--`. Een klik op een waarde opent de gra
 
 ![Bootpagina: tekening van de boot met de actuele waarden](docs/screenshots/boot.png)
 
-De tekening is één SVG-bestand, bijvoorbeeld een dia uit PowerPoint die je opslaat als SVG.
-Op elke plek waar een waarde moet komen, zet je de tekst `sensor.grootheid`, bijvoorbeeld
-`kajuit.temperatuur`; BRMS vervangt die tekst door de waarde. Een sensor toevoegen of
-verplaatsen is dus alleen een wijziging van de tekening. Aanzetten gaat met twee regels in
-`brms.toml`:
+#### Je eigen tekening
 
-```toml
-[boot]
-tekening = "boot.svg"     # het bestand staat naast brms.toml
-```
+De bootpagina gebruikt je eigen tekening: BRMS levert er geen mee. Zo maak je haar:
 
-Op een telefoon die rechtop staat, draait de tekening een kwartslag: de boeg wijst naar
-boven en de waarden blijven leesbaar.
+1. **Teken de boot** in een programma naar keuze en sla de tekening op als SVG. Een dia
+   uit PowerPoint werkt goed (Opslaan als → SVG): een plattegrond of foto van de boot als
+   achtergrond, met eventueel een titel en pijlen erbij.
+2. **Zet de waarden op hun plek.** Typ op elke plek waar een waarde moet komen een
+   tekstvak met `sensor.grootheid`: de naam van de sensor uit `brms.toml`, een punt en de
+   grootheid. Bijvoorbeeld `kajuit.temperatuur`, `accu.soc`, `bilge.bilgepomp` of
+   `kachel.vermogen`. Hoofdletters tellen niet mee. Welke grootheden een sensor levert,
+   toont `brms grootheden <type>`.
+3. **Zet het bestand op de Pi**, in de map `config/` naast `brms.toml`, bijvoorbeeld vanaf
+   je pc met `scp boot.svg brms:BRMS/config/`.
+4. **Zet de bootpagina aan** met twee regels in `brms.toml`, en herstart één keer met
+   `brms herstart`:
 
-<img src="docs/screenshots/boot-telefoon.png" alt="Bootpagina op een telefoon: de boeg wijst naar boven" width="300">
+   ```toml
+   [boot]
+   tekening = "boot.svg"     # het bestand staat naast brms.toml
+   ```
+
+BRMS haalt de teksten `sensor.grootheid` uit de tekening en zet op de plek van de eerste
+letter een vakje met de actuele waarde. Alle andere tekst (een titel, een bijschrift) en
+alles wat je getekend hebt, blijft staan. Er staat verder niets over plekken in
+`brms.toml`: een waarde toevoegen of verplaatsen doe je in de tekening. Zet daarna het
+nieuwe bestand op de Pi en ververs de pagina; herstarten hoeft dan niet.
+
+Staat de slagzij twee keer in de tekening (boven voor bakboord, onder voor stuurboord),
+dan verschijnt de waarde alleen aan de kant waar de boot naartoe helt. Op een telefoon die
+rechtop staat, draait de tekening een kwartslag, met de boeg naar boven.
 
 **Grafieken** – een week temperatuur van drie sensoren. De rode vlakken zijn de perioden
 waarin het alarm "Vorst" actief was; de stippellijnen zijn de alarmgrens en de herstelgrens.
