@@ -38,6 +38,10 @@ Energie: systeem ca. 11 W (~21 Ah/dag). Walstroom aanwezig maar kan wegvallen; a
 - Binnencamera (Foscam) ook met een netwerkkabel aan de RUT241, niet via wifi (ARCHITECTURE.md §5.7 punt 1).
 - Mobiel internet zit achter CGNAT → **Tailscale** op de Pi (key expiry uit), subnet-route
   voor router en camera. Niets open op internet.
+- Subnet-route (ingericht op de boot-Pi, november 2026): de Pi biedt `192.168.1.0/24` aan in
+  Tailscale. Router (`192.168.1.1`), camera en Shelly's zijn daarmee vanaf thuis (thuisnetwerk
+  `192.168.178.x`) rechtstreeks op hun eigen adres bereikbaar, ook in de browser. Inrichten:
+  ARCHITECTURE.md §9.
 - Geen noodingang buiten Tailscale om: Teltonika RMS wordt niet gebruikt (geen extra externe
   dienst) en het relais voor Pi-herstart via de router-uitgang is vervallen. Vangnet: de router
   herstart zichzelf ("Ping Reboot"), de Pi via de hardware-watchdog (ARCHITECTURE.md §7).

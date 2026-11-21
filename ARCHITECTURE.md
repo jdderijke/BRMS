@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.91 – concept** · 18 november 2026
+**Versie 0.92 – concept** · 21 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -2730,6 +2730,23 @@ bereikbaar; metingen gaan wel door (P4). **[OPEN-18]** Moet uitval van BRMS zelf
   de Shelly's via de wifi van de router.
 - Mobiel internet zit achter CGNAT → Tailscale op de Pi (key expiry uit), met subnet-route
   naar router en camera. Niets open op internet.
+- *Subnet-route (v0.92, ingericht en gecontroleerd op de boot-Pi).* De Pi biedt het hele
+  bootnetwerk `192.168.1.0/24` aan in Tailscale. Elk apparaat in het tailnet (pc thuis,
+  telefoon) bereikt daarmee de router (`http://192.168.1.1`), de camera en de Shelly's op
+  hun eigen adres, bijvoorbeeld om de camera in te stellen via zijn webpagina. Er is geen
+  SSH-tunnel en geen browser op de Pi voor nodig. Voorwaarde: het netwerk waar je zit
+  gebruikt niet zelf `192.168.1.x` (thuis is dat `192.168.178.x`); anders botsen de
+  adressen en blijft een SSH-tunnel over (`ssh -L 8088:<adres>:<poort> brms`).
+  Inrichten, eenmalig per Pi:
+  1. Doorsturen van IP-verkeer aanzetten, blijvend na een herstart:
+     `echo 'net.ipv4.ip_forward = 1' | sudo tee /etc/sysctl.d/99-tailscale.conf` en
+     `sudo sysctl -p /etc/sysctl.d/99-tailscale.conf`.
+  2. De route aanbieden: `sudo tailscale set --advertise-routes=192.168.1.0/24`.
+  3. De route goedkeuren in de beheerpagina van Tailscale (Machines → `brms` →
+     *Edit route settings*).
+
+  Windows en iOS nemen een aangeboden route vanzelf over; een Linux-apparaat pas na
+  `tailscale set --accept-routes`.
 - Geen noodingang buiten Tailscale om (v0.54): Teltonika RMS staat uit en het relais op de
   router-uitgang vervalt (§7). De router herstart zichzelf met "Ping Reboot".
 
@@ -3171,7 +3188,8 @@ maand).
 
 | Versie | Datum | Auteur | Wijziging |
 |---|---|---|---|
-| **0.91** | 2026-11-18 | Claude Code, Fable 5.2 | Dagoverzicht (§5.6 punt 2), gebouwd in code v0.28.0: het tempo is te kiezen met twee keuzelijsten op de afspeelbalk. "Verversen": een intervalfoto staat 0,2 / 0,5 / 1,0 / 1,5 / 2,0 s in beeld (standaard 1,0 s; eerder vast 0,5 s). "Verspringen": 1× / 2× / 3× / 5× / 10× het foto-interval van de camera tussen twee getoonde intervalfoto's (standaard 1×); gebeurtenissen en video's worden nooit overgeslagen. Aanleiding: over de mobiele verbinding (ongeveer 3 Mbit/s) doet een nachtfoto van 1,3 MB er 3 tot 5 s over. |
+| **0.92** | 2026-11-21 | Claude Code, Fable 5.2 | Netwerk (§9): de subnet-route van Tailscale is op de boot-Pi ingericht en gecontroleerd. De Pi biedt `192.168.1.0/24` aan, zodat router, camera en Shelly's vanaf thuis op hun eigen adres bereikbaar zijn (bijvoorbeeld de webpagina van de camera). De drie stappen om het in te richten staan erbij. Geen wijziging in de code. |
+| 0.91 | 2026-11-18 | Claude Code, Fable 5.2 | Dagoverzicht (§5.6 punt 2), gebouwd in code v0.28.0: het tempo is te kiezen met twee keuzelijsten op de afspeelbalk. "Verversen": een intervalfoto staat 0,2 / 0,5 / 1,0 / 1,5 / 2,0 s in beeld (standaard 1,0 s; eerder vast 0,5 s). "Verspringen": 1× / 2× / 3× / 5× / 10× het foto-interval van de camera tussen twee getoonde intervalfoto's (standaard 1×); gebeurtenissen en video's worden nooit overgeslagen. Aanleiding: over de mobiele verbinding (ongeveer 3 Mbit/s) doet een nachtfoto van 1,3 MB er 3 tot 5 s over. |
 | 0.1 | 2026-11-08 | Claude Code, Opus 5.5 | Eerste concept, opgesteld uit `CLAUDE.md`; open vragen geïnventariseerd. |
 | 0.2 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-9 besloten: generieke tabel `meting`; stills als bestand met tabel `still` (§5.3.1), met aanleiding, redenering en verworpen alternatieven. OPEN-20 toegevoegd; OPEN-16 uitgebreid met stills. |
 | 0.3 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-10 besloten (§5.3.2): ontvangen, alarmeren en opslaan losgekoppeld; opslag per 5 min als gemiddelde voor doorlopende grootheden, toestanden nooit gemiddeld maar bij verandering; Shelly-poll 30 s. OPEN-21 toegevoegd (flashslijtage door OS). §5.2, §6 bijgewerkt. |
