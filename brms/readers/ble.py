@@ -276,11 +276,16 @@ class Ontvanger:
     een lock is daarom niet nodig.
     """
 
-    def __init__(self, sensoren: dict[str, Sensor], bus, tracer, simulator):
+    def __init__(self, sensoren: dict[str, Sensor], bus, tracer, simulator, klok=time.time):
         self._sensoren = sensoren
         self._bus = bus
         self._tracer = tracer
         self._simulator = simulator
+        # De klok voor de ontvangsttijd (Unix-seconden); de tests geven een eigen klok mee.
+        self._klok = klok
+        # Per Victron-apparaat de seconde (ontvangsttijd) waarvan al een bericht is
+        # doorgegeven; zie _victron_herhaling (§5.2.2 punt 11).
+        self._seconde: dict[str, int] = {}
         # Laatst ontvangen stand van de bewegingsteller per Ruuvi (§5.2.3 punt 5). Alleen in
         # het geheugen: na een herstart begint de reader opnieuw en gaat hooguit de beweging
         # tussen de laatste ontvangst vóór en de eerste ontvangst ná de herstart verloren.
@@ -309,9 +314,15 @@ class Ontvanger:
         if self._gesimuleerd.get(sensor_id, False) != gesimuleerd:
             self._gesimuleerd[sensor_id] = gesimuleerd
             self._tellers.pop(sensor_id, None)
+            # Het eerste bericht na de overgang gaat altijd door, ook als er in dezelfde
+            # seconde al een bericht van de andere soort was.
+            self._seconde.pop(sensor_id, None)
 
-        # De ontvangsttijd is "nu" (§5.2.1 punt 4).
-        metingen = verwerk(adres, service_data, fabrikant_data, rssi, int(time.time()),
+        # De ontvangsttijd is "nu" (§5.2.1 punt 4), in hele seconden.
+        ts = int(self._klok())
+        if self._victron_herhaling(sensor_id, fabrikant_data, ts):
+            return
+        metingen = verwerk(adres, service_data, fabrikant_data, rssi, ts,
                            self._sensoren, self._tracer, self._tellers, gesimuleerd)
         regels = []
         for m in metingen:
@@ -323,3 +334,30 @@ class Ontvanger:
         stap = self._tracer.voor(sensor_id) if metingen else None
         if stap:
             stap("gepubliceerd", "\n".join(regels))
+
+    def _victron_herhaling(self, sensor_id: str, fabrikant_data: dict, ts: int) -> bool:
+        """Of dit bericht van een Victron-apparaat moet afvallen omdat er in dezelfde
+        seconde al een is doorgegeven (§5.2.2 punt 11, besluit OPEN-45 en OPEN-46).
+
+        Een Victron-apparaat zendt zijn bericht vijf tot zeven keer per seconde uit, maar
+        de inhoud verandert veel minder vaak: het zijn herhalingen van dezelfde meting. Het
+        tijdstip van een meting is een hele seconde, dus die herhalingen zouden met
+        hetzelfde tijdstip op de bus komen. Daarom gaat per apparaat alleen het EERSTE
+        bericht van elke seconde door; de rest van die seconde valt hier af, vóór het
+        ontsleutelen (geen rekenwerk, niets op de bus, niets in de trace). Een waarde die
+        midden in een seconde verandert, komt zo hooguit een seconde later op de bus.
+
+        Alleen Instant Readout-berichten tellen mee. Een Victron-apparaat zendt ook andere
+        advertenties uit (voor VictronConnect); die leveren geen metingen op en mogen de
+        seconde dus niet "opmaken". Andere sensortypen (Ruuvi, Xiaomi) zenden minder dan
+        één keer per seconde en gaan altijd door.
+        """
+        if self._sensoren[sensor_id].type not in victron.LEVERT:
+            return False
+        data = fabrikant_data.get(victron.FABRIKANT_ID)
+        if data is None or not victron.is_instant_readout(data):
+            return False   # verwerk() gooit dit bericht zelf weg
+        if self._seconde.get(sensor_id) == ts:
+            return True
+        self._seconde[sensor_id] = ts
+        return False

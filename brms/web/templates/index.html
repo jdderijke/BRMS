@@ -8,8 +8,10 @@
   Per grafiek kiest hij een sensor en een grootheid en voegt die als reeks toe; een grafiek
   kan reeksen van meerdere sensoren en grootheden bevatten.
 
-  Met "eerder" en "later" schuift het venster van een grafiek: bij de database een periode
-  terug, bij live over de metingen die de webservice nog in het geheugen heeft. Een eerder
+  Met "eerder" en "later" schuift het venster van een grafiek: bij de database over de
+  opgeslagen rijen, bij live over de metingen die de webservice nog in het geheugen heeft.
+  Een stap is een derde van het venster of de periode, en bij "laatste 50 / 100 metingen"
+  de helft (v0.101): zo blijft een deel van het vorige beeld staan. Een eerder
   live-venster staat stil; "nu" laat de grafiek weer meelopen.
 
   Grootheden met een verschillende eenheid (°C en %) krijgen binnen de grafiek elk een
@@ -135,6 +137,7 @@
         <option value="t1800">laatste 30 minuten</option>
         <option value="t3600">laatste uur</option>
         <option value="t10800">laatste 3 uur</option>
+        <option value="t21600">laatste 6 uur</option>
         <option value="t43200">laatste 12 uur</option>
         <option value="t86400">laatste 24 uur</option>
       </select>
@@ -142,8 +145,9 @@
         <option value="3600">1 uur</option>
         <option value="21600">6 uur</option>
         <option value="86400">24 uur</option>
+        <option value="259200">3 dagen</option>
         <option value="604800">7 dagen</option>
-        <option value="2592000">30 dagen</option>
+        <option value="2592000">1 maand</option>
       </select>
       {# De bladerknoppen eerder / later / nu, als pictogram (v0.56). #}
       {% include "_bladeren.html" %}
@@ -204,15 +208,16 @@ const MAX_REEKSEN = 8;        // per grafiek; er zijn acht goed te onderscheiden
 const STROOK = 220;           // px hoogte per eenheid in een grafiek
 const BEWAARSLEUTEL = "brms-grafieken";
 // Waar een nieuwe grafiek mee begint, en waar een grafiek naar terugvalt als zijn bron
-// verandert (v0.62): live de laatste 10 minuten, database de laatste 24 uur.
-const VENSTER_STANDAARD = "t600";
+// verandert (v0.62): live het laatste uur (v0.101; eerder 10 minuten), database de
+// laatste 24 uur.
+const VENSTER_STANDAARD = "t3600";
 const PERIODE_STANDAARD = "86400";
 const ALARM_INTERVAL = 30000; // ms tussen twee keer ophalen van de alarmperioden (live)
 
 // Live-vensters van een uur en langer worden samengevat per tijdvak (venster in s ->
 // breedte van een vak in s), zodat een reeks hooguit ongeveer 720 punten heeft. Alle
 // losse metingen van 24 uur zijn te veel voor de browser en voor de mobiele verbinding.
-const STAP = {3600: 5, 10800: 15, 43200: 60, 86400: 120};
+const STAP = {3600: 5, 10800: 15, 21600: 30, 43200: 60, 86400: 120};
 
 const el = id => document.getElementById(id);
 const kleur = naam => getComputedStyle(document.documentElement).getPropertyValue(naam).trim();
@@ -222,7 +227,7 @@ const eenheid = g => (GROOTHEDEN[g] || {eenheid: ""}).eenheid;
 // Alle grafieken op de pagina. Eén grafiek:
 //   {bron: "live"|"database", venster, periode, vak (het DOM-element),
 //    chart (Chart.js), reeksen: [reeks, ...],
-//    verschuiving  0 = het venster eindigt nu; N = N vensters eerder,
+//    verschuiving  0 = het venster eindigt nu; N = N stappen eerder (zie sprong),
 //    anker         (live) het tijdstip waar het terugbladeren begon, zie vraagLive}
 // Eén reeks:
 //   {sensor (ID), grootheid, kleur (1..8), data: [{x: ms, y}], en voor live:
@@ -415,6 +420,18 @@ function meld(g, tekst) { g.vak.querySelector(".melding").textContent = tekst ||
 function venster(g) {
   const n = Number(g.venster.slice(1));
   return g.venster[0] === "n" ? {aantal: n} : {duur: n, stap: STAP[n] || 0};
+}
+
+// Hoe ver "eerder" en "later" het venster per stap verschuiven (§5.6 punt 4, v0.101):
+//   - een venster of periode in tijd: een derde ervan, in seconden (bij 1 uur 20 minuten);
+//   - "laatste N metingen": de helft, in metingen (bij 50 metingen 25).
+// Een stap is zo kleiner dan het venster: na een stap staat een deel van het vorige beeld
+// er nog, en is te zien waar je bent. Alle keuzes in de lijsten zijn deelbaar door 3,
+// respectievelijk 2, dus de uitkomst is een heel getal.
+function sprong(g) {
+  if (g.bron !== "live") return Number(g.periode) / 3;
+  const v = venster(g);
+  return v.aantal ? v.aantal / 2 : v.duur / 3;
 }
 
 // Tekent de grafiek opnieuw op (na een andere keuze of een andere set reeksen) en haalt de
@@ -665,8 +682,9 @@ function toonWaarden(g) {
 // Een grafiek met een eerder venster (verschuiving > 0) staat stil: zijn reeksen worden één
 // keer opgehaald en daarna niet meer. Het venster wordt geteld vanaf het anker (het
 // tijdstip waarop het terugbladeren begon):
-//   per tijd    van anker - (N+1) × duur  tot  anker - N × duur
-//   per aantal  de `aantal` metingen vóór de laatste N × aantal metingen van vóór het anker
+//   per tijd    tot = anker - N × sprong, van = tot - duur          (sprong = duur / 3)
+//   per aantal  de `aantal` metingen vóór de laatste N × sprong metingen van vóór het
+//               anker                                               (sprong = aantal / 2)
 let bezig = false;
 async function vraagLive() {
   if (bezig) return;
@@ -680,9 +698,9 @@ async function vraagLive() {
       if (g.verschuiving > 0) {
         if (r.geladen) continue;   // een eerder venster verandert niet meer
         if (v.aantal) {
-          vraag.aantal = v.aantal; vraag.overslaan = g.verschuiving * v.aantal; vraag.tot = g.anker;
+          vraag.aantal = v.aantal; vraag.overslaan = g.verschuiving * sprong(g); vraag.tot = g.anker;
         } else {
-          vraag.tot = g.anker - g.verschuiving * v.duur;
+          vraag.tot = g.anker - g.verschuiving * sprong(g);
           vraag.vanaf = vraag.tot - v.duur;
           if (v.stap) vraag.stap = v.stap;
         }
@@ -788,7 +806,7 @@ function toonEerderVenster(g, v) {
     van = Math.min(...tijden); tot = Math.max(...tijden);
   } else {
     // Per tijd toont de as het hele venster, ook waar geen metingen zijn.
-    tot = (g.anker - g.verschuiving * v.duur) * 1000;
+    tot = (g.anker - g.verschuiving * sprong(g)) * 1000;
     van = tot - v.duur * 1000;
     g.chart.options.scales.x.min = van;
     g.chart.options.scales.x.max = tot;
@@ -799,15 +817,16 @@ function toonEerderVenster(g, v) {
   const wat = v.aantal ? v.aantal + " metingen"
     : g.vak.querySelector(".venster").selectedOptions[0].textContent.replace("laatste ", "");
   meld(g, g.reeksen.every(r => !r.data.length)
-    ? "Live, " + g.verschuiving + " venster(s) eerder: geen metingen in het geheugen van de webservice."
-    : "Live, " + g.verschuiving + " venster(s) eerder (" + wat + "): " + datum(van) + " " + klok(van, true)
+    ? "Live, eerder: geen metingen in het geheugen van de webservice."
+    : "Live, eerder (" + wat + "): " + datum(van) + " " + klok(van, true)
       + "  –  " + klok(tot, true) + ". Staat stil; “nu” laat de grafiek weer meelopen.");
 }
 
 // --- database: de opgeslagen historie ------------------------------------------------
 async function laadHistorie(g) {
   const periode = Number(g.periode);
-  const tot = Math.floor(Date.now() / 1000) - g.verschuiving * periode;
+  // Elke stap terug is een derde van de periode (zie sprong).
+  const tot = Math.floor(Date.now() / 1000) - g.verschuiving * sprong(g);
   const van = tot - periode;
   const reeksen = g.reeksen.slice();
   meld(g, "Database: laden …");

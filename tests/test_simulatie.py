@@ -322,6 +322,91 @@ class TestOntvanger(unittest.TestCase):
         self.assertTrue(stappen["ruw"].startswith("SIMULATIE BTHome 40 00 00"))
 
 
+class TestVictronEensPerSeconde(unittest.TestCase):
+    """Een Victron-apparaat zendt zijn bericht meerdere keren per seconde uit; de reader
+    geeft per apparaat alleen het eerste bericht van elke seconde door (§5.2.2 punt 11,
+    besluit OPEN-45 en OPEN-46)."""
+
+    SLEUTEL = "aff4d0995b7d1e176c0c33ecb9e70dcd"
+    VMAC = "D3:11:22:33:44:55"     # de accumonitor
+    VMAC2 = "D3:11:22:33:44:66"    # een zonnelader
+
+    def setUp(self):
+        self.bus, self.klok, self.tijd = NepBus(), NepKlok(), NepKlok()
+        self.sensoren = {self.VMAC: Sensor(self.VMAC, "victron-bmv", "accu", sleutel=self.SLEUTEL),
+                         self.VMAC2: Sensor(self.VMAC2, "victron-mppt", "zon", sleutel=self.SLEUTEL),
+                         MAC: Sensor(MAC, "bthome", "kajuit")}
+        self.sim = simulatie.Simulator(self.bus, self.sensoren, klok=self.klok)
+        self.tracer = trace.Tracer(self.bus, "ble-reader", klok=self.klok)
+        # self.tijd is de klok van de ontvangsttijd (Unix-seconden) en staat op 1000,0.
+        self.ontvang = Ontvanger(self.sensoren, self.bus, self.tracer, self.sim, klok=self.tijd)
+
+    def _bmv(self, soc, n=1):
+        """Een Instant Readout-bericht van de accumonitor met deze laadtoestand."""
+        w = dict(simulatie.victron_waarden("victron-bmv", 0.0), soc=soc)
+        return {victron.FABRIKANT_ID: simulatie.victron_bytes("victron-bmv", w, n, self.SLEUTEL)}
+
+    def _soc(self):
+        return [(m.ts, m.waarde) for m in self.bus.metingen if m.grootheid == "soc"]
+
+    def test_alleen_het_eerste_bericht_van_een_seconde(self):
+        # Drie ontvangsten in seconde 1000: alleen de eerste komt op de bus, ook als de
+        # inhoud intussen veranderd is (die waarde komt met de volgende seconde).
+        self.ontvang(self.VMAC, {}, self._bmv(80.0), -60)
+        self.tijd.t = 1000.4
+        self.ontvang(self.VMAC, {}, self._bmv(80.0), -60)
+        self.tijd.t = 1000.9
+        self.ontvang(self.VMAC, {}, self._bmv(79.0, 2), -60)
+        self.assertEqual(self._soc(), [(1000, 80.0)])
+        # De volgende seconde gaat er weer één door.
+        self.tijd.t = 1001.1
+        self.ontvang(self.VMAC, {}, self._bmv(79.0, 2), -60)
+        self.ontvang(self.VMAC, {}, self._bmv(79.0, 2), -60)
+        self.assertEqual(self._soc(), [(1000, 80.0), (1001, 79.0)])
+
+    def test_per_apparaat(self):
+        # De accumonitor en de zonnelader tellen elk hun eigen seconde.
+        w = simulatie.victron_waarden("victron-mppt", 0.5)
+        zon = {victron.FABRIKANT_ID: simulatie.victron_bytes("victron-mppt", w, 1, self.SLEUTEL)}
+        for _ in range(2):
+            self.ontvang(self.VMAC, {}, self._bmv(80.0), -60)
+            self.ontvang(self.VMAC2, {}, zon, -60)
+        self.assertEqual(len(self._soc()), 1)
+        self.assertEqual(len([m for m in self.bus.metingen if m.grootheid == "zonnevermogen"]), 1)
+
+    def test_ander_bericht_van_het_apparaat_maakt_de_seconde_niet_op(self):
+        # Een Victron-apparaat zendt ook advertenties uit die geen Instant Readout zijn
+        # (voor VictronConnect). Zo'n bericht levert niets op en mag het echte bericht in
+        # dezelfde seconde niet tegenhouden.
+        self.ontvang(self.VMAC, {}, {victron.FABRIKANT_ID: bytes.fromhex("0200ff")}, -60)
+        self.ontvang(self.VMAC, {}, self._bmv(80.0), -60)
+        self.assertEqual(self._soc(), [(1000, 80.0)])
+
+    def test_niet_in_de_trace(self):
+        # Een bericht dat afvalt, komt ook niet in de trace: die zou anders vollopen.
+        self.tracer.bij_opdracht(trace.TOPIC_AAN, json.dumps({"sensor_ids": [self.VMAC]}).encode())
+        for _ in range(3):
+            self.ontvang(self.VMAC, {}, self._bmv(80.0), -60)
+        ruw = [d for topic, d in self.bus.berichten
+               if topic.startswith("brms/trace/") and d["stap"] == "ruw"]
+        self.assertEqual(len(ruw), 1)
+
+    def test_andere_sensortypen_gaan_altijd_door(self):
+        # Een Xiaomi die (uitzonderlijk) twee keer in één seconde gehoord wordt: beide door.
+        for _ in range(2):
+            self.ontvang(MAC, {bthome.FCD2_UUID: PVVX}, {}, -70)
+        self.assertEqual(len([m for m in self.bus.metingen if m.grootheid == "temperatuur"]), 2)
+
+    def test_eerste_gesimuleerde_bericht_gaat_door(self):
+        # Echt bericht in seconde 1000, daarna begint in dezelfde seconde de simulatie: het
+        # eerste gesimuleerde bericht gaat door, de herhaling ervan niet.
+        self.ontvang(self.VMAC, {}, self._bmv(80.0), -60)
+        _opdracht(self.sim, simulatie.TOPIC_AAN, self.VMAC, duur=60)
+        self.ontvang(self.VMAC, {}, self._bmv(50.0, 2), -60, True)
+        self.ontvang(self.VMAC, {}, self._bmv(50.0, 2), -60, True)
+        self.assertEqual(self._soc(), [(1000, 80.0), (1000, 50.0)])
+
+
 class TestVraagDuur(unittest.TestCase):
     def _vraag(self, *antwoorden):
         reeks = iter(antwoorden)

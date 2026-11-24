@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.100 – concept** · 24 november 2026
+**Versie 0.103 – concept** · 24 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -445,6 +445,51 @@ en betekent stilte gewoon "sensor stil". Er is geen werk aan de 230V-kant nodig.
    (§5.2.3 punt 4).
 10. Victron-apparaten kunnen gesimuleerd worden (v0.30, §10.3): de reader maakt zelf een
     bericht aan en versleutelt het met de sleutel uit de configuratie.
+11. **Hooguit één keer per seconde op de bus** (besluit OPEN-45 en OPEN-46, v0.102 en v0.103; gebouwd in code v0.30.0).
+
+    *Aanleiding (gemeten op 24 november 2026).* Een Victron-apparaat zendt zijn bericht
+    vijf tot zeven keer per seconde uit, maar de inhoud verandert veel minder vaak: het
+    zijn herhalingen van dezelfde meting. De reader zette elke ontvangst op de bus. Het
+    tijdstip van een meting is een hele seconde (§3.3), dus die herhalingen hebben ook nog
+    hetzelfde tijdstip. Gevolgen:
+    - in een live-grafiek staan ze op elkaar: "laatste 50 metingen" van de BMV is 8 à 10
+      seconden;
+    - het live-geheugen van de webservice (hooguit 100.000 metingen per reeks, §5.6
+      punt 4) gaat voor deze apparaten maar ongeveer 5,3 uur terug in plaats van 24 uur;
+    - de bus, de opslag en de alarmlaag verwerken vijf keer zoveel berichten als er
+      metingen zijn.
+
+    *Verworpen.*
+    - *In het live-geheugen hooguit één meting per seconde bewaren.* Lost alleen de
+      grafiek op; de herhalingen blijven op de bus.
+    - *Het maximum van het live-geheugen verhogen* (naar ongeveer 500.000). Kost ongeveer
+      150 MB werkgeheugen op een Pi met 2 GB, om herhalingen te bewaren.
+    - *Zo laten.* De live-grafiek van juist de accu en de zonneladers haalt dan geen dag.
+
+    *Specificatie.*
+    - De BLE-reader geeft van een Victron-apparaat **per seconde hooguit één bericht**
+      door. De seconde is die van de ontvangsttijd, hetzelfde hele getal als de `ts` van
+      de meting (§5.2.1 punt 4). Op de bus staat daardoor per apparaat, per grootheid en
+      per tijdstip hooguit één meting.
+    - Door gaat **de eerste ontvangst van elke seconde**; de rest van die seconde valt af
+      (besluit OPEN-46, v0.103). Een waarde die midden in een seconde verandert, komt
+      daardoor hooguit een seconde later op de bus. Verworpen: de laatste van elke
+      seconde (vraagt een wachttijd en een klokje in de reader, voor een winst van
+      hooguit een seconde) en alleen een bericht met andere inhoud (dan zou een
+      apparaat met een onveranderde waarde als stil gelden).
+    - Alleen Instant Readout-berichten tellen mee: een andere advertentie van het
+      apparaat (voor VictronConnect) levert geen meting op en houdt het echte bericht
+      van dezelfde seconde niet tegen. Bij de overgang tussen echt en gesimuleerd gaat
+      het eerste bericht altijd door.
+    - Een bericht dat niet doorgaat, valt af vóór het ontsleutelen: het komt niet op de
+      bus en niet in de trace (§10.2), en kost geen rekenwerk.
+    - Alleen voor de Victron-typen (punt 7). De RuuviTags en de Xiaomi's zenden minder dan
+      één keer per seconde en gaan door zoals nu.
+    - Geldt ook voor een gesimuleerd Victron-apparaat (§10.3): de simulator levert zijn
+      berichten bij dezelfde ingang af.
+    - Voor de opslag verandert er niets aan de uitkomst: het gemiddelde per 5 minuten van
+      één waarde per seconde is hetzelfde als dat van vijf dezelfde waarden per seconde.
+      De alarmlaag beoordeelt elke waarde die doorkomt, hooguit een seconde later dan nu.
 
 #### 5.2.4 Bilge (v0.14, herzien in v0.60)
 
@@ -1870,8 +1915,9 @@ schrijvers op dezelfde database en map.
    - De **bron** kiest hij met een keuzelijst linksboven in de grafiek (v0.62): **Live
      (MQTT-bus)** of **Database**. Een nieuwe grafiek begint als live. De bron is ook te
      wijzigen als er al reeksen in de grafiek staan: de reeksen blijven staan, het venster
-     of de periode valt terug op de standaard van de nieuwe bron (live: laatste 10
-     minuten; database: 24 uur) en de grafiek wordt opnieuw getekend uit de nieuwe bron.
+     of de periode valt terug op de standaard van de nieuwe bron (live: laatste uur;
+     database: 24 uur) en de grafiek wordt opnieuw getekend uit de nieuwe bron. (Live
+     was tot v0.100 de laatste 10 minuten; v0.101, gebouwd in code v0.30.0.)
      Tot v0.61 waren er twee knoppen ("+ Live-grafiek" en "+ Database-grafiek") en lag de
      bron daarna vast: wie dezelfde sensoren in de historie wilde zien, moest een tweede
      grafiek opbouwen.
@@ -1909,6 +1955,14 @@ schrijvers op dezelfde database en map.
        metingen per reeks (2,4 MB). Drie Xiaomi's (4 grootheden, elke 2,5 s) komen op
        ongeveer 10 MB; met de RuuviTags (elke seconde) en de Victron-apparaten erbij
        naar schatting enkele tientallen MB. Dat is ruim binnen het geheugen van de Pi 4.
+     - *Gevolg voor de Victron-apparaten (gemeten op 24 november 2026, v0.101).* De BMV
+       en de drie MPPT's komen ruim 5 keer per seconde op de bus. Het maximum van 100.000
+       metingen is dan na ongeveer 5,3 uur bereikt: verder gaat hun live-historie niet
+       terug, ook niet bij "laatste 12 uur" of "laatste 24 uur". De RuuviTags (minder dan
+       1 per seconde) halen de 24 uur wel. Besloten in v0.102 (OPEN-45;
+       gebouwd in code v0.30.0): de BLE-reader geeft een Victron-apparaat hooguit één keer per seconde
+       door (§5.2.2 punt 11). Dat zijn hooguit 86.400 metingen per dag per reeks: de 24
+       uur past dan binnen het maximum, en "laatste 50 metingen" is 50 seconden.
 
    **Herstart van de webservice** (v0.36). De sensoren en alarmregels staan in de pagina
    zoals ze waren toen de pagina geladen werd. Na een wijziging van `brms.toml` en een
@@ -1918,16 +1972,28 @@ schrijvers op dezelfde database en map.
    laden, dan laadt de pagina zichzelf opnieuw. De gekozen grafieken blijven staan.
 
      Het **venster** is te kiezen (v0.24): laatste 50 of 100 metingen, of laatste 10
-     minuten, 30 minuten, 1 uur, 3 uur, 12 uur, 24 uur. Tot en met 30 minuten toont de
-     grafiek elke meting. Vanaf 1 uur worden de metingen samengevat per tijdvak (5, 15, 60
-     en 120 s), zodat een grafiek hooguit ongeveer 720 punten heeft: alle losse metingen
+     minuten, 30 minuten, 1 uur, 3 uur, 6 uur, 12 uur, 24 uur (6 uur erbij in v0.101,
+     gebouwd in code v0.30.0). Een nieuwe live-grafiek begint met **laatste uur** (v0.101; eerder 10
+     minuten). Tot en met 30 minuten toont de
+     grafiek elke meting. Vanaf 1 uur worden de metingen samengevat per tijdvak (5, 15, 30,
+     60 en 120 s), zodat een grafiek hooguit ongeveer 720 punten heeft: alle losse metingen
      van 24 uur zijn te veel voor de browser en voor de mobiele verbinding. Samenvatten
      volgt de soort (§5.3.2): gemiddelde voor doorlopend, som voor toename, en voor een
      toestand het maximum, zodat een korte 1 zichtbaar blijft.
 
      Met **"eerder"** en **"later"** schuift het venster over de metingen in het geheugen
-     (v0.28): bij "laatste 50 metingen" geeft "eerder" de 50 metingen daarvoor (per reeks),
-     bij "laatste 10 minuten" de 10 minuten daarvoor. Een eerder venster **staat stil**: het
+     (v0.28), in stappen die kleiner zijn dan het venster (v0.101, gebouwd in code v0.30.0; tot
+     v0.100 een heel venster per stap):
+     - bij een venster in tijd verspringt de tijdas **een derde van het venster**: bij
+       "laatste uur" 20 minuten, bij "laatste 24 uur" 8 uur;
+     - bij "laatste 50" of "laatste 100 metingen" **de helft**: bij 50 metingen (meting 0
+       tot -50) geeft "eerder" meting -25 tot -75, daarna -50 tot -100 (per reeks).
+
+     Zo blijft na een stap een deel van het vorige beeld staan en is te zien waar je bent;
+     met een heel venster per stap sloot het nieuwe beeld nergens op het oude aan. Dezelfde
+     stappen gelden bij de database (hieronder).
+
+     Een eerder venster **staat stil**: het
      wordt geteld vanaf het tijdstip waarop het terugbladeren begon en verschuift niet
      door nieuwe metingen. **"nu"** laat de grafiek weer meelopen. "eerder" is alleen
      actief als de webservice nog oudere metingen heeft dan het getoonde venster; verder
@@ -1941,8 +2007,11 @@ schrijvers op dezelfde database en map.
      het **kruisje (sluiten) rechtsboven**, daaronder de keuzelijst met de knoppen ernaast.
      Het kruisje staat zo op elk scherm op dezelfde plaats.
    - **Database**: de opgeslagen rijen (per 5 minuten, §5.3.2), over 1 uur, 6 uur, 24 uur,
-     7 dagen of 30 dagen, met bladeren naar eerdere perioden. Een interval zonder rij
-     blijft in de grafiek open.
+     3 dagen, 7 dagen of 1 maand (30 dagen), met bladeren naar eerdere perioden. Een
+     nieuwe database-grafiek begint met **24 uur**. "eerder" en "later" verspringen een
+     derde van de periode, zoals bij live: bij 24 uur 8 uur, bij 1 maand 10 dagen. (3 dagen
+     en de stap van een derde: v0.101, gebouwd in code v0.30.0; tot v0.100 een hele periode per
+     stap.) Een interval zonder rij blijft in de grafiek open.
 
    **Legenda** (v0.61). Boven elke grafiek staat per reeks het kleurstreepje, de naam, de
    laatste waarde en een kruisje om de reeks te verwijderen.
@@ -3573,6 +3642,8 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 | 44 | Wat de schakellaag en de reader doen met een ingevoerde waarde (veilige waarde, bewaking, herstart); te beslissen als de eerste sensor met een bedienbare waarde komt. Het invoerveldje in het web wordt wel gebouwd | §5.6, §5.8 |
 | 42 | ~~De bediening van een relais tegenover AUTO~~ – **besloten in v0.97 en v0.98**: twee keuzes, AUTO en de actieve stand van het relais (de handstand "veilige stand" vervalt); een schuifknop met beide keuzes als opschrift en een stip voor de werkelijke stand | §5.6, §5.8 punt 3 en 6 |
 | 43 | ~~Overzicht: naam en volgorde van de tabs~~ – **besloten in v0.96 en v0.98**: `[boot]` / `tekening` wordt een lijst die bepaalt welke tekeningen er zijn en in welke volgorde; de tab heet naar het bestand zonder extensie (`Privateer`) | §5.6 |
+| 45 | ~~Live-historie van de Victron-apparaten gaat maar ongeveer 5,3 uur terug (ze komen ruim 5 keer per seconde op de bus, met herhalingen van dezelfde meting)~~ – **besloten in v0.102**: de BLE-reader geeft een Victron-apparaat hooguit één keer per seconde door | §5.2.2 punt 11, §5.6 punt 4 |
+| 46 | ~~Welke ontvangst van een Victron-apparaat per seconde doorgaat~~ – **besloten in v0.103**: de eerste van elke seconde; de rest van die seconde valt af | §5.2.2 punt 11 |
 | 41 | ~~Andere inrichting van de alarmenpagina en de systeempagina~~ – **besloten in v0.99**: systeempagina in de volgorde Opslag, Sensoren en actuators, Logboek, Services, Herstarten; alarmenpagina in de volgorde Nu actief, Opgetreden alarmen, Alarmregels | §5.6 |
 
 Daarnaast uit `CLAUDE.md`: de accu is nu 4× Victron AGM 12 V 110 Ah en wordt later deze
@@ -3586,7 +3657,10 @@ maand).
 
 | Versie | Datum | Auteur | Wijziging |
 |---|---|---|---|
-| **0.100** | 2026-11-24 | Claude Code, Fable 5.2 | Schakellaag en handbediening gebouwd in code v0.29.0 (§5.8 met "Invulling bij het bouwen", §5.4.2 punt 8, §5.6): nieuwe service `brms-schakel` (`brms/schakel.py`); de alarmlaag stuurt alleen nog verzoeken; de velden `veilige_stand` en `controls` bij een sensor; `[boot]` `tekening` als lijst; de pagina Overzicht met tabs en `.RO` / `.RW`; op de systeempagina het blok "Sensoren en actuators" met het venster en de bediening; de nieuwe volgorde van de systeem- en de alarmenpagina; `brms grootheden <type>` met de kolom BEDIENING. Beproefd met tests (532) en in de browser met nagemaakte metingen; nog niet op de Pi en nog niet met de echte plug. Let op bij de update: de kachelplug heeft `controls = ["relais"]` nodig in `brms.toml`, anders meldt `check-config` een fout op de alarmregel die hem schakelt. §3.3 bijgewerkt (de keuze is `auto` of de actieve stand; het bericht met een waarde). |
+| **0.103** | 2026-11-24 | Claude Code, Fable 5.2 | OPEN-46 besloten (§5.2.2 punt 11): van een Victron-apparaat gaat de eerste ontvangst van elke seconde door. De grafiekenpagina van v0.101 en de beperking van v0.102 gebouwd in code v0.30.0: de keuzelijsten en de standaard van een grafiek, "eerder" en "later" in stappen van een derde (bij een aantal metingen de helft), en in de BLE-reader hooguit één Instant Readout-bericht per Victron-apparaat per seconde. Beproefd met tests (539); nog niet op de Pi. |
+| 0.102 | 2026-11-24 | Claude Code, Fable 5.2 | OPEN-45 besloten (§5.2.2 nieuw punt 11, §5.6 punt 4); ontwerp, nog niet gebouwd. Gemeten: een Victron-apparaat zendt vijf tot zeven keer per seconde hetzelfde bericht uit en de reader zette elke ontvangst op de bus, met hetzelfde tijdstip. De BLE-reader geeft een Victron-apparaat voortaan hooguit één keer per seconde door; de live-historie haalt daarmee 24 uur en "laatste 50 metingen" is 50 seconden. Verworpen: beperken in het live-geheugen, het maximum verhogen, zo laten. Nieuw OPEN-46: welke ontvangst van een seconde doorgaat. |
+| 0.101 | 2026-11-24 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4), besluit van de gebruiker; ontwerp, nog niet gebouwd. Live: een nieuwe grafiek begint met "laatste uur" (was 10 minuten); "laatste 6 uur" erbij (samengevat per 30 s). Database: "3 dagen" erbij, "30 dagen" heet "1 maand"; standaard blijft 24 uur. "eerder" en "later" verspringen bij beide bronnen een derde van het venster of de periode, en bij "laatste 50 / 100 metingen" de helft (was een heel venster). Gemeten op de Pi: de Victron-apparaten komen ruim 5 keer per seconde op de bus, waardoor hun live-historie door het maximum van 100.000 metingen ongeveer 5,3 uur teruggaat; nieuw OPEN-45. |
+| 0.100 | 2026-11-24 | Claude Code, Fable 5.2 | Schakellaag en handbediening gebouwd in code v0.29.0 (§5.8 met "Invulling bij het bouwen", §5.4.2 punt 8, §5.6): nieuwe service `brms-schakel` (`brms/schakel.py`); de alarmlaag stuurt alleen nog verzoeken; de velden `veilige_stand` en `controls` bij een sensor; `[boot]` `tekening` als lijst; de pagina Overzicht met tabs en `.RO` / `.RW`; op de systeempagina het blok "Sensoren en actuators" met het venster en de bediening; de nieuwe volgorde van de systeem- en de alarmenpagina; `brms grootheden <type>` met de kolom BEDIENING. Beproefd met tests (532) en in de browser met nagemaakte metingen; nog niet op de Pi en nog niet met de echte plug. Let op bij de update: de kachelplug heeft `controls = ["relais"]` nodig in `brms.toml`, anders meldt `check-config` een fout op de alarmregel die hem schakelt. §3.3 bijgewerkt (de keuze is `auto` of de actieve stand; het bericht met een waarde). |
 | 0.99 | 2026-11-24 | Claude Code, Fable 5.2 | OPEN-41 besloten (§5.6); ontwerp, nog niet gebouwd. Systeempagina van boven naar beneden: Opslag, Sensoren en actuators, Logboek, Services, Herstarten. Alarmenpagina: Nu actief, Opgetreden alarmen, Alarmregels. De genummerde punten in de tekst houden hun nummer. |
 | 0.98 | 2026-11-24 | Claude Code, Fable 5.2 | OPEN-42 en OPEN-43 besloten (§5.6); ontwerp, nog niet gebouwd. De bediening van een relais is een schuifknop met de twee keuzes als opschrift (AUTO en de actieve stand) en ernaast een stip voor de werkelijke stand (groen aan, grijs uit); een drukknop is afgewezen. Een tab op de pagina Overzicht heet naar het bestand zonder extensie (`Privateer.svg` wordt `Privateer`). |
 | 0.97 | 2026-11-24 | Claude Code, Fable 5.2 | Schakellaag (§5.8 punt 3, 4 en 6; §5.6), besluit van de gebruiker; ontwerp, nog niet gebouwd. De handbediening van een relais heeft twee keuzes in plaats van drie: AUTO en de actieve stand van dat relais (AUTO / AAN bij veilige stand uit, AUTO / UIT bij veilige stand aan). De handstand "veilige stand" vervalt: een relais tegen een actief alarm in veilig houden gaat via de schakelaar van de alarmregel. OPEN-42 versmald tot de vorm van de bediening (schuifknop of drukknop, met de werkelijke stand erbij). |

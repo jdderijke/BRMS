@@ -4,6 +4,7 @@ database en de testclient van Flask."""
 import json
 import os
 import pathlib
+import re
 import sqlite3
 import tempfile
 import unittest
@@ -173,6 +174,29 @@ class TestWeb(unittest.TestCase):
             self.assertIn(verwacht, tekst)
         # De grootheden staan in de volgorde van de tabel (§5.3.3), niet alfabetisch.
         self.assertLess(tekst.index('"temperatuur": {'), tekst.index('"batterijspanning": {'))
+
+    def test_pagina_vensters_en_perioden(self):
+        # De keuzes van een grafiek (§5.6 punt 4, v0.101). Live: laatste 50 / 100 metingen,
+        # 10 en 30 minuten, 1, 3, 6, 12 en 24 uur; een nieuwe grafiek begint met het laatste
+        # uur. Database: 1, 6 en 24 uur, 3 en 7 dagen, 1 maand; begint met 24 uur.
+        tekst = self.client.get("/").get_data(as_text=True)
+        live = re.findall(r'<option value="([nt]\d+)">', tekst)
+        self.assertEqual(live, ["n50", "n100", "t600", "t1800", "t3600", "t10800", "t21600",
+                                "t43200", "t86400"])
+        database = re.findall(r'<option value="(\d+)">([^<]+)<', tekst)
+        self.assertEqual(database, [("3600", "1 uur"), ("21600", "6 uur"), ("86400", "24 uur"),
+                                    ("259200", "3 dagen"), ("604800", "7 dagen"),
+                                    ("2592000", "1 maand")])
+        self.assertIn('const VENSTER_STANDAARD = "t3600";', tekst)
+        self.assertIn('const PERIODE_STANDAARD = "86400";', tekst)
+        # Elk tijdvenster vanaf een uur wordt samengevat; "eerder" en "later" verspringen een
+        # derde van het venster, dus elk venster en elke periode is deelbaar door 3 (en het
+        # aantal bij "laatste N metingen" door 2).
+        self.assertIn("const STAP = {3600: 5, 10800: 15, 21600: 30, 43200: 60, 86400: 120};", tekst)
+        for keuze in live:
+            self.assertEqual(int(keuze[1:]) % (2 if keuze[0] == "n" else 3), 0, keuze)
+        for seconden, _ in database:
+            self.assertEqual(int(seconden) % 3, 0, seconden)
 
     def test_pagina_biedt_per_sensor_zijn_eigen_grootheden(self):
         cfg = Config(MqttConfig(), OpslagConfig(self.pad), {
