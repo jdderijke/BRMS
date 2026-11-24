@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.92 – concept** · 21 november 2026
+**Versie 0.99 – concept** · 24 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -54,6 +54,9 @@ dan herstart/uitschakelen.
                                                           └──> (later) Home Assistant e.d.
 ```
 
+Schakelen loopt de andere kant op (v0.93, §5.8): alarmlaag en web vragen om een stand,
+de schakellaag beslist, en de Shelly-reader voert uit.
+
 Alles draait op één Raspberry Pi 4B (hostnaam `BRMS`) aan boord. Toegang van buitenaf
 uitsluitend via Tailscale (§9).
 
@@ -88,6 +91,7 @@ vaste opstartvolgorde, en elke component moet een tijdelijk afwezige broker verd
 
 **Specificatie.**
 1. Readers, alarmlaag, opslag en web zijn **losse systemd-services** (`Restart=always`).
+   Daar komt de schakellaag bij (§5.8, v0.93, nog niet gebouwd).
 2. Readers publiceren elke ontvangen meting op een **lokale Mosquitto-broker**; alarmlaag en
    opslag abonneren zich. Het web leest uit SQLite en geeft opdrachten via MQTT (§5.6).
    Opdrachten (poll-nu, verwijderen) lopen ook via MQTT. De opslag-service is de enige die
@@ -161,7 +165,8 @@ staat; daarom QoS 1.
 |---|---|---|---|
 | Meting | `brms/meting/<sensor_id>/<grootheid>` | `{"ts", "sensor_id", "grootheid", "waarde", "soort"}` | 1 voor toestand, 0 voor doorlopend en toename |
 | Opname | `brms/opname/<camera_id>` | `{"ts", "camera_id", "type", "duur", "bestand", "bytes", "aanleiding"}` | 1 |
-| Opdracht | `brms/opdracht/<doel>/<actie>`, bijv. `brms/opdracht/camera/poll-nu`, `brms/opdracht/camera/richt` (§5.7 punt 19), `brms/opdracht/shelly/poll-nu`, `brms/opdracht/opslag/verwijder`, `brms/opdracht/trace/aan`, `brms/opdracht/simulatie/aan` (§10.3), `brms/opdracht/relais/zet` en `brms/opdracht/relais/stand` (§5.2.6), `brms/opdracht/alarm/schakel` en `brms/opdracht/alarm/stand` (§5.5.3) | afhankelijk van de actie, bijv. `{"type": "video", "aanleiding": "alarm:beweging"}` | 1 |
+| Opdracht | `brms/opdracht/<doel>/<actie>`, bijv. `brms/opdracht/camera/poll-nu`, `brms/opdracht/camera/richt` (§5.7 punt 19), `brms/opdracht/shelly/poll-nu`, `brms/opdracht/opslag/verwijder`, `brms/opdracht/trace/aan`, `brms/opdracht/simulatie/aan` (§10.3), `brms/opdracht/relais/zet` en `brms/opdracht/relais/stand` (§5.2.6), `brms/opdracht/alarm/schakel` en `brms/opdracht/alarm/stand` (§5.5.3), `brms/opdracht/schakel/verzoek` en `brms/opdracht/schakel/hand` (§5.8, v0.93, nog niet gebouwd) | afhankelijk van de actie, bijv. `{"type": "video", "aanleiding": "alarm:beweging"}`; `schakel/verzoek`: `{"ts", "bron": "alarm", "verzoeken": [{"sensor_id", "alarm_id"}, ...]}` (de hele lijst); `schakel/hand`: `{"ts", "sensor_id", "keuze"}` met `keuze` = `aan`, `uit` of `auto` | 1 |
+| Schakelstand (v0.93, nog niet gebouwd) | `brms/schakel/<sensor_id>` | `{"ts", "sensor_id", "keuze", "stand", "reden"}`: de keuze (`aan`, `uit`, `auto`), de stand die de schakellaag wil (`aan`, `uit`) en waarom; bij elke verandering en elke minuut (§5.8 punt 9) | 1 |
 | Alarm (v0.31) | `brms/alarm/<alarm_id>` | `{"ts", "alarm_id", "sensor_id", "grootheid", "gebeurtenis", "waarde"}`; `gebeurtenis` is `begin`, `herstel` of `uitgezet` (§5.5.3). De alarmlaag meldt bij zijn start en daarna elke minuut op `brms/alarm/herstart` welke alarmen actief zijn: `{"ts", "actief": [[alarm_id, sensor_id], ...]}` (v0.34, §5.5.3 punt 8). De opslag vraagt bij zijn eigen start om die stand op `brms/opdracht/alarm/stand` met `{"ts"}`; de alarmlaag antwoordt direct (v0.86). | 1 |
 | Simulatie (v0.55) | `brms/simulatie/<dienst>` | `{"ts", "dienst", "sensoren": [{"sensor_id", "soort", "einde"}, ...]}`: welke sensoren een reader simuleert; `soort` is `test` of `demo`, `einde` in Unix-seconden (leeg bij een demo). Bij de start van de reader, bij elke verandering en elke 30 s (§10.3 punt 10). | 1 |
 | Trace (v0.16) | `brms/trace/<sensor_id>` | `{"ts", "sensor_id", "dienst", "stap", "tekst"}`, optioneel `"deel"` – alleen zolang trace voor die sensor aanstaat (§10.2) | 0 |
@@ -748,6 +753,14 @@ plug, nog niet als geheel op de Pi. Model (v0.63): Shelly Plug M Gen3, een tusse
 energiemeting (3000 W weerstandsbelasting, 13 A, −20 tot +40 °C). De API is met de plug
 zelf gecontroleerd (v0.78), zie "Bevindingen met de plug" onder de specificatie.*
 
+**Herzien in v0.93 (ontwerp, nog niet gebouwd): het beslissen over een relais verhuist
+van de alarmlaag naar de schakellaag (§5.8).** Een relais krijgt een `veilige_stand`, is
+met de hand te schakelen via het web, en de bewaking geldt in beide richtingen. Wat
+hieronder in punt 3–7 over de alarmlaag staat (herhalen, voorwaarde, "uit" bij de start),
+beschrijft de code tot de schakellaag gebouwd is; daarna doet de schakellaag dat. Het
+pollen, de grootheden, de opdracht `relais/zet` en de bevindingen met de plug blijven
+gelden.
+
 **Aanleiding.** Een alarm moet een apparaat kunnen schakelen (§5.5.3), als eerste een
 elektrische kachel van 1500 W bij vorstgevaar; later mogelijk boordverlichting.
 
@@ -897,7 +910,8 @@ thermostaat, omgevallen, defect).
    - Mist de reader toch alles, dan schakelt de Shelly zelf uit na de uitschakeltijd.
    - *Afgewezen:* de "uit" bij de start na 15 seconden herhalen (zo gebouwd in v0.87).
      Op de Pi ging de plug daarmee pas na 16 seconden uit.
-7. Handmatig schakelen via het web is niet voorzien.
+7. Handmatig schakelen via het web is niet voorzien. **Herzien in v0.93:** wel voorzien,
+   met de keuzes AAN, UIT en AUTO per relais (§5.8 punt 3 en 6, §5.6); nog niet gebouwd.
 
 **Bevindingen met de plug (v0.78).** De eerste plug (model `S3PL-30110EU`, firmware
 1.8.99) hangt aan de wifi van de RUT241 met het vaste adres **192.168.1.121**. Vanaf de
@@ -1295,6 +1309,37 @@ gecontroleerd worden en kan de gebruiker het opzoeken.
 6. Een **nieuwe grootheid** toevoegen is een codewijziging: een regel in
    `brms/grootheden.py`, de decoder uitbreiden, en de tabel in §5.3.3 bijwerken.
 7. In de trace (§10.2) toont de stap `gecorrigeerd` ook welke grootheden zijn weggelaten.
+8. **Bedienbare grootheden (v0.94; ontwerp, nog niet gebouwd).** Een grootheid is bij een
+   sensor alleen te lezen, of te lezen én te bedienen. Per sensor optioneel
+   **`controls = [...]`**: de grootheden die BRMS mag bedienen, met de hand via het web
+   (§5.6) én door een alarmregel (§5.5.3 punt 6, §5.8).
+   ```toml
+   controls = ["relais"]
+   ```
+   - Zonder het veld is elke grootheid van de sensor alleen te lezen; er verschijnt dan
+     nergens een bediening. Een sensor met minstens één bedienbare grootheid heet in het
+     web een **actuator**.
+   - Elke decoder legt vast welke van zijn grootheden **bedienbaar** zijn (punt 3), en
+     per bedienbare grootheid de **vorm**: *aan/uit*, of een *waarde* met een kleinste
+     en grootste waarde en een stap (v0.95). Nu is alleen `relais` bij het type
+     `shelly-relais` bedienbaar, als aan/uit; een type met een bedienbare waarde
+     (bijvoorbeeld een thermostaat) is er nog niet.
+   - **Ook een alarmregel houdt zich aan `controls` (v0.95, besluit van de gebruiker
+     2026-11-24).** Een actie die een grootheid bedient (nu `{ type = "relais" }`,
+     §5.5.3 punt 6) mag alleen een sensor noemen die die grootheid in zijn `controls`
+     heeft. Zonder `controls` wordt een relais dus door niets geschakeld en blijft het
+     in zijn veilige stand.
+   - `brms grootheden <type>` krijgt een **extra kolom** die per grootheid aangeeft of ze
+     alleen te lezen is of ook te bedienen.
+   - `brms check-config` meldt als fout: een grootheid in `controls` die het sensortype
+     niet levert of die bij dat type niet bedienbaar is, een grootheid die door
+     `grootheden` (punt 1) is weggelaten, en een alarmregel met een actie op een
+     grootheid die niet in `controls` van die sensor staat.
+   - *Waarom een eigen veld.* Dat een type kan schakelen, betekent niet dat BRMS het
+     mag: de keuze is zo per sensor zichtbaar in `brms.toml`, en geldt voor de hand en
+     voor de alarmregels gelijk.
+   - *Afgewezen:* een alarmregel die ook zonder `controls` mag schakelen (opzet in
+     v0.94). Dan zijn er twee regels voor wie een grootheid mag bedienen.
 
 ### 5.5 Alarmen en meldingen
 
@@ -1422,6 +1467,10 @@ maakt ze in grafieken en in een overzicht te tonen.
 De alarmlaag bedient zelf geen hardware: een actie is een opdracht over de bus, die de
 betreffende reader uitvoert. Zo blijft er per apparaat één component die ermee praat.
 
+*Herzien in v0.93 (ontwerp, nog niet gebouwd).* Voor een relais geeft de alarmlaag de
+opdracht niet meer zelf aan de reader: hij stuurt een **verzoek** aan de schakellaag
+(§5.8), die beslist en de opdracht geeft. De acties met de camera veranderen niet.
+
 **Verworpen alternatieven.**
 - *Regels bewerken via het web (opgeslagen in de database).* Formulieren, invoercontrole
   en een tweede plek voor instellingen; de schakelaar dekt de aanleiding.
@@ -1532,7 +1581,7 @@ betreffende reader uitvoert. Zo blijft er per apparaat één component die ermee
    |---|---|
    | `{ type = "video" }` | poll-nu voor een video als het alarm afgaat (§5.5.1, §5.7) |
    | `{ type = "foto" }` | poll-nu voor een foto als het alarm afgaat, los van de notificatie |
-   | `{ type = "relais", relais = "<sensor>" }` | relais aan als het alarm afgaat, uit bij herstel; alleen aan zolang de `voorwaarde` van het relais geldt (§5.2.6 punt 5) |
+   | `{ type = "relais", relais = "<sensor>" }` | relais aan als het alarm afgaat, uit bij herstel; alleen aan zolang de `voorwaarde` van het relais geldt (§5.2.6 punt 5). Vanaf v0.93 (ontwerp): een verzoek aan de schakellaag om de actieve stand van het relais zolang het alarm actief is; een handstand in het web gaat voor (§5.8 punt 3 en 4). Vanaf v0.95 (ontwerp): alleen toegestaan als het relais `relais` in zijn `controls` heeft; anders een fout bij `check-config` (§5.4.2 punt 8) |
 
    Een regel kan nul of meer acties hebben. Een opdracht aan de MultiPlus is niet
    voorzien: Instant Readout is alleen lezen (§5.2.2). Een actie wordt alleen uitgevoerd
@@ -1940,6 +1989,55 @@ schrijvers op dezelfde database en map.
 - Het web leest de regels uit `brms.toml` en de alarmen uit de database; de schakelaar
   gaat als opdracht over MQTT (punt 3).
 
+**Relais in het web (v0.93; ontwerp, nog niet gebouwd; §5.8).**
+- Per relais **twee keuzes** (herzien in v0.97, §5.8 punt 3): **AUTO** en de **actieve
+  stand** van dat relais. Bij de kachel (veilige stand uit) is dat AUTO / AAN, bij een
+  relais met veilige stand aan AUTO / UIT. De geldende keuze is gemarkeerd. Een klik
+  geeft de opdracht `brms/opdracht/schakel/hand` (§3.3). De pagina toont de nieuwe keuze
+  zodra de schakellaag hem meldt, niet eerder. (Tot v0.96: drie knoppen AAN, UIT en
+  AUTO.)
+- Daarbij staan de werkelijke stand van het relais (de meting `relais`), de veilige
+  stand, en de reden van de huidige stand: de hand, de naam van de alarmregel, "voorwaarde
+  geldt niet" of "veilige stand".
+- Meldt de schakellaag niets (service draait niet), dan zijn de knoppen uitgeschakeld.
+- Het web houdt de stand in het werkgeheugen, uit de berichten op `brms/schakel/<sensor_id>`.
+- **Waar (besluit OPEN-39, v0.94):** op twee plekken, en alleen voor een grootheid die
+  in `controls` van de sensor staat (§5.4.2 punt 8):
+  - op de **systeempagina**, in het venster met de grootheden van een sensor (zie
+    Systeempagina punt 5);
+  - op de pagina **Overzicht** (de vroegere bootpagina), op de plek die de tekening
+    aangeeft (zie Bootpagina, "Overzicht met tabs" punt 4).
+- **Vorm van de bediening (v0.94; herzien in v0.95):** een grootheid met de standen aan
+  en uit krijgt een kleine **schuifknop**; een grootheid met een in te voeren waarde
+  krijgt een **invoerveldje**. Welke vorm geldt, legt de decoder vast (§5.4.2 punt 8).
+- **Invoerveldje (v0.95, besluit van de gebruiker 2026-11-24): wordt gebouwd**, ook al
+  is er nog geen sensor met een bedienbare waarde. Aanleiding: een thermostaat die later
+  komt, moet in te stellen zijn zonder dat het web dan nog moet veranderen.
+  - Het veldje toont de laatst bekende waarde met de eenheid (§5.3.3). De gebruiker
+    typt een nieuwe waarde en bevestigt met Enter of een knopje; het web weigert een
+    waarde buiten de grenzen van de decoder.
+  - Het web stuurt `brms/opdracht/schakel/hand` (§3.3) met `{"ts", "sensor_id",
+    "grootheid", "waarde"}`. Het veldje toont de nieuwe waarde zodra de sensor haar
+    meldt, niet eerder.
+  - Gebouwd wordt: het veldje, de controle van de invoer en het bericht. Zonder sensor
+    is het niet met een echt apparaat te beproeven.
+  - **[OPEN-44]** Wat de schakellaag en de reader met een ingevoerde waarde doen:
+    veilige waarde, bewaking en herstart (§5.8 gaat alleen over aan en uit). Te
+    beslissen als de eerste sensor met een bedienbare waarde komt.
+- **Aanduiding in de tekening (besluit OPEN-40, v0.94; herzien in v0.95):** een
+  toevoeging achter de naam in de SVG: **`sensor.grootheid.RW`** voor de bediening,
+  bijvoorbeeld `kachel.relais.RW` (zie Bootpagina, "Overzicht met tabs" punt 4).
+- **Vorm van de schuifknop (besluit OPEN-42, v0.98):** een kleine **schuifknop** met de
+  twee keuzes als opschrift aan weerszijden: links **AUTO**, rechts de actieve stand
+  (**AAN** of **UIT**). Ernaast een **stip** voor de **werkelijke stand** van het relais
+  (de meting `relais`): groen voor aan, grijs voor uit. In AUTO kan het relais door een
+  alarmregel in zijn actieve stand staan; de stip laat dat zien terwijl de knop op AUTO
+  staat. Van een stil relais is de stand onbekend: de stip is dan leeg.
+  - *Afgewezen:* een drukknop. Die toont één opschrift; wat "niet ingedrukt" betekent,
+    moet de gebruiker weten.
+- **Volgorde op de alarmenpagina en de systeempagina (besluit OPEN-41, v0.99):** zie de
+  regel "Volgorde" bij elk van die pagina's hieronder.
+
 **Indeling, menu en thema (v0.52; gebouwd in code v0.19.0).** Het web heeft vier pagina's: **Grafieken** (`/`),
 **Opnames** (`/opnames`), **Alarmen** (`/alarmen`) en **Systeem** (`/systeem`). Het wordt
 ook op een telefoon gebruikt.
@@ -1980,7 +2078,13 @@ ook op een telefoon gebruikt.
 honderden kB voor vier pagina's (P3). *Emoji als iconen:* zien er op elk toestel anders
 uit en volgen het thema niet.
 
-**Alarmenpagina (v0.52; gebouwd in code v0.19.0).** Van boven naar beneden:
+**Alarmenpagina (v0.52; gebouwd in code v0.19.0).**
+
+*Volgorde (besluit OPEN-41, v0.99; nog niet gebouwd).* Van boven naar beneden: **Nu
+actief** (punt 1), **Opgetreden alarmen** (punt 3), **Alarmregels** (punt 2). Wat er
+gebeurd is staat zo bij elkaar bovenaan; de regels, die zelden veranderen, staan
+onderaan. De punten hieronder houden hun nummer, omdat er elders naar verwezen wordt.
+Tot de bouw staat de pagina in de volgorde van de nummers:
 1. De alarmen die **nu actief** zijn (regel, sensor, sinds wanneer, waarde).
 2. De **alarmregels**, met per regel de voorwaarde in woorden, de sensoren, de melding en
    de **aan/uit-schakelaar** (§5.5.3 punt 7). De pagina toont de nieuwe stand zodra de
@@ -2012,7 +2116,13 @@ uit en volgen het thema niet.
    - De alarmen die **nu actief** zijn (punt 1) staan er altijd allemaal, los van de keuze.
 
 **Systeempagina (v0.51; herzien in v0.52; gebouwd in code v0.19.0, de herstartknoppen en
-het logboek nog niet getest op de Pi).** Van boven naar beneden:
+het logboek nog niet getest op de Pi).**
+
+*Volgorde (besluit OPEN-41, v0.99; nog niet gebouwd).* Van boven naar beneden:
+**Opslag** (punt 4), **Sensoren en actuators** (punt 5), **Logboek** (punt 3),
+**Services** (punt 1), **Herstarten** (punt 2). De punten hieronder houden hun nummer,
+omdat er elders naar verwezen wordt. Tot de bouw staat de pagina in de volgorde van de
+nummers:
 1. **Services:** per service (`brms-*`, `mosquitto`) of hij draait, sinds wanneer, en
    hoe vaak systemd hem sinds het opstarten van de Pi opnieuw heeft gestart. De
    webservice vraagt dit op met `systemctl show`. Een service die niet draait, valt op
@@ -2074,6 +2184,34 @@ het logboek nog niet getest op de Pi).** Van boven naar beneden:
      temperatuur van 0 °C; geen slijtage, geen bedrijfsuren. Daarvoor een eigen eenheid
      met root-rechten en een extra pakket is het niet waard. In plaats daarvan staan de
      foutmeldingen van de kernel in het logboek (§5.5.5 punt 3).
+5. **Sensoren en actuators (v0.94; ontwerp, nog niet gebouwd; besluit OPEN-39).** Een
+   blok met per sensor uit `brms.toml` een **kleine tegel**. Het blok staat als tweede
+   op de pagina, onder Opslag (zie "Volgorde" hierboven).
+   - De **naam** van de sensor.
+   - Een **stip met een woord**: groen met **live**, of rood met **not_avail**. Een
+     sensor is live als zijn laatste meting op de bus niet ouder is dan **5 minuten**,
+     dezelfde grens als op de bootpagina (Bootpagina punt 4); een actief alarm "sensor
+     stil" maakt hem direct not_avail.
+   - Het tijdstip van de **laatste communicatie** met de sensor, als `uu:mm:ss`: de
+     laatste meting van die sensor op de bus. Zonder meting sinds de start van de
+     webservice staat er `--`.
+   - Een **kleine knop** die een **venster** opent met alle grootheden van de sensor en
+     van elk de laatst bekende waarde (met eenheid, §5.3.3) en haar tijdstip. Het
+     venster ververst zolang het open staat.
+   - **Bediening staat in het venster, niet op de tegel.** Een grootheid die in
+     `controls` staat (§5.4.2 punt 8), heeft in haar regel van het venster de bediening:
+     een schuifknop of een invoerveldje (zie "Relais in het web"; beide worden gebouwd,
+     v0.95). Zo staat de bediening
+     bij de waarde waar ze bij hoort, en zien de tegels van een sensor en een actuator
+     er hetzelfde uit.
+   - Een klik op de schuifknop geeft de opdracht `brms/opdracht/schakel/hand` (§3.3); de
+     knop toont de nieuwe stand zodra de schakellaag hem meldt. Meldt de schakellaag
+     niets, dan is de knop uitgeschakeld.
+   - De gegevens komen uit het live-geheugen van de webservice (punt 4 van de
+     grafiekenpagina), niet uit de database; het blok ververst elke **5 s**.
+   - *Afgewezen:* de schuifknop op de tegel zelf (eerste opzet van de gebruiker,
+     2026-11-24). Een sensor met meer dan één bedienbare grootheid past dan niet op een
+     kleine tegel, en de bediening staat los van de waarde.
 
 De gebruiker waaronder de services draaien moet journald mogen lezen (groep `adm` of
 `systemd-journal`); `install.sh` en `update.sh` controleren dat (`deploy/rechten.sh`). Op
@@ -2210,6 +2348,63 @@ wáár een alarm is. Deze pagina wordt daarom de eerste pagina van het web.
 - **De bootgrafiek** heeft een regel erboven ("Bootgrafiek: de waarden die je op de
   bootpagina hebt aangeklikt") en een rand in de accentkleur.
 - De tekening staat in `.gitignore` (`config/*.svg`).
+
+*Overzicht met tabs (v0.94; ontwerp, nog niet gebouwd; besluit OPEN-39 en OPEN-40).* Tot
+de bouw geldt de bootpagina zoals hierboven, met één tekening.
+
+*Redenering.* Eén tekening van de boot is te weinig: de gebruiker wil ook andere
+schema's kunnen tonen, bijvoorbeeld van de accu's. En een relais moet op de tekening te
+bedienen zijn, op de plek waar het apparaat staat. Welke tekeningen er zijn en in welke
+volgorde, staat in `brms.toml`: dat is de plek voor instellingen, en de volgorde hangt
+dan niet af van hoe een bestand heet (v0.96).
+
+1. **Naam.** De pagina heet in het menu **Overzicht** in plaats van "Boot". Ze blijft de
+   eerste pagina (`/`).
+2. **Tabs (herzien in v0.96, besluit van de gebruiker 2026-11-24).** Het veld
+   `tekening` in het blok `[boot]` van `brms.toml` wordt een **lijst** van SVG-bestanden.
+   Bovenaan de pagina staat één tab per bestand, in de **volgorde van de lijst**.
+   ```toml
+   [boot]
+   tekening = ["Privateer.svg", "Victron.svg"]
+   ```
+   - De bestanden staan naast `brms.toml`, zoals nu (punt 2 hierboven). Een SVG-bestand
+     in de map dat niet in de lijst staat, wordt niet getoond.
+   - De **naam van de tab** is de naam van het bestand **zonder extensie** (besluit
+     OPEN-43, v0.98): `Privateer.svg` geeft de tab `Privateer`.
+   - De eerste tab staat open bij het openen van de pagina.
+   - Eén naam als tekst (`tekening = "Privateer.svg"`, zoals nu op de Pi) blijft werken
+     en geeft één tab.
+   - Een tab toevoegen, weghalen of verplaatsen is een wijziging van `brms.toml` en
+     vraagt `brms herstart`. De inhoud van een tekening wijzigen blijft zonder herstart
+     zichtbaar na het verversen (punt 2 hierboven).
+   - Een bestand uit de lijst dat ontbreekt, is bij `brms check-config` een
+     waarschuwing, geen fout (zoals nu); de tab meldt het zelf.
+   - Zonder `tekening` is er geen pagina Overzicht en toont `/` de grafiekenpagina
+     (zoals punt 1 hierboven).
+   - *Afgewezen:* één tab per SVG-bestand in de map, in alfabetische volgorde van de
+     bestandsnaam (opzet in v0.94). De volgorde zat dan in de bestandsnaam
+     (`1_Privateer.svg`), en dat volgnummer kwam ook in de naam van de tab.
+3. **Waarden.** In elke tekening geldt wat hierboven staat: de tekst `sensor.grootheid`
+   wordt een waarde (punt 3 tot en met 7), en een klik opent de bootgrafiek.
+4. **Alleen lezen of bedienen (besluit OPEN-40; herzien in v0.95).** Achter de naam kan
+   een toevoeging staan:
+   - **`sensor.grootheid.RO`** (read only): de waarde, alleen te lezen.
+   - **`sensor.grootheid.RW`** (read write): de **bediening** van die grootheid, op de
+     plek van de eerste letter: dezelfde schuifknop of hetzelfde invoerveldje als in
+     het venster op de systeempagina (Systeempagina punt 5), met de stip voor de werkelijke stand. De
+     bediening toont zelf de huidige stand of waarde.
+   - **Zonder toevoeging** geldt RO: `sensor.grootheid` blijft werken, en de bestaande
+     tekening hoeft niet te veranderen.
+   - `.RW` werkt alleen als de grootheid in `controls` van die sensor staat (§5.4.2
+     punt 8). Anders blijft de tekst staan, zoals elke naam die niet herkend wordt
+     (punt 3 hierboven).
+   - Hoofdletters tellen niet mee, en een naam in stukken wordt aan elkaar geplakt, zoals
+     bij een waarde.
+   - Een grootheid kan in een tekening als RO en als RW staan, naast elkaar of op
+     verschillende tabs.
+   - De bediening is HTML over de tekening heen, zoals de vakjes met waarden.
+   - *Afgewezen:* de toevoeging `.control` (opzet in v0.94). RO en RW benoemen beide
+     gevallen op dezelfde manier, en sluiten aan bij de kolom van `brms grootheden`.
 
 **Aanmelding (besluit OPEN-15, v0.69).** Er komt voorlopig geen aanmelding op de
 webinterface. Van buitenaf is Tailscale de enige ingang (§9); aan boord luistert de
@@ -2636,6 +2831,162 @@ Verworpen bij het richten van de camera (punt 19, v0.71):
     - `richt_stap` zonder `richten` is een fout in `check-config`.
     - **Beproefd met de camera** (v0.73, door de gebruiker op 2026-11-16): het richten
       werkt met de Foscam FI9826W.
+
+### 5.8 Schakellaag (v0.93)
+
+*Ontwerp; nog niet gebouwd. Tot de bouw geldt voor het relais de werking van §5.2.6
+punt 3–7, zoals in code v0.27.4.*
+
+**Aanleiding.** Een Shelly-relais meet én schakelt: het is een sensor met een
+actuatordeel. Tot v0.92 besliste alleen de alarmlaag over een relais (§5.2.6): een
+alarmregel zette het aan, en de alarmlaag deed ook het herhalen, de voorwaarde en het
+"uit" bij zijn start. De gebruiker wil een relais ook **met de hand** kunnen schakelen
+via het web, en verwacht meer relais, waaronder later één dat de **walstroom** afschakelt.
+Dat laatste relais heeft misschien geen alarmregel, en de regels voor de kachel passen er
+omgekeerd op: bij "uit bij elke herstart" en "aan gaat vanzelf uit" zou de walstroom
+wegvallen zodra BRMS hapert.
+
+**Redenering.** Er zijn drie rollen, en die horen elk op één plek:
+- **Vragen** om een stand: een alarmregel (alarmlaag) of de gebruiker (web).
+- **Beslissen** welke stand geldt, als de vragen elkaar tegenspreken, en die stand
+  bewaken.
+- **Uitvoeren**: de Shelly-reader, de enige die met de Shelly praat (§5.5.3).
+
+Het beslissen zat in de alarmlaag. Met de hand als tweede vrager, en met relais zonder
+alarmregel, hoort het daar niet meer: het wordt een eigen laag tussen de vragers en de
+reader. De alarmlaag stelt dan alleen nog alarmen vast en vraagt.
+
+*Veilige stand.* Elk relais heeft één stand waarin het veilig is als BRMS er niet is:
+de kachel uit, de walstroom aan. Alles wat daarvan afwijkt is tijdelijk en wordt door de
+Shelly zelf bewaakt met een terugschakeltijd, zoals de uitschakeltijd van §5.2.6 punt 4,
+maar nu in beide richtingen. Na een herstart begint elk relais in zijn veilige stand.
+Daardoor hoeft er niets bewaard te worden: geen stand in de database, geen bestand.
+
+*Een eigen service.* Een herstart of een fout van de alarmlaag raakt de relais dan niet
+(§3.1, isolatie), en een handstand blijft staan als alleen de alarmlaag herstart.
+
+De namen blijven zoals ze zijn: een relais is een `[[sensor]]` in `brms.toml`, en de
+Shelly-reader heet reader (besluit van de gebruiker, 2026-11-22).
+
+**Verworpen alternatieven.**
+- *Een controller naast de reader, die zelf met de Shelly praat.* Twee componenten die
+  met hetzelfde apparaat praten (§5.5.3); en na het schakelen moet de reader direct
+  pollen, wat dan afstemming vraagt.
+- *Het beslissen in de alarmlaag laten en de handstand daar toevoegen.* Een relais
+  zonder alarmregel hoort niet in de alarmlaag, en een herstart van de alarmlaag zou
+  elke handstand wissen.
+- *Een aparte groep `[[actuator]]` in `brms.toml`, of `[[sensor]]` hernoemen naar
+  `[[apparaat]]`.* Bij een aparte groep staat de plug twee keer in het bestand, met twee
+  keer hetzelfde adres. Hernoemen raakt topics, database, web en monitor, zonder dat het
+  iets oplevert.
+- *Een derde waarde "laatste": het relais houdt na een herstart zijn stand vast.* Dan is
+  er geen veilige stand meer, en moet de stand ergens bewaard worden.
+- *Een handstand die een herstart overleeft.* Zelfde bezwaar. Wat lang moet gelden, hoort
+  in een regel: die vraagt na een herstart vanzelf opnieuw.
+
+**Specificatie.**
+1. De schakellaag is een eigen service, **`brms-schakel`** (`brms schakel`). Hij
+   abonneert zich op de metingen (voor de voorwaarden en de stand van de relais) en op
+   de verzoeken, en geeft de opdracht `brms/opdracht/relais/zet` (§5.2.6 punt 3) aan de
+   Shelly-reader. Hij schrijft niets naar schijf.
+2. **Veilige stand.** Veld `veilige_stand` bij een sensor van het type `shelly-relais`:
+   `"uit"` of `"aan"`. Zonder het veld geldt `"uit"`, zoals de kachel tot nu toe. De
+   andere stand heet hier de **actieve stand**.
+
+   ```toml
+   [[sensor]]
+   id = "kachel"
+   type = "shelly-relais"
+   naam = "kachelplug"
+   adres = "192.168.1.121"
+   veilige_stand = "uit"
+   voorwaarde = { kachelplug.walstroom = 1 }
+   controls = ["relais"]    # te bedienen door de hand en door een alarmregel (§5.4.2 punt 8)
+   ```
+   In de Shelly zelf staat de begintoestand na spanningsuitval op de veilige stand
+   (§5.2.6, bevindingen: nu `off` bij beide plugs).
+3. **Verzoeken.** Er zijn twee vragers:
+   - *De alarmlaag.* De actie `relais` van een alarmregel (§5.5.3 punt 6) vraagt om de
+     **actieve stand** zolang het alarm actief is. De alarmlaag stuurt de **hele lijst**
+     van zijn verzoeken op `brms/opdracht/schakel/verzoek` (§3.3): bij elke verandering,
+     bij zijn start (dan leeg) en daarna elke minuut. De schakellaag vervangt bij elk
+     bericht wat hij van de alarmlaag had. Blijft het bericht **2 minuten** uit, dan
+     vervallen de verzoeken van de alarmlaag.
+   - *De gebruiker* (herzien in v0.97, besluit van de gebruiker 2026-11-24). Per relais
+     zijn er **twee keuzes**: **AUTO** en de **actieve stand** van dat relais. Het web
+     stuurt `brms/opdracht/schakel/hand` met `keuze` = `auto`, of de actieve stand
+     (`aan` bij een relais met veilige stand uit, `uit` bij veilige stand aan). De
+     veilige stand als keuze weigert de schakellaag.
+     - *Waarom.* Zonder actief alarm staat een relais in AUTO al in zijn veilige stand.
+       Een aparte handstand "veilige stand" voegt dan alleen toe dat een alarmregel
+       wordt tegengehouden, en daarvoor is er de schakelaar van de alarmregel (§5.5.3
+       punt 7).
+     - *Afgewezen:* drie keuzes AAN, UIT en AUTO (opzet in v0.93). Met de hand op UIT
+       beschermde de kachel niet meer tegen vorst, zonder dat het opviel.
+     - De vorm van de bediening staat in §5.6 (besluit OPEN-42, v0.98).
+
+   Beide vragers houden zich aan `controls` (§5.4.2 punt 8, v0.95): de schakellaag
+   neemt een keuze of een verzoek alleen aan voor een relais met `relais` in zijn
+   `controls`. Een ander verzoek negeert hij, met een regel in het log; `check-config`
+   houdt zo'n alarmregel al tegen. Een relais zonder `controls` blijft in zijn veilige
+   stand.
+4. **Welke stand geldt**, per relais, in deze volgorde:
+   1. Geldt de `voorwaarde` van het relais niet, of is hij onbekend (§5.2.6 punt 5), dan
+      de veilige stand. Dit gaat voor alles, ook voor de hand.
+   2. Staat de keuze op de hand (de actieve stand, punt 3), dan de actieve stand.
+   3. Staat de keuze op AUTO en is er minstens één verzoek van een alarmregel, dan de
+      actieve stand.
+   4. Anders de veilige stand.
+
+   De `voorwaarde` is wat moet gelden om het relais in de **actieve stand** te zetten.
+   Een keuze of verzoek blijft staan terwijl de voorwaarde niet geldt: geldt hij weer,
+   dan gaat het relais alsnog naar de actieve stand.
+5. **Bewaking.** De actieve stand gaat altijd naar de Shelly met een **terugschakeltijd**
+   van **2 minuten**, en de schakellaag **herhaalt** de opdracht elke **minuut** zolang
+   die stand geldt (de tijden van §5.2.6 punt 4). Valt de schakellaag of de Pi weg, dan
+   zet de Shelly zichzelf terug in de veilige stand. De veilige stand gaat zonder tijd.
+   De Shelly-reader weigert een opdracht naar de actieve stand zonder terugschakeltijd.
+6. **Handstand.** De handstand (de actieve stand) blijft gelden tot de gebruiker AUTO
+   kiest, of tot een herstart van de schakellaag. Er is geen eigen tijdslimiet. Een
+   relais tegen een actief alarm in in zijn veilige stand houden kan niet met de hand
+   (v0.97); daarvoor zet de gebruiker de alarmregel uit (§5.5.3 punt 7), die dan zijn
+   verzoek intrekt (punt 8).
+7. **Herstart.** Bij de start van de schakellaag staat elk relais op **AUTO** en krijgt
+   het de opdracht naar zijn **veilige stand**. Daarna:
+   - vraagt de schakellaag de alarmlaag om zijn verzoeken (`brms/opdracht/alarm/stand`,
+     §5.5.3 punt 8; de alarmlaag antwoordt daarop ook met zijn lijst van verzoeken). Een
+     relais waarvoor een alarm actief is, gaat zo binnen een paar seconden weer naar de
+     actieve stand;
+   - de vraag van de Shelly-reader bij zijn eigen start (`brms/opdracht/relais/stand`,
+     §5.2.6 punt 6) beantwoordt voortaan de schakellaag.
+
+   Herstart alleen de alarmlaag, dan blijven de handstanden staan; zijn verzoeken
+   vervallen met de lege lijst bij zijn start.
+8. **De alarmlaag** houdt van §5.2.6 alleen over: vaststellen dat het alarm actief is en
+   dat de sensor van de regel nog waarden levert (punt 4 daar, "stille sensor"), en
+   daarmee zijn lijst van verzoeken bijhouden. Het herhalen van de opdracht, de
+   voorwaarde en het "uit" bij de start verhuizen naar de schakellaag. Een regel die
+   wordt uitgezet (§5.5.3 punt 7) trekt zijn verzoek in.
+9. **Stand voor het web.** De schakellaag meldt per relais op `brms/schakel/<sensor_id>`
+   (§3.3) de keuze, de stand die hij wil en de reden: bij elke verandering en elke minuut.
+   Het web houdt dit in het werkgeheugen en toont het (§5.6). De werkelijke stand van
+   het relais blijft de meting `relais` van de reader.
+10. **Log.** Elke verandering van keuze of stand komt in het log met de reden: de hand,
+    de regel, een voorwaarde die niet (meer) geldt, of de herstart. De herhaling niet.
+11. **`check-config`**: `veilige_stand` anders dan `"aan"` of `"uit"` is een fout.
+12. **Relais zonder alarmregel** mag: het heeft dan alleen de handstand.
+
+**Het walstroomrelais** (voorzien, niet nu). Een relais met `veilige_stand = "aan"` dat
+de walstroom afschakelt als de zonnepanelen de accu's vol houden en er geen vorstgevaar
+is (voor- en najaar). Met de hand uitgezet komt de walstroom na elke herstart van de
+schakellaag weer aan; om hem een seizoen uit te houden is een regel nodig die in AUTO om
+"uit" vraagt. Nog open:
+- **[OPEN-37]** welke Shelly: een tussenstekker is er niet voor bedoeld als de hele
+  walstroom erdoor gaat.
+- **[OPEN-38]** hoe de regel eruitziet die de walstroom uitzet: hij hangt van meer dan
+  één grootheid af (accu, zon, temperatuur), en een alarmregel beoordeelt er één. En of
+  `voorwaarde` ook verplicht is bij een relais met `veilige_stand = "aan"` (bij de kachel
+  is hij verplicht, besluit OPEN-34).
 
 ---
 
@@ -3176,6 +3527,14 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 | 35 | ~~Bootpagina: oude waarden na een herstart~~ – **besloten in v0.85**: na een herstart geen waarden meer uit de database (`--` tot de eerste meting van de bus), en een waarde geldt als stil na 5 minuten in plaats van 15 | §5.6 punt 4 en 7 |
 | 34 | ~~Is `voorwaarde` bij een relais verplicht?~~ – **besloten in v0.81**: verplicht | §5.2.6 punt 5 |
 | 36 | ~~Relais na een herstart van de alarmlaag, en een kortere uitschakeltijd~~ – **besloten in v0.87**: de alarmlaag geeft bij zijn start "uit" aan elk relais; de uitschakeltijd wordt 2 minuten en de herhaling van "aan" 1 minuut (eerder 10 en 5) | §5.2.6 punt 4 en 6 |
+| 37 | Welke Shelly voor het walstroomrelais (de hele walstroom gaat erdoor; een tussenstekker is daar niet voor bedoeld) | §5.8 |
+| 38 | De regel die de walstroom uitzet (hangt van meer dan één grootheid af), en of `voorwaarde` verplicht is bij een relais met `veilige_stand = "aan"` | §5.8 |
+| 39 | ~~Waar de gebruiker de relais met de hand bedient~~ – **besloten in v0.94**: op de systeempagina in het venster met de grootheden van een sensor (blok "Sensoren en actuators"), en op de pagina Overzicht op de plek die de tekening aangeeft; alleen voor grootheden in `controls` | §5.6, §5.4.2 punt 8 |
+| 40 | ~~Hoe in de SVG-tekening wordt aangegeven waar de handbediening verschijnt~~ – **besloten in v0.94, herzien in v0.95**: met de toevoeging `.RW` achter de naam (`sensor.grootheid.RW`); `.RO` of geen toevoeging is alleen lezen | §5.6 |
+| 44 | Wat de schakellaag en de reader doen met een ingevoerde waarde (veilige waarde, bewaking, herstart); te beslissen als de eerste sensor met een bedienbare waarde komt. Het invoerveldje in het web wordt wel gebouwd | §5.6, §5.8 |
+| 42 | ~~De bediening van een relais tegenover AUTO~~ – **besloten in v0.97 en v0.98**: twee keuzes, AUTO en de actieve stand van het relais (de handstand "veilige stand" vervalt); een schuifknop met beide keuzes als opschrift en een stip voor de werkelijke stand | §5.6, §5.8 punt 3 en 6 |
+| 43 | ~~Overzicht: naam en volgorde van de tabs~~ – **besloten in v0.96 en v0.98**: `[boot]` / `tekening` wordt een lijst die bepaalt welke tekeningen er zijn en in welke volgorde; de tab heet naar het bestand zonder extensie (`Privateer`) | §5.6 |
+| 41 | ~~Andere inrichting van de alarmenpagina en de systeempagina~~ – **besloten in v0.99**: systeempagina in de volgorde Opslag, Sensoren en actuators, Logboek, Services, Herstarten; alarmenpagina in de volgorde Nu actief, Opgetreden alarmen, Alarmregels | §5.6 |
 
 Daarnaast uit `CLAUDE.md`: de accu is nu 4× Victron AGM 12 V 110 Ah en wordt later deze
 winter vervangen door LiFePO4 (2× 300 Ah); bij die wissel de BMV-instellingen en de grens
@@ -3188,7 +3547,14 @@ maand).
 
 | Versie | Datum | Auteur | Wijziging |
 |---|---|---|---|
-| **0.92** | 2026-11-21 | Claude Code, Fable 5.2 | Netwerk (§9): de subnet-route van Tailscale is op de boot-Pi ingericht en gecontroleerd. De Pi biedt `192.168.1.0/24` aan, zodat router, camera en Shelly's vanaf thuis op hun eigen adres bereikbaar zijn (bijvoorbeeld de webpagina van de camera). De drie stappen om het in te richten staan erbij. Geen wijziging in de code. |
+| **0.99** | 2026-11-24 | Claude Code, Fable 5.2 | OPEN-41 besloten (§5.6); ontwerp, nog niet gebouwd. Systeempagina van boven naar beneden: Opslag, Sensoren en actuators, Logboek, Services, Herstarten. Alarmenpagina: Nu actief, Opgetreden alarmen, Alarmregels. De genummerde punten in de tekst houden hun nummer. |
+| 0.98 | 2026-11-24 | Claude Code, Fable 5.2 | OPEN-42 en OPEN-43 besloten (§5.6); ontwerp, nog niet gebouwd. De bediening van een relais is een schuifknop met de twee keuzes als opschrift (AUTO en de actieve stand) en ernaast een stip voor de werkelijke stand (groen aan, grijs uit); een drukknop is afgewezen. Een tab op de pagina Overzicht heet naar het bestand zonder extensie (`Privateer.svg` wordt `Privateer`). |
+| 0.97 | 2026-11-24 | Claude Code, Fable 5.2 | Schakellaag (§5.8 punt 3, 4 en 6; §5.6), besluit van de gebruiker; ontwerp, nog niet gebouwd. De handbediening van een relais heeft twee keuzes in plaats van drie: AUTO en de actieve stand van dat relais (AUTO / AAN bij veilige stand uit, AUTO / UIT bij veilige stand aan). De handstand "veilige stand" vervalt: een relais tegen een actief alarm in veilig houden gaat via de schakelaar van de alarmregel. OPEN-42 versmald tot de vorm van de bediening (schuifknop of drukknop, met de werkelijke stand erbij). |
+| 0.96 | 2026-11-24 | Claude Code, Fable 5.2 | Overzicht (§5.6), besluit van de gebruiker; ontwerp, nog niet gebouwd. Het veld `tekening` in `[boot]` wordt een lijst (`tekening = ["Privateer.svg", "Victron.svg"]`) die bepaalt welke tekeningen een tab krijgen en in welke volgorde. De regel uit v0.94 (één tab per SVG-bestand in de map, alfabetisch) vervalt. Eén naam als tekst blijft werken. Een tab toevoegen of verplaatsen vraagt `brms herstart`. OPEN-43 versmald tot de vraag of de tab de extensie toont. |
+| 0.95 | 2026-11-24 | Claude Code, Fable 5.2 | Handbediening, drie besluiten van de gebruiker; ontwerp, nog niet gebouwd. (1) Het invoerveldje voor een bedienbare waarde wordt gebouwd, ook zonder sensor die het gebruikt (§5.6); de decoder legt per bedienbare grootheid de vorm vast (aan/uit, of een waarde met grenzen en stap, §5.4.2 punt 8). Wat schakellaag en reader met zo'n waarde doen is OPEN-44. (2) In een tekening geeft `sensor.grootheid.RW` de bediening aan en `sensor.grootheid.RO` alleen lezen; zonder toevoeging geldt RO. De toevoeging `.control` uit v0.94 vervalt. (3) Ook een alarmregel houdt zich aan `controls`: een actie `relais` mag alleen op een sensor met `relais` in zijn `controls`, gecontroleerd door `check-config` (§5.4.2 punt 8, §5.5.3 punt 6, §5.8 punt 3). |
+| 0.94 | 2026-11-24 | Claude Code, Fable 5.2 | Handbediening in het web, ontwerp, nog niet gebouwd; OPEN-39 en OPEN-40 besloten. Nieuw veld `controls = [...]` per sensor (§5.4.2 punt 8): de grootheden die met de hand te bedienen zijn; `brms grootheden <type>` krijgt een kolom lezen / bedienen. Systeempagina (§5.6): nieuw blok "Sensoren en actuators" met per sensor een tegel (naam, stip live / not_avail, tijdstip van de laatste communicatie) en een knop die een venster opent met alle grootheden en hun laatste waarde; de bediening (schuifknop bij aan/uit, invoerveldje bij een waarde, dat laatste komt nu niet voor) staat in dat venster, niet op de tegel. De bootpagina heet voortaan Overzicht en krijgt één tab per SVG-bestand in de configuratiemap, in alfabetische volgorde van de bestandsnaam; in een tekening geeft `sensor.grootheid.control` de plek van de bediening aan. §5.8 punt 2 en 3 aangevuld. OPEN-42 (schuifknop Aan/Uit tegenover AUTO) en OPEN-43 (tabnaam, en of `[boot]` vervalt) toegevoegd. |
+| 0.93 | 2026-11-22 | Claude Code, Fable 5.2 | Schakellaag (nieuwe §5.8), ontwerp, nog niet gebouwd. Een relais is een sensor met een actuatordeel; het beslissen over de stand verhuist van de alarmlaag naar een eigen service `brms-schakel`. Elk relais heeft een `veilige_stand` (`aan` of `uit`); de andere stand gaat met een terugschakeltijd van 2 minuten naar de Shelly en wordt elke minuut herhaald. De alarmlaag stuurt verzoeken, het web de keuze AAN, UIT of AUTO (hand gaat voor de regel, de `voorwaarde` voor alles). Na een herstart staat elk relais op AUTO en in zijn veilige stand; er wordt niets bewaard. Nieuwe berichten in §3.3; §3, §3.1, §5.2.6, §5.5.3 en §5.6 aangepast. Het walstroomrelais is voorzien. OPEN-37 t/m OPEN-41 toegevoegd (walstroomrelais; plaats van de handbediening op de bootpagina en de systeempagina, de aanduiding in de SVG-tekening, en een andere inrichting van de alarmen- en systeempagina). De namen `[[sensor]]` en reader blijven. |
+| 0.92 | 2026-11-21 | Claude Code, Fable 5.2 | Netwerk (§9): de subnet-route van Tailscale is op de boot-Pi ingericht en gecontroleerd. De Pi biedt `192.168.1.0/24` aan, zodat router, camera en Shelly's vanaf thuis op hun eigen adres bereikbaar zijn (bijvoorbeeld de webpagina van de camera). De drie stappen om het in te richten staan erbij. Geen wijziging in de code. |
 | 0.91 | 2026-11-18 | Claude Code, Fable 5.2 | Dagoverzicht (§5.6 punt 2), gebouwd in code v0.28.0: het tempo is te kiezen met twee keuzelijsten op de afspeelbalk. "Verversen": een intervalfoto staat 0,2 / 0,5 / 1,0 / 1,5 / 2,0 s in beeld (standaard 1,0 s; eerder vast 0,5 s). "Verspringen": 1× / 2× / 3× / 5× / 10× het foto-interval van de camera tussen twee getoonde intervalfoto's (standaard 1×); gebeurtenissen en video's worden nooit overgeslagen. Aanleiding: over de mobiele verbinding (ongeveer 3 Mbit/s) doet een nachtfoto van 1,3 MB er 3 tot 5 s over. |
 | 0.1 | 2026-11-08 | Claude Code, Opus 5.5 | Eerste concept, opgesteld uit `CLAUDE.md`; open vragen geïnventariseerd. |
 | 0.2 | 2026-11-08 | Claude Code, Opus 5.5 | OPEN-9 besloten: generieke tabel `meting`; stills als bestand met tabel `still` (§5.3.1), met aanleiding, redenering en verworpen alternatieven. OPEN-20 toegevoegd; OPEN-16 uitgebreid met stills. |
