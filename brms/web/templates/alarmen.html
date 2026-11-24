@@ -1,14 +1,14 @@
 {#
   Alarmenpagina van BRMS (ARCHITECTURE.md §5.6 "Alarmenpagina", §5.5.3 punt 7 en 8).
 
-  Van boven naar beneden:
+  Van boven naar beneden (de volgorde van besluit OPEN-41, v0.99):
     1. de alarmen die nu actief zijn;
-    2. de alarmregels uit brms.toml, elk met een aan/uit-schakelaar;
-    3. de opgetreden alarmen (de historie), de nieuwste bovenaan. Niet de hele tabel,
+    2. de opgetreden alarmen (de historie), de nieuwste bovenaan. Niet de hele tabel,
        maar een keuze (v0.56): de laatste 10 (de standaard), vandaag, deze week, deze
        maand of dit jaar. Met de knoppen eerder / later / nu (dezelfde als bij de
        grafieken, _bladeren.html) bladert de lijst: de 10 alarmen daarvoor, of de vorige
-       dag, week, maand of het vorige jaar.
+       dag, week, maand of het vorige jaar;
+    3. de alarmregels uit brms.toml, elk met een aan/uit-schakelaar.
 
   De schakelaar: uit geldt voor de hele regel (geen beoordeling, geen melding, geen
   actie). De pagina zet de stand niet zelf: ze vraagt het aan de webservice, die een
@@ -63,13 +63,9 @@
     <div id="actief"><p class="zacht">Wordt opgehaald…</p></div>
   </section>
 
-  <section class="blok">
-    <h2>Alarmregels</h2>
-    <div id="regels"></div>
-    <p class="zacht klein" style="margin: 10px 0 0">Uit geldt voor de hele regel: er wordt niets beoordeeld,
-      gemeld of uitgevoerd. De grenzen en tijden van een regel staan in <code>brms.toml</code>.</p>
-  </section>
-
+  {# De volgorde van de blokken is die van besluit OPEN-41 (v0.99): Nu actief, Opgetreden
+     alarmen, Alarmregels. Wat er gebeurd is staat bij elkaar bovenaan; de regels, die
+     zelden veranderen, staan onderaan. #}
   <section class="blok">
     <h2>Opgetreden alarmen</h2>
     <div class="rij historiekeuze" id="keuze">
@@ -89,6 +85,14 @@
     </table>
     <p id="vol" class="zacht klein" hidden>Deze periode heeft meer alarmen dan hier passen: alleen de
       nieuwste staan er. Kies een kortere periode voor de rest.</p>
+  </section>
+
+  <section class="blok">
+    <h2>Alarmregels</h2>
+    <div id="regels"></div>
+    <p class="zacht klein" style="margin: 10px 0 0">Uit geldt voor de hele regel: er wordt niets beoordeeld,
+      gemeld of uitgevoerd; een relais dat de regel schakelt, gaat terug naar zijn veilige stand.
+      De grenzen en tijden van een regel staan in <code>brms.toml</code>.</p>
   </section>
 {% endblock %}
 

@@ -2,8 +2,15 @@
 
 Vier pagina's met een gedeelde bovenbalk en een zijbalk als menu (sjabloon basis.html,
 stijl static/brms.css): Grafieken, Opnames, Alarmen en Systeem (§5.6, v0.52). Staat er
-een blok [boot] in brms.toml, dan is er een vijfde, de eerste pagina: Boot, een tekening
-van de boot met de actuele waarden op hun plek (§5.6 "Bootpagina", v0.76).
+een blok [boot] in brms.toml, dan is er een vijfde, de eerste pagina: Overzicht (tot
+v0.28 "Boot"), met per tekening een tab: een tekening van de boot met de actuele waarden
+op hun plek (§5.6 "Bootpagina", v0.76; "Overzicht met tabs", v0.94).
+
+Handbediening (§5.6 "Relais in het web", §5.8): een grootheid die in `controls` van een
+sensor staat, is te bedienen op de systeempagina (in het venster met de grootheden van
+die sensor) en in een tekening (de tekst `sensor.grootheid.RW`). Het web schakelt niet
+zelf: de keuze gaat als opdracht over de bus naar de schakellaag, en de pagina toont wat
+de schakellaag daarna meldt.
 
 Grafieken (§5.6 punt 4): de gebruiker voegt zelf grafieken toe en kiest per grafiek welke
 reeksen (sensor + grootheid) erin staan. Een grafiek heeft één bron:
@@ -25,9 +32,14 @@ Adressen:
     /                 de bootpagina als er een blok [boot] is, anders de grafiekenpagina
     /grafieken        de grafiekenpagina; met ?sensor=<id>&grootheid=<naam> komt die reeks
                       in de bootgrafiek bovenaan (een klik op de bootpagina)
-    /boot/tekening.svg   de SVG-tekening van de bootpagina, zoals hij nu op schijf staat
+    /boot/tekening/<nr>.svg   de SVG-tekening van tab <nr> (vanaf 0), zoals hij nu op
+                      schijf staat; /boot/tekening.svg is de eerste
     /api/boot         (POST) de actuele waarde en de alarmstand van de waarden in de
-                      tekening, zie api_boot
+                      tekening, en de stand van de relais, zie api_boot
+    /api/sensoren     alle sensoren met hun laatste waarden en de stand van de relais,
+                      voor het blok "Sensoren en actuators" van de systeempagina
+    /api/schakel      (POST) de handbediening: de keuze van een relais (auto of de
+                      actieve stand) of een ingevoerde waarde; opdracht over de bus
     /api/live        (POST) metingen van de bus voor een lijst reeksen, zie api_live
     /api/historie     ?sensor=<id>&grootheid=<naam>&van=<ts>&tot=<ts>  rijen uit de database
     /api/alarmen      ?sensor=<id>&grootheid=<naam>&van=<ts>&tot=<ts>  alarmperioden (§5.5.3)
@@ -72,6 +84,7 @@ from flask import (Flask, Response, abort, jsonify, render_template, request, se
                    send_from_directory)
 
 from brms import VERSION, alarms, config, go2rtc, grootheden, systeem
+from brms import schakel as schakellaag
 from brms.config import Config
 from brms.meting import TOPIC_PREFIX, Meting
 
@@ -88,6 +101,13 @@ TOPIC_SCHAKEL = "brms/opdracht/alarm/schakel"
 # SIMULATIE_GELDIG seconden telt niet meer (de reader is dan gestopt of herstart).
 TOPIC_SIMULATIE = "brms/simulatie"
 SIMULATIE_GELDIG = 90.0
+# De handbediening (§5.6 "Relais in het web", §5.8): de opdracht aan de schakellaag, en de
+# stand die de schakellaag per relais meldt (brms/schakel/<sensor_id>). Hij meldt die bij
+# elke verandering en elke minuut; een melding die ouder is dan SCHAKEL_GELDIG seconden
+# telt niet meer: de schakellaag draait dan niet, en de schuifknop is uitgeschakeld.
+TOPIC_HAND = schakellaag.TOPIC_HAND
+TOPIC_SCHAKELSTAND = schakellaag.TOPIC_STAND
+SCHAKEL_GELDIG = 2.5 * schakellaag.MELD_INTERVAL
 # Zoveel opgetreden alarmen toont de alarmenpagina hooguit van één periode (dag, week,
 # maand of jaar).
 MAX_HISTORIE = 200
@@ -209,6 +229,46 @@ class SimulatieStand:
                     for s in sensoren]
 
 
+class SchakelStand:
+    """Onthoudt wat de schakellaag per relais meldt (§5.8 punt 9): de keuze (auto of met
+    de hand), de stand die de schakellaag wil en de reden. Voor de schuifknop op de
+    systeempagina en in een tekening.
+
+    Zoals SimulatieStand: de meldingen komen binnen in paho's netwerkthread en worden
+    gelezen in de threads van de webserver (een lock), en alles staat alleen in het
+    geheugen. Na een herstart van de webservice is de stand binnen een minuut weer bekend.
+    """
+
+    def __init__(self, klok=time.monotonic):
+        self._klok = klok
+        self._lock = threading.Lock()
+        # Per relais: (tijdstip van ontvangst op de monotone klok, de gemelde stand).
+        self._gemeld: dict[str, tuple[float, dict]] = {}
+
+    def bij_bericht(self, topic: str, payload: bytes) -> None:
+        """Callback voor de bus (brms/schakel/#)."""
+        try:
+            d = json.loads(payload)
+            stand = {"keuze": d["keuze"], "stand": d["stand"], "reden": str(d.get("reden", ""))}
+            sensor_id = d["sensor_id"]
+            if (not isinstance(sensor_id, str) or stand["stand"] not in config.STANDEN
+                    or stand["keuze"] not in (schakellaag.AUTO, *config.STANDEN)):
+                raise ValueError("sensor_id, keuze of stand heeft de verkeerde vorm")
+        except (ValueError, KeyError, TypeError) as e:
+            log.debug("ongeldig bericht op %s genegeerd: %s", topic, e)
+            return
+        with self._lock:
+            self._gemeld[sensor_id] = (self._klok(), stand)
+
+    def lees(self) -> dict[str, dict]:
+        """Per relais {"keuze", "stand", "reden"}, voor zover de schakellaag het kort
+        geleden gemeld heeft. Een relais dat ontbreekt: de schakellaag meldt niets."""
+        grens = self._klok() - SCHAKEL_GELDIG
+        with self._lock:
+            return {sensor_id: dict(stand) for sensor_id, (ontvangen, stand)
+                    in self._gemeld.items() if ontvangen >= grens}
+
+
 def bedrijf(gesimuleerd: list[dict], cfg: Config) -> dict:
     """Wat het tegeltje bovenaan toont (§5.6): {"stand", "sensoren"}.
 
@@ -265,6 +325,13 @@ class LiveBuffer:
             if r.ts[0] < m.ts - self._bewaar - marge or len(r.ts) > self._maximum + self._maximum // 8:
                 weg = max(bisect.bisect_left(r.ts, m.ts - self._bewaar), len(r.ts) - self._maximum)
                 del r.nr[:weg], r.ts[:weg], r.waarde[:weg]
+
+    def laatste(self) -> dict[tuple[str, str], tuple[int, float]]:
+        """Van elke reeks de laatste meting: {(sensor-ID, grootheid): (ts, waarde)}. Voor
+        het blok "Sensoren en actuators" van de systeempagina (§5.6): de laatste
+        communicatie met een sensor en de laatst bekende waarde van elke grootheid."""
+        with self._lock:
+            return {reeks: (r.ts[-1], r.waarde[-1]) for reeks, r in self._reeksen.items() if r.ts}
 
     def lees(self, vragen: list[dict]) -> tuple[int, list[list], list[bool]]:
         """Beantwoordt een lijst vragen, elk over één reeks (sensor + grootheid).
@@ -609,11 +676,14 @@ def _sensor(cfg: Config, sensor_id) -> "config.Sensor | None":
 
 
 def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
-             config_pad: str | None = None, simulatie: SimulatieStand | None = None) -> Flask:
+             config_pad: str | None = None, simulatie: SimulatieStand | None = None,
+             schakelstand: SchakelStand | None = None) -> Flask:
     """Maakt de Flask-toepassing. `bus` is nodig voor opdrachten en om te melden of de
     broker bereikbaar is; in tests mag hij ontbreken. `klok` is te vervangen in tests.
     `config_pad` is het pad van brms.toml: "Herstart BRMS" controleert dat bestand eerst.
-    `simulatie` onthoudt wat de readers over simulaties melden; zonder: altijd "actief"."""
+    `simulatie` onthoudt wat de readers over simulaties melden; zonder: altijd "actief".
+    `schakelstand` onthoudt wat de schakellaag over de relais meldt; zonder: er is niets
+    gemeld, en de schuifknoppen zijn uitgeschakeld."""
     app = Flask(__name__)
     # Flask sorteert JSON standaard op sleutel (alfabetisch); de volgorde van de tabel van
     # grootheden (§5.3.3) moet blijven. Twee instellingen: één voor de antwoorden
@@ -636,7 +706,7 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
     @app.context_processor
     def _voor_elke_pagina():
         # Wat het gedeelde sjabloon (basis.html) op elke pagina nodig heeft. `boot`: of
-        # er een bootpagina is; dan staat "Boot" bovenaan in het menu en wijst
+        # er een pagina Overzicht is; dan staat "Overzicht" bovenaan in het menu en wijst
         # "Grafieken" naar /grafieken in plaats van naar / (§5.6 "Bootpagina" punt 1).
         return {"versie": VERSION, "boot": cfg.boot is not None}
 
@@ -653,10 +723,23 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
             getal = min(hoogste, getal)
         return getal
 
+    def _bediening(sensor) -> dict:
+        """De bedienbare grootheden van een sensor voor de pagina (§5.4.2 punt 8):
+        {grootheid: {"vorm": "aan/uit" of "waarde", en bij een waarde "laagste",
+        "hoogste" en "stap"}}. Leeg bij een sensor die alleen te lezen is."""
+        return {g: {"vorm": b.vorm, "laagste": b.laagste, "hoogste": b.hoogste, "stap": b.stap}
+                for g, b in config.bedienbaar(sensor).items()}
+
     def _sensoren_en_grootheden() -> dict:
-        """Wat de grafiekenpagina en de bootpagina uit de configuratie nodig hebben."""
+        """Wat de pagina's (grafieken, overzicht, systeem) uit de configuratie nodig hebben."""
         return {
-            "sensoren": [{"id": s.id, "naam": s.naam, "type": s.type, "grootheden": _levert(s)}
+            "sensoren": [{"id": s.id, "naam": s.naam, "type": s.type, "grootheden": _levert(s),
+                          # Wat van deze sensor te bedienen is (leeg: alleen lezen), en bij
+                          # een relais de stand waar de schuifknop naartoe schuift: de
+                          # actieve stand, "aan" of "uit" (§5.8 punt 2 en 3).
+                          "controls": _bediening(s),
+                          "actieve_stand": (config.actieve_stand(s)
+                                            if s.type == config.RELAIS_TYPE else None)}
                          for s in cfg.sensoren.values()],
             # Naam -> eenheid en soort, voor de assen en de vorm van de lijnen.
             # `decimalen`: met hoeveel decimalen de pagina een waarde toont (§5.3.3).
@@ -680,10 +763,15 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
         if cfg.boot is None:
             return _pagina_grafieken()
         return render_template(
-            "boot.html", pagina="boot", titel="Boot",
+            "boot.html", pagina="boot", titel="Overzicht",
             gestart=gestart, kop_gestart=KOP_GESTART,
-            # Alleen de bestandsnaam, voor de melding als de tekening ontbreekt.
-            tekening=pathlib.Path(cfg.boot.tekening).name,
+            # De tekeningen, in de volgorde van brms.toml: elke tekening een tab (§5.6
+            # "Overzicht met tabs" punt 2). `naam` is de naam van de tab (de bestandsnaam
+            # zonder extensie), `bestand` de bestandsnaam voor een melding als de tekening
+            # ontbreekt, `url` waar de pagina haar ophaalt.
+            tekeningen=[{"naam": config.tabnaam(pad), "bestand": pathlib.Path(pad).name,
+                         "url": f"/boot/tekening/{nr}.svg"}
+                        for nr, pad in enumerate(cfg.boot.tekeningen)],
             # Voor de uitleg bij een "--": na hoeveel seconden een waarde als stil geldt.
             stil_na=BOOT_STIL,
             **_sensoren_en_grootheden())
@@ -696,19 +784,27 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
 
     # --- bootpagina (§5.6 "Bootpagina") -------------------------------------------------
     @app.get("/boot/tekening.svg")
-    def boot_tekening():
-        """De tekening van de boot, zoals hij nu op schijf staat (§5.6 punt 2).
+    @app.get("/boot/tekening/<int:nr>.svg")
+    def boot_tekening(nr: int = 0):
+        """Eén tekening van de pagina Overzicht, zoals hij nu op schijf staat (§5.6
+        punt 2). `nr` is de plaats in de lijst van brms.toml, vanaf 0; zonder nummer de
+        eerste (het adres van vóór de tabs).
 
         Het bestand wordt bij elke aanvraag van schijf gelezen: een nieuwe versie is te
         zien na het verversen van de pagina, zonder herstart. max_age=0 met conditional:
         de browser bewaart het bestand, maar vraagt elke keer of het gewijzigd is; is dat
         niet zo, dan is het antwoord een korte "304" en gaat de tekening (enkele honderden
         kB, de boot zit erin) niet opnieuw over de mobiele verbinding.
+
+        Alleen een tekening uit de lijst wordt uitgeleverd: het nummer kan nooit naar een
+        ander bestand wijzen.
         """
-        if cfg.boot is None or not pathlib.Path(cfg.boot.tekening).is_file():
+        if cfg.boot is None or nr >= len(cfg.boot.tekeningen):
             abort(404)
-        return send_file(cfg.boot.tekening, mimetype="image/svg+xml", conditional=True,
-                         max_age=0)
+        pad = cfg.boot.tekeningen[nr]
+        if not pathlib.Path(pad).is_file():
+            abort(404)
+        return send_file(pad, mimetype="image/svg+xml", conditional=True, max_age=0)
 
     @app.post("/api/boot")
     def api_boot():
@@ -717,6 +813,8 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
 
         Aanvraag (JSON):  {"waarden": [{"sensor": <id>, "grootheid": <naam>}, ...]}
         Antwoord:  {"nu": tijd van de Pi, "broker": bereikbaar,
+                    "schakel": per relais wat de schakellaag meldt, zie _schakelstand
+                               (voor de schuifknoppen in de tekening, §5.6),
                     "waarden": per gevraagde waarde
                        {"waarde": het getal, of null als de sensor stil is of ontbreekt,
                         "ts":     tijdstip van die meting (null zonder waarde),
@@ -768,8 +866,102 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
                 waarden.append({"waarde": None, "ts": None, "alarm": stil_alarm})
             else:
                 waarden.append({"waarde": waarde, "ts": ts, "alarm": r in actief})
-        return jsonify(nu=nu, waarden=waarden,
+        return jsonify(nu=nu, waarden=waarden, schakel=_schakelstand(),
                        broker=bus.verbonden if bus is not None else None)
+
+    # --- handbediening (§5.6 "Relais in het web", §5.8) ----------------------------------
+    def _schakelstand() -> dict:
+        """Per relais wat de schakellaag kort geleden gemeld heeft:
+        {sensor-ID: {"keuze": "auto", "aan" of "uit", "stand": "aan" of "uit", "reden"}}.
+        Een relais dat ontbreekt: de schakellaag meldt niets (de service draait niet); de
+        pagina schakelt de schuifknop dan uit."""
+        stand = schakelstand.lees() if schakelstand is not None else {}
+        return {sensor_id: s for sensor_id, s in stand.items() if sensor_id in cfg.sensoren}
+
+    @app.get("/api/sensoren")
+    def api_sensoren():
+        """Alle sensoren met hun laatste waarden, voor het blok "Sensoren en actuators"
+        van de systeempagina (§5.6 systeempagina punt 5).
+
+        Antwoord:  {"nu": tijd van de Pi, "broker": bereikbaar, "stil_na": seconden,
+                    "schakel": per relais wat de schakellaag meldt (zie _schakelstand),
+                    "sensoren": per sensor uit brms.toml, in die volgorde
+                       {"id", "naam", "type",
+                        "live":   true als de laatste meting niet ouder is dan BOOT_STIL
+                                  en er geen alarm "sensor stil" actief is; anders false
+                                  (op de pagina: not_avail),
+                        "ts":     tijdstip van de laatste meting van deze sensor, van
+                                  welke grootheid ook (null: nog geen meting sinds de
+                                  start van de webservice),
+                        "grootheden": per grootheid die de sensor levert
+                           {"naam", "waarde", "ts"}: de laatst bekende waarde en haar
+                           tijdstip (beide null zonder meting)}}
+
+        Alles komt uit het live-geheugen (de metingen van de bus), niet uit de database:
+        dezelfde bron en dezelfde grens als de pagina Overzicht. De eenheden en wat te
+        bedienen is, staan al in de pagina (uit de configuratie).
+        """
+        nu = int(klok())
+        laatste = live.laatste()
+        stil = {sensor_id for sensor_id, grootheid in lees_actieve_alarmen(cfg.opslag.database)
+                if grootheid is None}
+        sensoren = []
+        for s in cfg.sensoren.values():
+            waarden = [{"naam": g, **dict(zip(("ts", "waarde"), laatste.get((s.id, g), (None, None))))}
+                       for g in _levert(s)]
+            # De laatste communicatie: de nieuwste meting van welke grootheid ook.
+            ts = max((w["ts"] for w in waarden if w["ts"] is not None), default=None)
+            sensoren.append({"id": s.id, "naam": s.naam, "type": s.type,
+                             "live": ts is not None and ts >= nu - BOOT_STIL and s.id not in stil,
+                             "ts": ts, "grootheden": waarden})
+        return jsonify(nu=nu, sensoren=sensoren, schakel=_schakelstand(), stil_na=BOOT_STIL,
+                       broker=bus.verbonden if bus is not None else None)
+
+    @app.post("/api/schakel")
+    def api_handbediening():
+        """De handbediening van één bedienbare grootheid (§5.6 "Relais in het web").
+
+        Aanvraag (JSON), een van de twee:
+          {"sensor": <id>, "grootheid": "relais", "keuze": "auto" | "aan" | "uit"}
+              de schuifknop van een relais: AUTO, of de actieve stand van dat relais
+              (§5.8 punt 3). De veilige stand als keuze bestaat niet;
+          {"sensor": <id>, "grootheid": <naam>, "waarde": <getal>}
+              het invoerveldje van een grootheid met een in te voeren waarde; het getal
+              moet binnen de grenzen van de decoder liggen.
+        Alleen voor een grootheid die in `controls` van de sensor staat (§5.4.2 punt 8).
+
+        Het web schakelt niet zelf: de opdracht gaat over de bus naar de schakellaag. Het
+        antwoord zegt alleen dat de opdracht verstuurd is; de pagina toont de nieuwe
+        keuze pas als de schakellaag hem meldt.
+        """
+        inhoud = request.get_json(silent=True)
+        inhoud = inhoud if isinstance(inhoud, dict) else {}
+        sensor = _sensor(cfg, inhoud.get("sensor"))
+        grootheid = inhoud.get("grootheid")
+        bediening = config.bedienbaar(sensor).get(grootheid) if sensor is not None else None
+        if bediening is None:
+            return jsonify(fout="deze grootheid is niet te bedienen (staat niet in 'controls' "
+                                "van de sensor in brms.toml)"), 404
+        opdracht = {"ts": int(klok()), "sensor_id": sensor.id}
+        if bediening.vorm == grootheden.AANUIT:
+            keuze = inhoud.get("keuze")
+            actief = config.actieve_stand(sensor)
+            if keuze not in (schakellaag.AUTO, actief):
+                return jsonify(fout=f"'keuze' moet \"auto\" of \"{actief}\" zijn"), 400
+            opdracht["keuze"] = keuze
+            wat = keuze
+        else:
+            waarde = inhoud.get("waarde")
+            if (isinstance(waarde, bool) or not isinstance(waarde, (int, float))
+                    or not bediening.laagste <= waarde <= bediening.hoogste):
+                return jsonify(fout=f"'waarde' moet een getal tussen {bediening.laagste:g} en "
+                                    f"{bediening.hoogste:g} zijn"), 400
+            opdracht["grootheid"], opdracht["waarde"] = grootheid, waarde
+            wat = f"{waarde:g}"
+        # Een waarschuwing, zodat de handbediening in het logboek terug te vinden is (zoals
+        # bij de schakelaar van een alarmregel).
+        log.warning("%s.%s via het web op %s gezet", sensor.naam, grootheid, wat)
+        return _opdracht(TOPIC_HAND, opdracht) or jsonify(gevraagd=wat)
 
     @app.post("/api/live")
     def api_live():
@@ -1034,8 +1226,11 @@ def maak_app(cfg: Config, live: LiveBuffer, bus=None, klok=time.time,
 
     @app.get("/systeem")
     def pagina_systeem():
+        # De sensoren en grootheden uit de configuratie: voor het blok "Sensoren en
+        # actuators" (namen, eenheden, en wat te bedienen is).
         return render_template("systeem.html", pagina="systeem", titel="Systeem",
-                               gestart=gestart, kop_gestart=KOP_GESTART)
+                               gestart=gestart, kop_gestart=KOP_GESTART,
+                               **_sensoren_en_grootheden())
 
     @app.get("/api/status")
     def api_status():
@@ -1132,13 +1327,17 @@ def draai(cfg: Config, config_pad: str | None = None) -> None:
     # Wat de readers melden over simulaties, voor het tegeltje bovenaan (§10.3 punt 10).
     simulatie = SimulatieStand()
     bus.abonneer(f"{TOPIC_SIMULATIE}/#", 1, simulatie.bij_bericht)
+    # Wat de schakellaag over de relais meldt, voor de schuifknoppen (§5.8 punt 9).
+    schakelstand = SchakelStand()
+    bus.abonneer(f"{TOPIC_SCHAKELSTAND}/#", 1, schakelstand.bij_bericht)
     bus.start()
 
     # De ingebouwde server van Flask/Werkzeug, met een thread per aanvraag. Voldoende voor
     # één of enkele gebruikers achter Tailscale; er staat niets open op internet (§5.6).
     server = make_server(cfg.web.host, cfg.web.port,
                          maak_app(cfg, live, bus, config_pad=config_pad,
-                                  simulatie=simulatie), threaded=True)
+                                  simulatie=simulatie, schakelstand=schakelstand),
+                         threaded=True)
     log.info("webservice gestart op http://%s:%d", cfg.web.host, cfg.web.port)
     try:
         server.serve_forever()

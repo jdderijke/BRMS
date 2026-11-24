@@ -52,23 +52,25 @@ Fouten uit het logboek (§5.5.5 punt 5): de alarmlaag volgt journald en verstuur
 fout van een BRMS-service of de kernel een melding, hooguit één per service per uur
 (brms/systeem.py).
 
-Het relais (§5.2.6, §5.5.3 punt 6): een regel met de actie `relais` werkt als thermostaat
-voor de kachel. De alarmlaag schakelt niet zelf, maar geeft de Shelly-reader een opdracht
-(brms/opdracht/relais/zet). De regels, alle uit §5.2.6 punt 4 en 5:
+Het relais (§5.5.3 punt 6, §5.8): een regel met de actie `relais` werkt als thermostaat
+voor de kachel. De alarmlaag schakelt niet en beslist niet (sinds v0.29.0): hij **vraagt**
+de schakellaag (brms/schakel.py) om de actieve stand van het relais zolang het alarm
+actief is. Wat de alarmlaag daarvoor doet (§5.8 punt 3 en 8):
 
-- aan als het alarm afgaat, uit bij herstel en als de regel wordt uitgezet;
-- "aan" gaat met een uitschakeltijd van 10 minuten die de Shelly zelf bewaakt, en wordt
-  elke 5 minuten herhaald. Valt de alarmlaag weg, dan gaat het relais vanzelf uit;
-- alleen aan zolang de sensor van het alarm nog waarden levert (jonger dan de
-  uitschakeltijd);
-- alleen aan zolang elke voorwaarde van het relais geldt (het veld `voorwaarde` van die
-  sensor, bijv. multiplus.walstroom = 1), met een waarde jonger dan de uitschakeltijd.
-  Onbekend is uit. Het alarm zelf en zijn melding hangen daar niet van af.
+- hij houdt een lijst van verzoeken bij, één per (relais, alarmregel): de regel heeft een
+  actief alarm, staat niet uit, en de sensor van dat alarm levert nog waarden (jonger dan
+  2 minuten; bij een stille sensor vervalt het verzoek);
+- hij stuurt de **hele lijst** op brms/opdracht/schakel/verzoek: bij elke verandering,
+  bij zijn start (dan leeg), als de schakellaag erom vraagt en anders elke minuut.
+
+Het herhalen van de opdracht, de voorwaarde van het relais (alleen met walstroom), de
+handbediening en de veilige stand na een herstart zitten in de schakellaag. Het alarm zelf
+en zijn melding hangen daar niet van af.
 
 Dit module bevat:
 - Bewaker: de toestand van één regel voor één sensor (zuiver, zonder klok of netwerk);
 - Alarmlaag: alle bewakers bij elkaar; maakt van hun uitkomsten berichten, meldingen en
-  opdrachten;
+  opdrachten, en houdt de verzoeken aan de schakellaag bij;
 - Fotograaf: vraagt een foto aan de camera-reader en wacht erop;
 - draai(): de service.
 """
@@ -86,7 +88,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 
-from brms import config, grootheden
+from brms import config, grootheden, schakel
 from brms.config import Alarmregel, Camera, Config, Sensor
 from brms.melding import Melding
 from brms.meting import TOPIC_PREFIX, Meting
@@ -109,23 +111,13 @@ TOPIC_POLL_NU = "brms/opdracht/camera/poll-nu"
 TOPIC_OPNAME = "brms/opname"
 # De schakelaar van het web (§5.5.3 punt 7): {"alarm_id": ..., "aan": true|false}.
 TOPIC_SCHAKEL = "brms/opdracht/alarm/schakel"
-# Het relais (§5.2.6): de schakelopdracht aan de Shelly-reader, de uitschakeltijd die met
-# "aan" meegaat (de Shelly schakelt na die tijd zelf uit) en de tussenpoos waarmee "aan"
-# herhaald wordt zolang het alarm actief is. De herhaling is de helft van de
-# uitschakeltijd: één gemiste herhaling geeft nog geen onderbreking. Dezelfde 2 minuten
-# gelden als grens voor "de sensor levert nog waarden" en "de voorwaarde is bekend".
-# Besluit OPEN-36 (v0.87): 2 minuten en 1 minuut, eerder 10 en 5. Valt BRMS of de Pi weg,
-# dan stookt de kachel hooguit 2 minuten door.
-TOPIC_RELAIS_ZET = "brms/opdracht/relais/zet"
-RELAIS_DUUR = 120.0
-RELAIS_HERHAAL = 60.0
-# De stand van de relais (§5.2.6 punt 6): bij zijn start geeft de alarmlaag "uit" aan elk
-# relais (OPEN-36: na een herstart is er geen actief alarm meer, dus een relais dat nog
-# aan staat hoort uit). Bij een herstart van alle services luistert de Shelly-reader dan
-# vaak nog niet. Daarom vraagt de Shelly-reader bij zijn eigen start hierop om de stand
-# (v0.88), en geeft de alarmlaag direct voor elk relais opnieuw "aan" of "uit". Dezelfde
-# aanpak als bij de opslag (TOPIC_STAND_VRAAG). De inhoud van het bericht doet er niet toe.
-TOPIC_RELAIS_STAND_VRAAG = "brms/opdracht/relais/stand"
+# Het relais (§5.8 punt 3 en 8): de alarmlaag stuurt zijn lijst van verzoeken naar de
+# schakellaag, die beslist en de Shelly-reader de opdracht geeft. Een verzoek geldt alleen
+# zolang de sensor van het alarm nog waarden levert: de laatste waarde moet jonger zijn
+# dan RELAIS_DUUR (2 minuten, de terugschakeltijd van de schakellaag; besluit OPEN-36).
+# Bij een stille sensor vervalt het verzoek en gaat het relais naar zijn veilige stand.
+TOPIC_VERZOEK = schakel.TOPIC_VERZOEK
+RELAIS_DUUR = schakel.TERUGSCHAKELTIJD
 # Zo lang wacht een melding hooguit op haar foto, in seconden (§5.7 punt 15).
 FOTO_WACHTTIJD = 15.0
 # Een foto groter dan dit gaat niet mee: Telegram neemt hooguit 10 MB aan.
@@ -371,18 +363,14 @@ class Opdracht:
                            "aanleiding": self.aanleiding}, separators=(",", ":"))
 
 
-@dataclass(frozen=True)
-class RelaisOpdracht:
-    """Een schakelopdracht aan de Shelly-reader (§5.2.6 punt 3): relais aan of uit."""
-    sensor_id: str               # het relais (sensor van het type shelly-relais)
-    aan: bool
-    duur: float | None = None    # uitschakeltijd in seconden; altijd gezet bij "aan"
-
-    def naar_json(self) -> str:
-        d: dict = {"sensor_id": self.sensor_id, "aan": self.aan}
-        if self.aan:
-            d["duur"] = self.duur
-        return json.dumps(d, separators=(",", ":"))
+def verzoek_json(ts: int, verzoeken: list[tuple[str, str]]) -> str:
+    """Het bericht met de lijst van verzoeken aan de schakellaag (§3.3, §5.8 punt 3):
+    {"ts", "bron": "alarm", "verzoeken": [{"sensor_id", "alarm_id"}, ...]}. Altijd de hele
+    lijst, zodat de schakellaag niets hoeft te onthouden van een vorig bericht."""
+    return json.dumps({"ts": ts, "bron": "alarm",
+                       "verzoeken": [{"sensor_id": relais_id, "alarm_id": alarm_id}
+                                     for relais_id, alarm_id in verzoeken]},
+                      separators=(",", ":"))
 
 
 @dataclass(frozen=True)
@@ -402,8 +390,8 @@ def aanleiding(regel: Alarmregel) -> str:
 class Alarmlaag:
     """Alle alarmregels bij elkaar. Geen netwerk: bij_meting() en tik() geven terug wat er
     moet gebeuren, als een lijst van Gebeurtenis (voor de bus), Melding of MetFoto (voor de
-    meldingskanalen), Opdracht (voor de camera-reader) en RelaisOpdracht (voor de
-    Shelly-reader)."""
+    meldingskanalen) en Opdracht (voor de camera-reader). De verzoeken aan de schakellaag
+    staan daar los van: zie verzoeken()."""
 
     def __init__(self, cfg: Config, klok=time.monotonic, tijd=time.time):
         """klok: monotone klok voor tijdsduren; tijd: systeemklok voor de tijdstempels op
@@ -425,112 +413,39 @@ class Alarmlaag:
                 bewaker = Bewaker(regel, bron, nu)
                 self._per_sensor.setdefault(sensor_id, []).append(bewaker)
 
-        # --- het relais (§5.2.6) ---
-        # Per relais de regels die het schakelen (meestal één), en zijn naam voor het log.
-        self._relais: dict[str, list[str]] = {}
-        for regel in cfg.alarmen:
-            if regel.relais is not None:
-                self._relais.setdefault(regel.relais, []).append(regel.id)
-        self._relais_naam = {r: cfg.sensoren[r].naam for r in self._relais}
-        # De stand die de alarmlaag het laatst heeft opgedragen, en wanneer "aan" opnieuw
-        # gegeven moet worden. Na een herstart is dat "uit": er is dan geen actief alarm.
-        # Een relais dat nog aan staat, krijgt bij de start "uit" (relais_stand, punt 6);
-        # gaat dat mis, dan schakelt de Shelly zelf uit.
-        self._relais_aan: dict[str, bool] = {r: False for r in self._relais}
-        self._relais_volgende: dict[str, float] = {}
-        # Waarom een relais uit blijft; alleen om een verandering één keer te loggen.
-        self._relais_belet_was: dict[str, str | None] = {}
-        # De voorwaarden (punt 5): per relais wat moet gelden om het aan te zetten, als
-        # (sensor-ID, grootheid, waarde, tekst voor het log), uit het veld 'voorwaarde'
-        # van het relais. Bijv. de MultiPlus moet walstroom = 1 melden.
-        self._voorwaarden: dict[str, list[tuple[str, str, float, str]]] = {
-            r: [(sid, g, w, f"{cfg.sensoren[sid].naam}.{g}")
-                for sid, g, w in cfg.sensoren[r].voorwaarde]
-            for r in self._relais}
-        # Van elke (sensor, grootheid) uit een voorwaarde de laatste waarde en het
-        # tijdstip (monotone klok). Zonder relais wordt er niets bijgehouden.
-        self._volgen = {(sid, g) for lijst in self._voorwaarden.values() for sid, g, _, _ in lijst}
-        self._gevolgd: dict[tuple[str, str], tuple[float, float]] = {}
+        # Of er een regel is die een relais schakelt: alleen dan gaan er verzoeken naar de
+        # schakellaag (zie verzoeken en draai).
+        self.schakelt = any(regel.relais is not None for regel in cfg.alarmen)
 
     @property
     def bewakers(self) -> list[Bewaker]:
         return [b for lijst in self._per_sensor.values() for b in lijst]
 
-    # --- het relais (§5.2.6) ---------------------------------------------------------
-    def _relais_belet(self, relais_id: str, nu: float) -> str | None:
-        """Waarom dit relais nu niet aan mag, als tekst; None = het moet aan staan.
+    # --- het relais (§5.8 punt 3 en 8) ------------------------------------------------
+    def verzoeken(self) -> list[tuple[str, str]]:
+        """De verzoeken aan de schakellaag op dit moment, als (relais-ID, alarm-ID),
+        gesorteerd. Een regel met de actie `relais` vraagt om de actieve stand van dat
+        relais zolang alle drie gelden:
 
-        Aan alleen als alle drie gelden (§5.2.6 punt 4 en 5):
-        1. een regel die dit relais schakelt heeft een actief alarm (en staat niet uit);
-        2. de sensor van dat alarm levert nog waarden (jonger dan de uitschakeltijd);
-        3. elke voorwaarde van het relais geldt: de laatste waarde is vers (jonger dan de
-           uitschakeltijd) en gelijk aan wat de voorwaarde vraagt. Onbekend is niet
-           voldaan.
-        """
-        regels = self._relais[relais_id]
-        actief = [b for b in self.bewakers
-                  if b.actief and b.regel.id in regels and b.regel.id not in self._uit]
-        if not actief:
-            return "geen alarm actief"
-        if not any(b.waarde_op is not None and nu - b.waarde_op < RELAIS_DUUR for b in actief):
-            return "de sensor van het alarm levert geen waarden meer"
-        for sensor_id, grootheid, gevraagd, tekst in self._voorwaarden[relais_id]:
-            waarde, op = self._gevolgd.get((sensor_id, grootheid), (None, 0.0))
-            if waarde is None or nu - op >= RELAIS_DUUR:
-                return f"{tekst} is onbekend"
-            if waarde != gevraagd:
-                return f"{tekst} is {getal(waarde)}, niet {getal(gevraagd)}"
-        return None
+        1. de regel heeft een actief alarm, voor minstens één van zijn sensoren;
+        2. de regel staat niet uit (§5.5.3 punt 7): een regel die wordt uitgezet, trekt
+           zijn verzoek in;
+        3. de sensor van dat alarm levert nog waarden (jonger dan RELAIS_DUUR). Geen data
+           is geen herstel, dus het alarm blijft actief; maar een kachel hoort niet te
+           blijven stoken op een temperatuur die niemand meer meet (§5.2.6 punt 4).
 
-    def _relais_bijwerken(self, nu: float, uit: list) -> None:
-        """Zet elk relais in de stand die nu hoort en voegt de opdrachten toe aan `uit`.
-        Wordt na elke meting, elke tik en elke schakelaar aangeroepen: zo volgt "uit"
-        direct op herstel, op het uitzetten van de regel en op een voorwaarde die niet
-        meer geldt (de walstroom valt weg), en gaat het relais weer aan zodra de
-        voorwaarde weer geldt."""
-        for relais_id in self._relais:
-            belet = self._relais_belet(relais_id, nu)
-            naam = self._relais_naam[relais_id]
-            if belet is None:
-                if not self._relais_aan[relais_id]:
-                    log.info("relais %s (%s) aan", naam, relais_id)
-                    self._relais_aan[relais_id] = True
-                elif nu < self._relais_volgende[relais_id]:
-                    continue             # staat al aan; de herhaling is nog niet aan de beurt
-                # "Aan", of de herhaling ervan: de Shelly begint zijn uitschakeltijd opnieuw.
-                self._relais_volgende[relais_id] = nu + RELAIS_HERHAAL
-                uit.append(RelaisOpdracht(relais_id, True, RELAIS_DUUR))
-            elif self._relais_aan[relais_id]:
-                log.info("relais %s (%s) uit: %s", naam, relais_id, belet)
-                self._relais_aan[relais_id] = False
-                uit.append(RelaisOpdracht(relais_id, False))
-            elif belet != self._relais_belet_was.get(relais_id) and belet != "geen alarm actief":
-                # Het alarm is actief, maar het relais mag niet aan: één keer zeggen waarom.
-                log.info("relais %s (%s) blijft uit: %s", naam, relais_id, belet)
-            self._relais_belet_was[relais_id] = belet
-
-    def relais_stand(self) -> list:
-        """De stand van elk relais, opnieuw als opdracht: "aan" (met de uitschakeltijd)
-        voor een relais dat de alarmlaag heeft aangezet, anders "uit" (§5.2.6 punt 6).
-
-        Twee momenten:
-        - bij de start van de alarmlaag (OPEN-36): er is dan geen actief alarm, dus alles
-          krijgt "uit". Een relais kan nog aan staan van vóór de herstart; zonder deze
-          opdracht stookt de kachel door tot de Shelly zelf uitschakelt;
-        - als de Shelly-reader erom vraagt, bij zijn eigen start (v0.88): hij heeft de
-          opdrachten van vóór zijn start gemist.
-
-        Een relais dat aan staat, krijgt hier zijn "aan" opnieuw; de herhaling begint
-        daarmee opnieuw te tellen."""
+        Of het relais dan ook echt in de actieve stand komt, beslist de schakellaag: de
+        voorwaarde van het relais en de hand gaan voor (§5.8 punt 4)."""
         nu = self._klok()
-        uit = []
-        for relais_id in self._relais:
-            if self._relais_aan[relais_id]:
-                self._relais_volgende[relais_id] = nu + RELAIS_HERHAAL
-                uit.append(RelaisOpdracht(relais_id, True, RELAIS_DUUR))
-            else:
-                uit.append(RelaisOpdracht(relais_id, False))
-        return uit
+        uit = set()
+        for b in self.bewakers:
+            regel = b.regel
+            if regel.relais is None or not b.actief or regel.id in self._uit:
+                continue
+            if b.waarde_op is None or nu - b.waarde_op >= RELAIS_DUUR:
+                continue
+            uit.add((regel.relais, regel.id))
+        return sorted(uit)
 
     @property
     def uit(self) -> set[str]:
@@ -564,8 +479,8 @@ class Alarmlaag:
         else:
             self._uit.add(alarm_id)
         log.info("alarmregel %s is %s gezet", alarm_id, "aan" if aan else "uit")
-        # Een relais dat door deze regel aan staat, gaat uit (§5.5.3 punt 7).
-        self._relais_bijwerken(nu, uit)
+        # Een regel die uit staat, vraagt niet meer om zijn relais (§5.5.3 punt 7, §5.8
+        # punt 8): verzoeken() laat hem weg, en de service stuurt de nieuwe lijst direct.
         return uit
 
     def zet_uit(self, uit: set[str]) -> list:
@@ -599,11 +514,6 @@ class Alarmlaag:
             if bewaker.regel.id in self._uit:
                 continue                 # de regel staat uit (§5.5.3 punt 7)
             self._verwerk(bewaker, bewaker.meting(m.grootheid, m.waarde, nu), nu, uit)
-        # Een waarde waar een voorwaarde van een relais naar kijkt (§5.2.6 punt 5), en
-        # daarna de stand van elk relais.
-        if (m.sensor_id, m.grootheid) in self._volgen:
-            self._gevolgd[(m.sensor_id, m.grootheid)] = (m.waarde, nu)
-        self._relais_bijwerken(nu, uit)
         return uit
 
     def tik(self) -> list:
@@ -619,8 +529,6 @@ class Alarmlaag:
             if bewaker.actief and volgende is not None and nu >= volgende:
                 self._herinnering[bewaker] = nu + bewaker.regel.herhaling
                 uit.append(self._melding(bewaker, HERINNERING, nu))
-        # Het relais: "aan" herhalen, of uit als de sensor of een voorwaarde te lang zwijgt.
-        self._relais_bijwerken(nu, uit)
         return uit
 
     def _met_foto(self, regel: Alarmregel, melding: Melding, wat: str):
@@ -896,12 +804,6 @@ async def draai(cfg: Config, bus, stop: asyncio.Event) -> None:
                 else:
                     log.warning("broker niet bereikbaar: geen %s van camera %s (%s)",
                                 item.type, item.camera_id, item.aanleiding)
-            elif isinstance(item, RelaisOpdracht):
-                # De Shelly-reader schakelt (§5.2.6 punt 3). Gaat "aan" verloren, dan volgt
-                # de herhaling; gaat "uit" verloren, dan schakelt de Shelly zelf uit.
-                if not bus.publiceer(TOPIC_RELAIS_ZET, item.naar_json(), qos=1):
-                    log.warning("broker niet bereikbaar: relais %s niet %s gezet",
-                                item.sensor_id, "aan" if item.aan else "uit")
             elif isinstance(item, MetFoto):
                 # Niet hier wachten: de alarmlaag moet de metingen blijven beoordelen.
                 taak = asyncio.create_task(met_foto(item))
@@ -927,30 +829,33 @@ async def draai(cfg: Config, bus, stop: asyncio.Event) -> None:
     stand_gemeld = None        # monotone tijd van de laatste geslaagde melding
     laatste_tik = 0.0
     uit_gelezen = time.monotonic()
-    # De stand van de relais (§5.2.6 punt 6): één keer bij de start (dan is alles "uit"),
-    # en daarna telkens als de Shelly-reader erom vraagt (bij zijn eigen start). Het
-    # verzoek komt binnen in paho's netwerkthread; de vlag wordt in de asyncio-loop gezet.
-    # De vlag staat bij de start al aan: zo geldt voor beide momenten hetzelfde stuk code.
-    relais_gevraagd = asyncio.Event()
-    relais_gevraagd.set()
-    relais_bij_start = True
-    bus.abonneer(TOPIC_RELAIS_STAND_VRAAG, 1,
-                 lambda topic, payload: loop.call_soon_threadsafe(relais_gevraagd.set))
+    # De verzoeken aan de schakellaag (§5.8 punt 3): de hele lijst, bij de start (dan
+    # leeg: na een herstart is er geen actief alarm), bij elke verandering, als de
+    # schakellaag om de stand vraagt (TOPIC_STAND_VRAAG, bij zijn eigen start) en anders
+    # elke minuut. Blijft het bericht 2 minuten uit, dan laat de schakellaag de verzoeken
+    # vervallen: valt de alarmlaag weg, dan gaat de kachel dus uit.
+    # verzoek_gemeld: de laatst verstuurde lijst (None = nog niets verstuurd);
+    # verzoek_op: wanneer (monotone klok).
+    verzoek_gemeld: list | None = None
+    verzoek_op = 0.0
     try:
         while not stop.is_set():
             nu = time.monotonic()
-            # Alleen met verbinding: zonder broker komt de opdracht niet aan, en dan blijft
-            # de vlag staan tot de volgende ronde.
-            if relais_gevraagd.is_set() and bus.verbonden:
-                relais_gevraagd.clear()
-                opdrachten = laag.relais_stand()
-                # Eén regel in het log, alleen bij de start; het antwoord aan de
-                # Shelly-reader zegt niets nieuws (hij logt zelf wat er verandert).
-                if relais_bij_start and opdrachten:
-                    log.info("start: relais uit (%s)",
-                             ", ".join(o.sensor_id for o in opdrachten))
-                relais_bij_start = False
-                voer_uit(opdrachten)
+            # Alleen als er een regel is die een relais schakelt: anders valt er niets te
+            # vragen. Alleen met verbinding: zonder broker komt het bericht niet aan, en
+            # dan volgt het bij de eerstvolgende ronde.
+            if laag.schakelt and bus.verbonden:
+                verzoeken = laag.verzoeken()
+                if (verzoeken != verzoek_gemeld or stand_gevraagd.is_set()
+                        or nu - verzoek_op >= STAND_INTERVAL):
+                    if bus.publiceer(TOPIC_VERZOEK,
+                                     verzoek_json(int(time.time()), verzoeken), qos=1):
+                        # Alleen een verandering komt in het log, niet de herhaling.
+                        if verzoeken != verzoek_gemeld and (verzoeken or verzoek_gemeld):
+                            log.info("verzoeken aan de schakellaag: %s", ", ".join(
+                                f"{relais_id} (regel {alarm_id})"
+                                for relais_id, alarm_id in verzoeken) or "geen")
+                        verzoek_gemeld, verzoek_op = verzoeken, nu
             # De schakelaars elke minuut opnieuw uit de database lezen: is een opdracht van
             # het web de alarmlaag of de opslag ontgaan, dan komt het zo vanzelf goed.
             if nu - uit_gelezen >= STAND_INTERVAL:

@@ -16,9 +16,13 @@ Opbouw van het bestand (zie config/brms.example.toml):
     [opslag]    database                – pad van de SQLite-database; een relatief pad
                                           geldt vanaf de projectmap (bijv. data/brms.db)
     [web]       host, port              – waar de webinterface luistert (§5.6)
-    [boot]      tekening                – de SVG-tekening van de bootpagina (§5.6); een
+    [boot]      tekening                – de SVG-tekening(en) van de pagina Overzicht
+                                          (§5.6): één naam, of een lijst (elke tekening
+                                          een tab, in de volgorde van de lijst); een
                                           relatief pad geldt vanaf de map van brms.toml
     [[sensor]]  id, type, naam, grootheden, correctie – één blok per sensor (§5.4.2);
+                'controls': de grootheden die BRMS mag bedienen (§5.4.2 punt 8);
+                bij een Shelly-relais ook 'voorwaarde' en 'veilige_stand' (§5.2.6, §5.8);
                 bij een Victron-apparaat ook 'sleutel' (§5.2.2);
                 bij een sensor met versnellingen (Ruuvi) eventueel 'stuurboord', voor de
                 slagzij (§5.2.5 punt 10);
@@ -78,6 +82,18 @@ LEVERT: dict[str, tuple[str, ...]] = {
     }.items()
 }
 
+# Welke grootheden van een sensortype te bedienen zijn, en hoe (§5.4.2 punt 8). Ook dit
+# legt de decoder vast. Nu alleen het relais van de Shelly-plug (aan/uit); een type met een
+# in te voeren waarde (een thermostaat) komt hier later bij. Gebruikt voor de controle van
+# 'controls', door `brms grootheden <type>` en door het web.
+BEDIENBAAR: dict[str, dict[str, grootheden.Bediening]] = {
+    RELAIS_TYPE: shelly_relais.BEDIENBAAR,
+}
+
+# De twee standen van een relais, zoals ze in brms.toml ('veilige_stand') en in de
+# berichten van de schakellaag staan (§5.8).
+STANDEN = ("uit", "aan")
+
 # Versleutelingssleutel van een Victron-apparaat: 32 hexadecimale tekens.
 _SLEUTEL = re.compile(r"^[0-9a-fA-F]{32}$")
 
@@ -122,13 +138,21 @@ class WebConfig:
 
 @dataclass(frozen=True)
 class BootConfig:
-    """Het blok [boot] (§5.6, bootpagina): de tekening van de boot.
+    """Het blok [boot] (§5.6, pagina Overzicht): de tekeningen.
 
-    Alleen het pad van het SVG-bestand. Welke waarden op de pagina staan en waar, staat in
-    de tekening zelf (de teksten `sensor.grootheid`); de pagina leest dat in de browser.
-    Zonder dit blok is er geen bootpagina.
+    Alleen de paden van de SVG-bestanden, in de volgorde van de lijst in brms.toml: elke
+    tekening is een tab op de pagina, de eerste staat open (§5.6 "Overzicht met tabs"
+    punt 2). Welke waarden in een tekening staan en waar, staat in de tekening zelf (de
+    teksten `sensor.grootheid`); de pagina leest dat in de browser. Zonder dit blok is er
+    geen pagina Overzicht.
     """
-    tekening: str   # volledig pad van het SVG-bestand
+    tekeningen: tuple[str, ...]   # volledige paden van de SVG-bestanden; nooit leeg
+
+
+def tabnaam(pad: str) -> str:
+    """De naam van de tab van een tekening: de bestandsnaam zonder extensie (besluit
+    OPEN-43): 'config/Privateer.svg' -> 'Privateer'."""
+    return os.path.splitext(os.path.basename(pad))[0]
 
 
 @dataclass(frozen=True)
@@ -190,6 +214,31 @@ class Sensor:
     # bij een relais (besluit OPEN-34): de kachel gaat nooit aan zonder dat er iets over
     # de walstroom is vastgelegd.
     voorwaarde: tuple[tuple[str, str, float], ...] = ()
+    # --- alleen bij een Shelly-relais (§5.8 punt 2) ---
+    # De stand waarin het relais veilig is als BRMS er niet is: "uit" (de kachel, de
+    # standaard) of "aan" (een relais dat de walstroom schakelt). De andere stand heet de
+    # actieve stand; zie actieve_stand() hieronder.
+    veilige_stand: str = "uit"
+    # --- bedienbare grootheden (§5.4.2 punt 8) ---
+    # De grootheden van deze sensor die BRMS mag bedienen: met de hand via het web, en
+    # door een alarmregel. Leeg = alles is alleen te lezen. Nu kan er alleen "relais" in
+    # staan, bij een Shelly-relais.
+    controls: tuple[str, ...] = ()
+
+
+def actieve_stand(sensor: Sensor) -> str:
+    """De stand van een relais die níet de veilige is (§5.8 punt 2): "aan" bij de kachel
+    (veilige stand uit), "uit" bij een relais met veilige stand aan."""
+    return "aan" if sensor.veilige_stand == "uit" else "uit"
+
+
+def bedienbaar(sensor: Sensor) -> dict[str, grootheden.Bediening]:
+    """De grootheden van deze sensor die bediend mogen worden, met de vorm van hun
+    bediening: wat in zijn 'controls' staat (§5.4.2 punt 8). Leeg bij een sensor die
+    alleen te lezen is. Gebruikt door het web (waar een schuifknop of invoerveldje komt)
+    en door de schakellaag (van welk relais hij een keuze of verzoek aanneemt)."""
+    per_type = BEDIENBAAR.get(sensor.type, {})
+    return {g: per_type[g] for g in sensor.controls if g in per_type}
 
 
 @dataclass(frozen=True)
@@ -268,8 +317,9 @@ class Alarmregel:
     acties: tuple[str, ...] = ()  # "video" en/of "foto": opname als het alarm afgaat
     camera: str | None = None    # ID van de camera voor foto en acties
     # --- relais (§5.2.6, §5.5.3 punt 6) ---
-    # ID van de sensor van het type shelly-relais die deze regel schakelt: aan zolang het
-    # alarm actief is en er walstroom is, uit bij herstel. None = de regel schakelt niets.
+    # ID van de sensor van het type shelly-relais waarvoor deze regel om de actieve stand
+    # vraagt zolang het alarm actief is (§5.8 punt 3); de schakellaag beslist. None = de
+    # regel schakelt niets. Het relais moet "relais" in zijn 'controls' hebben.
     relais: str | None = None
 
 
@@ -338,7 +388,7 @@ class Config:
     alarmen: tuple[Alarmregel, ...] = ()
     cameras: dict[str, Camera] = field(default_factory=dict)   # id -> Camera
     opnames: OpnamenConfig = OpnamenConfig()
-    # De bootpagina (§5.6); None = geen blok [boot], dus geen bootpagina.
+    # De pagina Overzicht (§5.6); None = geen blok [boot], dus geen pagina Overzicht.
     boot: BootConfig | None = None
     # Opmerkingen over de configuratie die geen fout zijn (bijv. een veld dat niet meer
     # bestaat en genegeerd wordt). `brms check-config` toont ze; de services starten gewoon.
@@ -734,8 +784,15 @@ def _relais_bij_alarm(fouten, plek, actie: dict, sensoren: dict[str, Sensor]) ->
         fouten.append(f"{plek}: actie 'relais': sensor '{naam}' is van type {sensor.type}, "
                       f"niet {RELAIS_TYPE}")
         return None
-    # Wanneer het relais aan mag (bijv. alleen met walstroom), staat bij het relais zelf:
-    # het veld 'voorwaarde' van die sensor (§5.2.6 punt 5).
+    # Ook een alarmregel houdt zich aan 'controls' (§5.4.2 punt 8, v0.95): alleen een
+    # relais dat BRMS mag bedienen. Zonder deze controle zou de regel stil niets doen: de
+    # schakellaag neemt het verzoek dan niet aan (§5.8 punt 3).
+    if "relais" not in sensor.controls:
+        fouten.append(f"{plek}: actie 'relais': sensor '{sensor.naam}' mag niet bediend worden; "
+                      f"zet bij die sensor: controls = [\"relais\"]")
+        return None
+    # Wanneer het relais in de actieve stand mag (bijv. alleen met walstroom), staat bij
+    # het relais zelf: het veld 'voorwaarde' van die sensor (§5.2.6 punt 5).
     return sensor.id
 
 
@@ -1021,34 +1078,53 @@ def _alarmen(fouten, data: dict, sensoren: dict[str, Sensor],
 
 
 def _boot(fouten, data: dict, config_map: str, waarschuwingen: list[str]) -> "BootConfig | None":
-    """Controleert het blok [boot] (§5.6, bootpagina). Zonder blok: None (geen bootpagina).
+    """Controleert het blok [boot] (§5.6, pagina Overzicht). Zonder blok: None (geen
+    pagina Overzicht).
 
-    Een relatief pad van de tekening geldt vanaf de map van brms.toml: de tekening hoort
+    'tekening' is één naam, of een lijst van namen (§5.6 "Overzicht met tabs" punt 2,
+    v0.96): elke tekening wordt een tab, in de volgorde van de lijst. Eén naam als tekst,
+    zoals vóór v0.29.0, blijft werken en geeft één tab.
+
+    Een relatief pad van een tekening geldt vanaf de map van brms.toml: de tekening hoort
     bij de configuratie van deze boot en staat ernaast, buiten git.
 
-    Bestaat het bestand niet, dan is dat een waarschuwing en geen fout: een vergeten of
+    Bestaat een bestand niet, dan is dat een waarschuwing en geen fout: een vergeten of
     verplaatste tekening mag de services (en daarmee de alarmen) niet tegenhouden. De
-    bootpagina meldt het dan zelf.
+    pagina meldt het dan zelf, op die tab.
     """
     if "boot" not in data:
         return None
     b = _tabel(fouten, data, "boot")
     plek = "[boot]"
     _onbekend(fouten, plek, b, ("tekening",))
-    tekening = b.get("tekening")
-    if not isinstance(tekening, str) or not tekening:
-        fouten.append(f"{plek}: 'tekening' ontbreekt of is geen tekst (de naam van het "
-                      f"SVG-bestand naast brms.toml)")
+    namen = b.get("tekening")
+    # Eén naam als tekst is hetzelfde als een lijst met die ene naam.
+    if isinstance(namen, str):
+        namen = [namen]
+    if not isinstance(namen, list) or not namen or not all(isinstance(n, str) and n for n in namen):
+        fouten.append(f"{plek}: 'tekening' ontbreekt of is geen naam of lijst van namen (de "
+                      f"SVG-bestanden naast brms.toml, bijv. [\"Privateer.svg\", \"Victron.svg\"])")
         return None
-    if not tekening.lower().endswith(".svg"):
-        fouten.append(f"{plek}: 'tekening' moet een SVG-bestand zijn (naam eindigt op .svg)")
-        return None
-    if not os.path.isabs(tekening):
-        tekening = os.path.normpath(os.path.join(config_map, tekening))
-    if not os.path.isfile(tekening):
-        waarschuwingen.append(f"{plek}: de tekening {tekening} bestaat niet; de bootpagina "
-                              f"blijft leeg tot het bestand er staat")
-    return BootConfig(tekening)
+    paden: list[str] = []
+    tabs: set[str] = set()
+    for naam in namen:
+        if not naam.lower().endswith(".svg"):
+            fouten.append(f"{plek}: 'tekening' moet een SVG-bestand zijn (naam eindigt op "
+                          f".svg), niet {naam!r}")
+            continue
+        pad = naam if os.path.isabs(naam) else os.path.normpath(os.path.join(config_map, naam))
+        # De naam van de tab is de bestandsnaam zonder extensie; twee tabs met dezelfde
+        # naam zijn op de pagina niet uit elkaar te houden. Hoofdletters tellen niet mee.
+        if tabnaam(pad).lower() in tabs:
+            fouten.append(f"{plek}: de tekening {naam!r} staat er meer dan eens (of twee "
+                          f"tekeningen geven dezelfde tabnaam '{tabnaam(pad)}')")
+            continue
+        tabs.add(tabnaam(pad).lower())
+        if not os.path.isfile(pad):
+            waarschuwingen.append(f"{plek}: de tekening {pad} bestaat niet; de tab "
+                                  f"'{tabnaam(pad)}' blijft leeg tot het bestand er staat")
+        paden.append(pad)
+    return BootConfig(tuple(paden)) if paden else None
 
 
 def controleer(data: dict, config_map: str | None = None) -> Config:
@@ -1115,7 +1191,7 @@ def controleer(data: dict, config_map: str | None = None) -> Config:
             continue
         _onbekend(fouten, plek, s, ("id", "type", "naam", "grootheden", "correctie", "sleutel",
                                     "adres", "interval", "bron", "drempel", "omgekeerd",
-                                    "stuurboord", "voorwaarde"))
+                                    "stuurboord", "voorwaarde", "veilige_stand", "controls"))
         sid, stype, snaam = s.get("id"), s.get("type"), s.get("naam")
         if not isinstance(snaam, str) or not snaam:
             fouten.append(f"{plek}: 'naam' ontbreekt of is leeg")
@@ -1237,9 +1313,46 @@ def controleer(data: dict, config_map: str | None = None) -> Config:
         elif "voorwaarde" in s:
             fouten.append(f"{plek}: 'voorwaarde' hoort alleen bij een relais (type {RELAIS_TYPE})")
 
+        # --- veilige_stand: alleen bij een relais (§5.8 punt 2). De stand waarin het
+        # relais veilig is als BRMS er niet is; zonder het veld "uit", zoals de kachel. ---
+        veilige_stand = s.get("veilige_stand", "uit")
+        if "veilige_stand" in s and stype != RELAIS_TYPE:
+            fouten.append(f"{plek}: 'veilige_stand' hoort alleen bij een relais (type {RELAIS_TYPE})")
+            veilige_stand = "uit"
+        elif veilige_stand not in STANDEN:
+            fouten.append(f"{plek}: 'veilige_stand' moet \"uit\" of \"aan\" zijn, niet "
+                          f"{veilige_stand!r}")
+            veilige_stand = "uit"
+
+        # --- controls: de grootheden die BRMS mag bedienen (§5.4.2 punt 8): met de hand
+        # via het web, en door een alarmregel. Welke grootheden van een type bedienbaar
+        # zijn, legt de decoder vast (BEDIENBAAR). ---
+        controls = s.get("controls", [])
+        if not isinstance(controls, list) or not all(isinstance(g, str) for g in controls):
+            fouten.append(f"{plek}: 'controls' moet een lijst van grootheden zijn, "
+                          f"bijv. [\"relais\"]")
+            controls = []
+        te_bedienen = BEDIENBAAR.get(stype, {})
+        for g in controls:
+            if g not in grootheden.GROOTHEDEN:
+                fouten.append(f"{plek}: onbekende grootheid '{g}' in 'controls'{tip}")
+            elif levert and g not in levert:
+                fouten.append(f"{plek}: '{g}' in 'controls' wordt door type {stype} niet geleverd{tip}")
+            elif g not in te_bedienen:
+                fouten.append(f"{plek}: '{g}' in 'controls' is bij type {stype} niet te bedienen"
+                              + (f"; wel: {', '.join(te_bedienen)}" if te_bedienen
+                                 else "; dit type heeft geen bedienbare grootheden")
+                              + f"  (zie: brms grootheden {stype})")
+            elif lijst_g is not None and g not in lijst_g:
+                # Zonder de meting is de werkelijke stand niet te tonen of te bewaken.
+                fouten.append(f"{plek}: '{g}' staat in 'controls' maar niet in 'grootheden'")
+        if len(set(controls)) != len(controls):
+            fouten.append(f"{plek}: 'controls' bevat een naam meer dan eens")
+
         sensoren[sid] = Sensor(sid, stype, snaam if isinstance(snaam, str) else "", correcties,
                                tuple(lijst_g) if lijst_g is not None else None, sleutel, **shelly,
-                               stuurboord=stuurboord)
+                               stuurboord=stuurboord, veilige_stand=veilige_stand,
+                               controls=tuple(controls))
 
     # --- de voorwaarden van de relais (§5.2.6 punt 5), nu alle sensoren bekend zijn ---
     for sid, (plek, w) in voorwaarden_in.items():

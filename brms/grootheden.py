@@ -71,6 +71,33 @@ def soort(naam: str) -> str:
     return GROOTHEDEN[naam].soort
 
 
+# --- Bedienbare grootheden (§5.4.2 punt 8) ------------------------------------------------
+# Een grootheid is bij een sensortype alleen te lezen, of te lezen én te bedienen. Welke
+# grootheden bedienbaar zijn, legt de decoder van het type vast (bijv.
+# readers/shelly_relais.BEDIENBAAR), samen met de vorm van de bediening:
+#
+#   AANUIT   twee standen; in het web een schuifknop (het relais van de kachel);
+#   WAARDE   een in te voeren getal tussen een kleinste en een grootste waarde, met een
+#            stap; in het web een invoerveldje (bijv. de instelling van een thermostaat).
+#            Zo'n sensortype is er nog niet; het web is erop voorbereid (§5.6).
+#
+# Of een bedienbare grootheid bij een bepaalde sensor ook echt bediend mag worden, staat in
+# brms.toml: het veld `controls` van die sensor (zie config.bedienbaar).
+AANUIT = "aan/uit"
+WAARDE = "waarde"
+
+
+@dataclass(frozen=True)
+class Bediening:
+    """Hoe een bedienbare grootheid bediend wordt (§5.4.2 punt 8)."""
+    vorm: str                       # AANUIT of WAARDE
+    # Alleen bij WAARDE: de grenzen waarbinnen een ingevoerde waarde moet liggen, en de
+    # stap waarmee het invoerveldje op- en aftelt.
+    laagste: float | None = None
+    hoogste: float | None = None
+    stap: float | None = None
+
+
 # Grootheden die getoond worden met een kant in plaats van een teken (§5.2.5 punt 10):
 # naam -> (kant bij een positieve waarde, kant bij een negatieve waarde). De gebruiker
 # rekent met stuurboord en bakboord, niet met plus en min; het teken staat alleen in

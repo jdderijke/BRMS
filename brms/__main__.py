@@ -11,6 +11,7 @@ Opdrachten:
   shelly-reader       de Shelly-reader-service starten (§5.2.1, §5.2.4)
   opslag              de opslag-service starten (§5.3)
   alarm               de alarmlaag starten (§5.5)
+  schakel             de schakellaag starten: beslist over de relais (§5.8)
   camera              de camera-reader-service starten (§5.7)
   web                 de webservice starten (§5.6)
   go2rtc              go2rtc starten: het live-beeld van de camera's (§5.7 punt 18)
@@ -129,6 +130,9 @@ async def _service(naam: str, cfg: config.Config) -> None:
         elif naam == "alarm":
             from brms import alarms
             await alarms.draai(cfg, bus, stop)
+        elif naam == "schakel":
+            from brms import schakel
+            await schakel.draai(cfg, bus, stop)
         elif naam == "camera":
             from brms.readers import camera
             await camera.draai(cfg, bus, stop)
@@ -142,7 +146,11 @@ async def _service(naam: str, cfg: config.Config) -> None:
 def _grootheden(typen: list[str]) -> int:
     """Toont de tabel van grootheden, of per sensortype wat dat type levert (§5.4.2).
 
-    Dit zijn de namen die in brms.toml bij 'grootheden' en 'correctie' horen."""
+    Dit zijn de namen die in brms.toml bij 'grootheden', 'correctie' en 'controls' horen.
+
+    Per sensortype staat er een extra kolom BEDIENING (§5.4.2 punt 8): is een grootheid
+    bij dat type alleen te lezen, of ook te bedienen? Alleen een grootheid die te bedienen
+    is, kan in 'controls' van een sensor staan."""
     from brms import grootheden
 
     if not typen:
@@ -159,9 +167,19 @@ def _grootheden(typen: list[str]) -> int:
                   file=sys.stderr)
             return 1
         print(f"{t} levert:")
+        print(f"  {'GROOTHEID':<18} {'EENHEID':<8} {'SOORT':<11} BEDIENING")
+        # Wat bij dit type te bedienen is, legt de decoder vast (config.BEDIENBAAR).
+        te_bedienen = config.BEDIENBAAR.get(t, {})
         for naam in config.LEVERT[t]:
             g = grootheden.GROOTHEDEN[naam]
-            print(f"  {g.naam:<18} {g.eenheid:<8} {g.soort}")
+            b = te_bedienen.get(naam)
+            if b is None:
+                bediening = "alleen lezen"
+            elif b.vorm == grootheden.AANUIT:
+                bediening = "lezen en bedienen (aan/uit)"
+            else:
+                bediening = f"lezen en bedienen (waarde {b.laagste:g} tot {b.hoogste:g})"
+            print(f"  {g.naam:<18} {g.eenheid:<8} {g.soort:<11} {bediening}")
     return 0
 
 
@@ -247,7 +265,8 @@ services (worden door systemd gestart – niet met de hand; gebruik brms herstar
   shelly-reader          Shelly-reader   (systemd-unit brms-shelly-reader)
   opslag                 opslag-service  (systemd-unit brms-opslag)
   alarm                  alarmlaag       (systemd-unit brms-alarm)
-  camera                 camera-reader   (systemd-unit brms-camera)
+  schakel                schakellaag     (systemd-unit brms-schakel)
+  camera                camera-reader   (systemd-unit brms-camera)
   web                    webinterface    (systemd-unit brms-web)
   go2rtc                 live-beeld      (systemd-unit brms-go2rtc)
 """
@@ -282,7 +301,7 @@ def main(argv=None) -> int:
     p.add_argument("opdracht",
                    choices=("check-config", "grootheden", "start", "stop", "herstart", "update",
                             "monitor", "sim", "simuleer", "ble-reader", "shelly-reader", "opslag", "alarm",
-                            "camera",
+                            "schakel", "camera",
                             "web", "go2rtc",
                             "monitor-vak"))
     p.add_argument("sensoren", nargs="*",

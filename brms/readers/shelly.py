@@ -27,13 +27,17 @@ kachel) wordt op dezelfde manier gepolld, met de decoder readers/shelly_relais.p
 reader is ook de enige die het relais schakelt (§5.5.3: per apparaat één component die
 ermee praat). De opdracht
 
-    brms/opdracht/relais/zet     {"sensor_id": "kachel", "aan": true, "duur": 600}
+    brms/opdracht/relais/zet     {"sensor_id": "kachel", "aan": true, "duur": 120}
 
-komt van de alarmlaag. "Aan" gaat altijd met een uitschakeltijd (`duur`, seconden) die de
-Shelly zelf bewaakt; de alarmlaag herhaalt de opdracht zolang het alarm actief is. Direct
-na het schakelen pollt de reader, zodat de nieuwe stand meteen op de bus staat. Lukt het
-schakelen niet, dan komt er een waarschuwing in het log: "aan" wordt vanzelf herhaald, en
-na een mislukt "uit" schakelt de Shelly zelf uit als de uitschakeltijd om is.
+komt van de schakellaag (brms/schakel.py, §5.8), die beslist in welke stand een relais
+hoort. Elk relais heeft een veilige stand (`veilige_stand` in brms.toml). De andere,
+actieve stand gaat altijd met een terugschakeltijd (`duur`, seconden) die de Shelly zelf
+bewaakt, en de schakellaag herhaalt die opdracht zolang de stand geldt; de veilige stand
+gaat zonder tijd. Een opdracht naar de actieve stand zonder terugschakeltijd weigert de
+reader, van wie hij ook komt (§5.8 punt 5). Direct na het schakelen pollt de reader, zodat
+de nieuwe stand meteen op de bus staat. Lukt het schakelen niet, dan komt er een
+waarschuwing in het log: de actieve stand wordt vanzelf herhaald, en na een mislukte
+opdracht naar de veilige stand schakelt de Shelly zelf terug als de tijd om is.
 
 Het ophalen gebeurt met urllib uit de standaardbibliotheek (geen extra afhankelijkheid,
 P3), in een thread: urllib blokkeert, en de asyncio-loop moet door kunnen lopen voor de
@@ -65,8 +69,9 @@ _TYPES = ("shelly-uni", RELAIS_TYPE)
 TOPIC_POLL_NU = "brms/opdracht/shelly/poll-nu"
 # Schakelopdracht voor een relais (§5.2.6 punt 3): {"sensor_id", "aan", "duur"}.
 TOPIC_RELAIS_ZET = "brms/opdracht/relais/zet"
-# Hierop vraagt de reader bij zijn start aan de alarmlaag om de stand van de relais
-# (§5.2.6 punt 6, v0.88); het antwoord komt als gewone opdrachten op TOPIC_RELAIS_ZET.
+# Hierop vraagt de reader bij zijn start om de stand van de relais (§5.2.6 punt 6, v0.88).
+# Sinds v0.29.0 antwoordt de schakellaag (§5.8 punt 7), eerder de alarmlaag; het antwoord
+# komt als gewone opdrachten op TOPIC_RELAIS_ZET.
 TOPIC_RELAIS_STAND_VRAAG = "brms/opdracht/relais/stand"
 
 # Langste wachttijd op een antwoord, in seconden. Een Shelly op het lokale netwerk
@@ -89,21 +94,28 @@ def haal_status(adres: str, timeout: float) -> dict:
         return json.loads(r.read(MAX_ANTWOORD))
 
 
-def schakel(adres: str, aan: bool, duur: float | None, timeout: float) -> dict:
+def schakel(adres: str, aan: bool, duur: float | None, timeout: float,
+            veilig_aan: bool = False) -> dict:
     """Zet een relais aan of uit (§5.2.6 punt 3) en geeft het antwoord van de Shelly als
     dict (bijv. {"was_on": false}).
 
-    Blokkeert zoals haal_status, met dezelfde fouten. ValueError ook bij "aan" zonder
-    uitschakeltijd (zie shelly_relais.zet_url).
+    veilig_aan: de veilige stand van dit relais (False = uit, True = aan). Blokkeert zoals
+    haal_status, met dezelfde fouten. ValueError ook bij de actieve stand zonder
+    terugschakeltijd (zie shelly_relais.zet_url).
     """
-    with urllib.request.urlopen(shelly_relais.zet_url(adres, aan, duur), timeout=timeout) as r:
+    url = shelly_relais.zet_url(adres, aan, duur, veilig_aan)
+    with urllib.request.urlopen(url, timeout=timeout) as r:
         return json.loads(r.read(MAX_ANTWOORD))
 
 
 def lees_zet(payload: bytes) -> tuple[str, bool, float | None]:
     """Leest een opdracht van brms/opdracht/relais/zet: geeft (sensor_id, aan, duur).
-    ValueError bij een ongeldig bericht. "Aan" zonder geldige duur is ongeldig: het relais
-    gaat nooit aan zonder uitschakeltijd (§5.2.6 punt 4)."""
+    ValueError bij een ongeldig bericht.
+
+    `duur` is de terugschakeltijd in seconden, of None als hij er niet bij staat. Of een
+    opdracht zonder tijd mag, hangt af van de veilige stand van het relais (§5.8 punt 5)
+    en wordt bij het schakelen beoordeeld (Poller.zet): dat weet dit bericht niet. Een
+    duur die er wél staat, moet een getal groter dan 0 zijn."""
     try:
         d = json.loads(payload)
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
@@ -113,11 +125,11 @@ def lees_zet(payload: bytes) -> tuple[str, bool, float | None]:
     if not isinstance(d.get("aan"), bool):
         raise ValueError("'aan' moet true of false zijn")
     duur = d.get("duur")
-    if not d["aan"]:
-        return d["sensor_id"], False, None
+    if duur is None:
+        return d["sensor_id"], d["aan"], None
     if isinstance(duur, bool) or not isinstance(duur, (int, float)) or duur <= 0:
-        raise ValueError("bij 'aan' hoort een 'duur' (uitschakeltijd in seconden) groter dan 0")
-    return d["sensor_id"], True, float(duur)
+        raise ValueError("'duur' (terugschakeltijd in seconden) moet een getal groter dan 0 zijn")
+    return d["sensor_id"], d["aan"], float(duur)
 
 
 def _kort(status: dict, sensor: Sensor) -> str:
@@ -289,27 +301,36 @@ class Poller:
         return metingen
 
     async def zet(self, aan: bool, duur: float | None) -> bool:
-        """Zet het relais aan (met uitschakeltijd `duur`) of uit (§5.2.6 punt 3) en laat
-        direct daarna pollen, zodat de nieuwe stand meteen op de bus staat. Geeft terug of
-        het schakelen gelukt is.
+        """Zet het relais aan of uit (§5.2.6 punt 3) en laat direct daarna pollen, zodat
+        de nieuwe stand meteen op de bus staat. Geeft terug of het schakelen gelukt is.
 
-        Eén poging: "aan" wordt door de alarmlaag elke 5 minuten herhaald, en na een
-        mislukt "uit" schakelt de Shelly zelf uit zodra de uitschakeltijd om is.
+        De veilige stand van dit relais (`veilige_stand` in brms.toml) gaat zonder tijd,
+        ook als er een `duur` bij de opdracht staat. De andere, actieve stand gaat met de
+        terugschakeltijd `duur`; zonder wordt de opdracht geweigerd (§5.8 punt 5).
+
+        Eén poging: de actieve stand wordt door de schakellaag elke minuut herhaald, en na
+        een mislukte opdracht naar de veilige stand schakelt de Shelly zelf terug zodra
+        de terugschakeltijd om is.
         """
         sensor = self.sensor
         stap = self._tracer.voor(sensor.id) if self._tracer else None
-        wat = f"aan voor {duur:g} s" if aan else "uit"
+        veilig_aan = sensor.veilige_stand == "aan"
+        if aan == veilig_aan:
+            duur = None          # de veilige stand: daar blijft het relais staan
+        wat = ("aan" if aan else "uit") + (f" voor {duur:g} s" if duur is not None else "")
         try:
-            # urllib blokkeert; in een thread, net als het pollen.
-            antwoord = await asyncio.to_thread(self._schakel, sensor.adres, aan, duur, TIMEOUT)
+            # urllib blokkeert; in een thread, net als het pollen. De actieve stand zonder
+            # duur geeft hier een ValueError (zie shelly_relais.zet_url).
+            antwoord = await asyncio.to_thread(self._schakel, sensor.adres, aan, duur, TIMEOUT,
+                                               veilig_aan)
         except (OSError, ValueError, http.client.HTTPException) as e:
             log.warning("relais %s (%s) op %s niet geschakeld (%s): %s", sensor.naam, sensor.id,
                         sensor.adres, wat, e)
             if stap:
                 stap("opdracht", f"relais {wat}: MISLUKT ({e})")
             return False
-        # De Shelly meldt de vorige stand. Alleen een verandering komt in het log: "aan"
-        # wordt elke 5 minuten herhaald en zou het log anders vullen.
+        # De Shelly meldt de vorige stand. Alleen een verandering komt in het log: de
+        # actieve stand wordt elke minuut herhaald en zou het log anders vullen.
         was_aan = antwoord.get("was_on") if isinstance(antwoord, dict) else None
         if was_aan != aan:
             log.info("relais %s (%s) is %s gezet", sensor.naam, sensor.id, wat)
@@ -385,7 +406,7 @@ async def draai(config: Config, bus, stop: asyncio.Event) -> None:
 
     bus.abonneer(TOPIC_POLL_NU, 1, bij_poll_nu)
 
-    # Schakelopdrachten voor een relais (§5.2.6 punt 3), van de alarmlaag. Ook deze komen
+    # Schakelopdrachten voor een relais (§5.2.6 punt 3), van de schakellaag. Ook deze komen
     # binnen in paho's netwerkthread; het schakelen zelf loopt als taak in de asyncio-loop.
     # De taken worden vastgehouden tot ze klaar zijn (anders kan Python ze opruimen).
     schakeltaken: set[asyncio.Task] = set()
@@ -412,16 +433,17 @@ async def draai(config: Config, bus, stop: asyncio.Event) -> None:
     bus.abonneer(TOPIC_RELAIS_ZET, 1, bij_relais_zet)
 
     async def vraag_relais_stand() -> None:
-        """Vraagt de alarmlaag bij de start om de stand van de relais (§5.2.6 punt 6,
-        v0.88). Bij een herstart van alle services geeft de alarmlaag zijn "uit" vaak net
-        voordat deze reader luistert; zonder deze vraag bleef een relais dan aan tot de
-        Shelly zelf uitschakelde. Herstart alleen deze reader terwijl een alarm actief
-        is, dan hoort hij zo ook direct dat het relais aan moet blijven.
+        """Vraagt de schakellaag bij de start om de stand van de relais (§5.2.6 punt 6,
+        §5.8 punt 7). Bij een herstart van alle services geeft de schakellaag zijn eerste
+        opdrachten vaak net voordat deze reader luistert; zonder deze vraag bleef een
+        relais dan in de oude stand tot de Shelly zelf terugschakelde. Herstart alleen
+        deze reader terwijl een relais in zijn actieve stand staat, dan hoort hij zo ook
+        direct dat het daar moet blijven.
 
         Eén keer, zodra de broker bereikbaar is (publiceer geeft dan True): het
         abonnement op de schakelopdrachten hierboven is dan al aangemeld, dus het
-        antwoord wordt niet gemist. Draait de alarmlaag nog niet, dan geeft hij de stand
-        zelf bij zijn start."""
+        antwoord wordt niet gemist. Draait de schakellaag nog niet, dan geeft hij de
+        stand zelf bij zijn start."""
         while not stop.is_set():
             if bus.publiceer(TOPIC_RELAIS_STAND_VRAAG, json.dumps({"ts": int(time.time())}), qos=1):
                 return

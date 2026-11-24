@@ -18,17 +18,29 @@ database = "data/brms.db"
 host = "0.0.0.0"
 port = 8080
 
-# Bootpagina (ARCHITECTURE.md §5.6 "Bootpagina"): een tekening van de boot met op elke plek
-# de actuele waarde van een sensor. Met dit blok is dat de eerste pagina van het web en
-# staan de grafieken op /grafieken; zonder dit blok is er geen bootpagina.
+# Pagina Overzicht (ARCHITECTURE.md §5.6 "Bootpagina" en "Overzicht met tabs"): een
+# tekening van de boot met op elke plek de actuele waarde van een sensor. Met dit blok is
+# dat de eerste pagina van het web en staan de grafieken op /grafieken; zonder dit blok is
+# er geen pagina Overzicht.
 #   tekening    een SVG-bestand dat je zelf tekent (bijv. een dia uit PowerPoint, opgeslagen
-#               als SVG), naast dit bestand in de map config/. Zet in de tekening op elke
-#               plek waar een waarde moet komen de tekst  sensor.grootheid , met de naam van
-#               de sensor uit dit bestand, bijvoorbeeld  kajuit.temperatuur . De waarde komt
-#               op de plek van de eerste letter. Pijlen, een titel en dergelijke blijven staan.
-#               Staat de slagzij er twee keer in (boven = bakboord, onder = stuurboord), dan
-#               staat de waarde alleen aan de kant waar de boot naartoe helt.
+#               als SVG), naast dit bestand in de map config/. Of een lijst van bestanden:
+#               elke tekening wordt een tab bovenaan de pagina, in de volgorde van de lijst;
+#               de tab heet naar het bestand zonder ".svg".
+#                 tekening = "boot.svg"
+#                 tekening = ["Privateer.svg", "Victron.svg"]
+#               Zet in de tekening op elke plek waar een waarde moet komen een tekst met de
+#               naam van de sensor uit dit bestand:
+#                 kajuit.temperatuur       de waarde (alleen lezen)
+#                 kajuit.temperatuur.RO    hetzelfde (RO = read only)
+#                 kachel.relais.RW         de bediening (RW = read write): de schuifknop
+#                                          AUTO / AAN van een relais. Alleen als de
+#                                          grootheid in 'controls' van die sensor staat.
+#               De waarde komt op de plek van de eerste letter. Pijlen, een titel en
+#               dergelijke blijven staan. Staat de slagzij er twee keer in (boven =
+#               bakboord, onder = stuurboord), dan staat de waarde alleen aan de kant waar
+#               de boot naartoe helt.
 # Een gewijzigde tekening is zichtbaar na het verversen van de pagina; herstarten hoeft niet.
+# Een tekening toevoegen aan de lijst (of de volgorde wijzigen) vraagt wel: brms herstart.
 # [boot]
 # tekening = "boot.svg"
 
@@ -145,17 +157,30 @@ naam = "motorruim"
 # bron = { bilgepomp = "voltmeter:100" }
 # drempel = 6.0
 
-# Shelly Plug M Gen3 als relais voor de kachel (ARCHITECTURE.md §5.2.6). Een tussenstekker
-# met energiemeting; de Shelly-reader pollt hem via wifi en schakelt hem op opdracht van een
-# alarmregel (zie het voorbeeld "kachel bij vorst" bij de alarmregels). Geen wachtwoord op
-# de plug. Haal het # weg en vul het adres in.
+# Shelly Plug M Gen3 als relais voor de kachel (ARCHITECTURE.md §5.2.6, §5.8). Een
+# tussenstekker met energiemeting; de Shelly-reader pollt hem via wifi en schakelt hem. Wie
+# om een stand vraagt, is een alarmregel (zie het voorbeeld "kachel bij vorst" bij de
+# alarmregels) of jijzelf, met de schuifknop in het web; de schakellaag (brms-schakel)
+# beslist. Geen wachtwoord op de plug. Haal het # weg en vul het adres in.
 #   id, adres, interval   als bij de Shelly Plus Uni hierboven (interval standaard 30)
-#   voorwaarde  verplicht: wat moet gelden om het relais aan te zetten, als
+#   controls    de grootheden die BRMS mag bedienen (§5.4.2 punt 8): bij een relais
+#                 controls = ["relais"]
+#               Zonder dit veld is het relais alleen te lezen: er is geen schuifknop, een
+#               alarmregel mag het niet schakelen (brms check-config meldt dat als fout) en
+#               het blijft in zijn veilige stand. Wat bij een type te bedienen is, toont
+#               brms grootheden shelly-relais.
+#   veilige_stand   "uit" (de standaard) of "aan": de stand waarin het relais veilig is als
+#               BRMS er niet is. De kachel: "uit". De andere stand heet de actieve stand;
+#               die geldt telkens 2 minuten en wordt elke minuut herhaald, dus valt BRMS
+#               weg, dan zet de plug zichzelf terug in de veilige stand. Na een herstart
+#               van BRMS begint elk relais in zijn veilige stand.
+#   voorwaarde  verplicht: wat moet gelden om het relais in de actieve stand te zetten, als
 #               <sensor>.<grootheid> = 0 of 1 (sensor op naam of id; alleen toestanden):
 #                 voorwaarde = { multiplus.walstroom = 1 }   de MultiPlus meldt walstroom
 #                 voorwaarde = { kachel.walstroom = 1 }      de plug zelf ziet netspanning
 #               Meer voorwaarden in de tabel moeten allemaal gelden. Geldt er één niet, of
-#               is de waarde ouder dan 2 minuten (sensor stil), dan blijft het relais uit.
+#               is de waarde ouder dan 2 minuten (sensor stil), dan gaat het relais naar
+#               zijn veilige stand, ook als het met de hand in de actieve stand is gezet.
 #               Let op: de plug zelf ziet geen verschil tussen walstroom en 230 V uit de
 #               omvormer; alleen de MultiPlus weet dat.
 #   Levert: relais (1 = aan), vermogen (W: stookt de kachel echt?), spanning (V), stroom (A),
@@ -170,7 +195,9 @@ naam = "motorruim"
 # type = "shelly-relais"
 # naam = "kachel"
 # adres = "192.168.1.121"
+# veilige_stand = "uit"
 # voorwaarde = { kachel.walstroom = 1 }
+# controls = ["relais"]
 
 # =============================================================================
 # Camera's (ARCHITECTURE.md §5.7)
@@ -284,15 +311,22 @@ naam = "motorruim"
 #   camera      het id van de camera voor foto en actie (zonder: de eerste camera)
 # Met een relais (zie de Shelly Plug bij de sensoren, §5.2.6):
 #   actie = [{ type = "relais", relais = "kachel" }]
-#               De regel werkt als thermostaat: relais aan als het alarm afgaat, uit bij
-#               herstel. De grens en de herstelgrens zijn de schakelpunten.
-#               - Alleen aan zolang de 'voorwaarde' van het relais geldt (bijv. walstroom,
+#               De regel werkt als thermostaat: zolang het alarm actief is, vraagt hij de
+#               schakellaag om de actieve stand van het relais (de kachel aan); bij herstel
+#               gaat het relais terug naar zijn veilige stand. De grens en de herstelgrens
+#               zijn de schakelpunten.
+#               - Het relais moet bediend mogen worden: controls = ["relais"] bij die
+#                 sensor. Anders meldt brms check-config een fout.
+#               - Alleen zolang de 'voorwaarde' van het relais geldt (bijv. walstroom,
 #                 zie de Shelly Plug bij de sensoren). Geldt die niet of is hij onbekend,
-#                 dan blijft het relais uit; het alarm en de melding gaan gewoon door.
-#               - "Aan" geldt 2 minuten en wordt elke minuut herhaald. Valt BRMS weg of
-#                 zwijgt de sensor, dan schakelt de plug zelf uit.
-#               - Bij een herstart van BRMS gaat het relais direct uit, en weer aan zodra
-#                 het alarm opnieuw afgaat.
+#                 dan blijft het relais veilig; het alarm en de melding gaan gewoon door.
+#               - De actieve stand geldt 2 minuten en wordt elke minuut herhaald. Valt
+#                 BRMS weg of zwijgt de sensor, dan schakelt de plug zelf terug.
+#               - Met de schuifknop in het web (AUTO / AAN) zet je de kachel met de hand
+#                 aan; in AUTO volgt hij deze regel. De kachel tegen het alarm in uit
+#                 houden doe je door de regel uit te zetten op de pagina Alarmen.
+#               - Bij een herstart van BRMS gaat het relais direct naar zijn veilige
+#                 stand, en binnen een paar seconden weer terug als het alarm nog geldt.
 # Tijden: een getal met eenheid: "90s", "15m", "6u", "7d".
 
 [[alarm]]
@@ -342,7 +376,7 @@ herhaling = "7d"
 #
 # Kachel bij vorst (§5.2.6): een thermostaat zonder melding. Onder 3 °C gaat de kachel
 # aan, vanaf 5 °C weer uit. Vraagt de Shelly Plug ("kachel") bij de sensoren, met zijn
-# 'voorwaarde'. De melding "Vorst" hierboven blijft een eigen regel.
+# 'voorwaarde' en controls = ["relais"]. De melding "Vorst" hierboven blijft een eigen regel.
 # [[alarm]]
 # id = "kachel"
 # naam = "Kachel bij vorst"

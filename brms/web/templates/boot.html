@@ -1,21 +1,39 @@
 {#
-  Bootpagina van BRMS (ARCHITECTURE.md §5.6 "Bootpagina"): een tekening van de boot met op
-  elke plek de actuele waarde van een sensor. De eerste pagina van het web als er een blok
-  [boot] in brms.toml staat.
+  De pagina Overzicht van BRMS, tot v0.28 de bootpagina (ARCHITECTURE.md §5.6 "Bootpagina"
+  en "Overzicht met tabs"): een tekening met op elke plek de actuele waarde van een
+  sensor. De eerste pagina van het web als er een blok [boot] in brms.toml staat.
 
-  De tekening is één SVG-bestand dat de gebruiker zelf tekent (PowerPoint, opgeslagen als
-  SVG) en dat naast brms.toml staat. Op elke plek waar een waarde moet komen, staat in de
-  tekening de tekst `sensor.grootheid`, bijvoorbeeld `motorruimte.slagzij`. Deze pagina:
+  Een tekening is een SVG-bestand dat de gebruiker zelf tekent (PowerPoint, opgeslagen als
+  SVG) en dat naast brms.toml staat. In brms.toml staat welke tekeningen er zijn, in welke
+  volgorde: `tekening = ["Privateer.svg", "Victron.svg"]`. Elke tekening is een **tab**
+  bovenaan de pagina, met de naam van het bestand zonder extensie; de eerste staat open.
 
-    1. haalt de tekening op (/boot/tekening.svg) en zet haar in de pagina;
-    2. zoekt de teksten `sensor.grootheid` op, haalt ze uit de tekening en zet op de plek
-       van hun eerste letter een vakje met de waarde (HTML over de tekening heen, zodat
+  Op elke plek waar een waarde moet komen, staat in de tekening een tekst:
+
+    sensor.grootheid       de waarde, alleen te lezen, bijv. `motorruimte.slagzij`
+    sensor.grootheid.RO    hetzelfde (RO = read only)
+    sensor.grootheid.RW    de bediening van die grootheid (RW = read write): de
+                           schuifknop van een relais, bijv. `kachel.relais.RW`. Alleen als
+                           de grootheid in `controls` van die sensor staat (§5.4.2 punt 8);
+                           anders blijft de tekst staan, zoals elke naam die niet herkend
+                           wordt.
+
+  Deze pagina:
+
+    1. haalt de tekening van de gekozen tab op (/boot/tekening/<nr>.svg) en zet haar in
+       de pagina;
+    2. zoekt de teksten op, haalt ze uit de tekening en zet op de plek van hun eerste
+       letter een vakje met de waarde, of de bediening (HTML over de tekening heen, zodat
        de letter op elk scherm even groot is en het vakje aan te klikken is);
-    3. vraagt elke 5 s de waarden op (/api/boot) en zet ze in de vakjes.
+    3. vraagt elke 5 s de waarden op (/api/boot) en zet ze in de vakjes; in hetzelfde
+       antwoord staat wat de schakellaag over de relais meldt, voor de schuifknoppen.
 
   Er staat niets over plekken of sensoren in brms.toml of in deze pagina: een sensor
   toevoegen of verplaatsen is alleen een wijziging van de tekening, en die is zichtbaar na
-  het verversen van de pagina (geen herstart).
+  het verversen van de pagina (geen herstart). Een tab toevoegen of verplaatsen staat wel
+  in brms.toml en vraagt `brms herstart`.
+
+  De schuifknop zelf staat in static/bediening.js (gedeeld met de systeempagina).
 
   De bovenbalk, het menu en de kleuren komen uit basis.html en static/brms.css.
 #}
@@ -57,11 +75,28 @@
      Een naam liep in de tekening naar rechts en loopt nu naar boven; het vakje staat dan
      met zijn midden op de plek van de eerste letter. */
   #boot.gedraaid #waarden a { transform: translate(-50%, -50%); }
+  /* De bediening van een grootheid (`sensor.grootheid.RW`): op dezelfde manier op haar
+     plek gezet als een waarde, in hetzelfde soort vakje. De schuifknop zelf komt uit
+     static/brms.css (.bediening). */
+  #waarden .bediening { position: absolute; transform: translate(0, -50%); pointer-events: auto;
+                        padding: 2px 6px; border: 1px solid var(--rand); border-radius: 6px;
+                        background: var(--vlak); box-shadow: var(--schaduw); }
+  #boot.gedraaid #waarden .bediening { transform: translate(-50%, -50%); }
   @media (max-width: 640px) { #waarden a { font-size: 13px; padding: 1px 5px; } }
+  /* De tabs (§5.6 "Overzicht met tabs" punt 2): één per tekening, de gekozen tab met een
+     streep in de accentkleur. Op een smal scherm lopen ze door op een volgende regel. */
+  .tabs { display: flex; flex-wrap: wrap; gap: 2px; margin: 0 0 10px;
+          border-bottom: 1px solid var(--rand); }
+  .tabs button { border: none; border-bottom: 3px solid transparent; border-radius: 8px 8px 0 0;
+                 background: none; padding: 7px 14px; color: var(--zacht); }
+  .tabs button:hover { background: var(--raster); }
+  .tabs button[aria-selected="true"] { color: var(--link); border-bottom-color: var(--accent);
+                                       font-weight: 600; }
 </style>
 {% endblock %}
 
 {% block inhoud %}
+  <div class="tabs" id="tabs" role="tablist" aria-label="Tekeningen"></div>
   <p id="status"></p>
   <div id="boot">
     <div id="tekening"></div>
@@ -70,14 +105,19 @@
 {% endblock %}
 
 {% block script %}
+{# De schuifknop en het invoerveldje (gedeeld met de systeempagina). Het versienummer in
+   het adres zorgt dat de browser na een update het nieuwe bestand haalt. #}
+<script src="{{ url_for('static', filename='bediening.js') }}?v={{ versie }}"></script>
 <script>
-// Uit de configuratie van de Pi: de sensoren met de grootheden die ze leveren, en per
-// grootheid de eenheid, de soort en het aantal decimalen (§5.3.3).
+// Uit de configuratie van de Pi: de sensoren met de grootheden die ze leveren en wat
+// daarvan te bedienen is (`controls`), en per grootheid de eenheid, de soort en het aantal
+// decimalen (§5.3.3).
 const SENSOREN = {{ sensoren | tojson }};
 const GROOTHEDEN = {{ grootheden | tojson }};
-// De bestandsnaam van de tekening (voor een melding) en na hoeveel seconden zonder meting
-// een waarde als stil geldt (voor de uitleg bij een "--").
-const TEKENING = {{ tekening | tojson }};
+// De tekeningen, in de volgorde van brms.toml: per tekening {naam (van de tab), bestand
+// (voor een melding), url}. En na hoeveel seconden zonder meting een waarde als stil
+// geldt (voor de uitleg bij een "--").
+const TEKENINGEN = {{ tekeningen | tojson }};
 const STIL_NA = {{ stil_na | tojson }};
 
 // Het starttijdstip van de webservice waar deze pagina vandaan komt. De sensoren hierboven
@@ -99,21 +139,35 @@ const VERVERS = 5000;   // ms tussen twee vragen aan /api/boot (§5.6 punt 7)
 const el = id => document.getElementById(id);
 function status(tekst) { el("status").textContent = tekst || ""; }
 
-// De namen die in de tekening herkend worden: "sensornaam.grootheid" in kleine letters
-// (hoofdletters tellen niet mee: PowerPoint maakt van "vooronder" vanzelf "Vooronder")
-// -> {sensor (ID), naam, grootheid}. Alleen grootheden die de sensor levert (§5.4.2).
+// De namen die in de tekening herkend worden, in kleine letters (hoofdletters tellen niet
+// mee: PowerPoint maakt van "vooronder" vanzelf "Vooronder")
+// -> {sensor (ID), naam, grootheid, rw}. Alleen grootheden die de sensor levert (§5.4.2).
+// Per grootheid (§5.6 "Overzicht met tabs" punt 4):
+//   sensornaam.grootheid       de waarde (alleen lezen; zonder toevoeging geldt RO)
+//   sensornaam.grootheid.ro    hetzelfde
+//   sensornaam.grootheid.rw    de bediening; alleen als de grootheid in `controls` van
+//                              de sensor staat. Anders staat de naam hier niet, en blijft
+//                              de tekst in de tekening staan: zo valt het op.
 const NAMEN = new Map();
+const SENSOR = new Map(SENSOREN.map(s => [s.id, s]));
 for (const s of SENSOREN)
-  for (const g of s.grootheden)
-    NAMEN.set((s.naam + "." + g).toLowerCase(), {sensor: s.id, naam: s.naam, grootheid: g});
+  for (const g of s.grootheden) {
+    const basis = (s.naam + "." + g).toLowerCase();
+    const doel = {sensor: s.id, naam: s.naam, grootheid: g, rw: false};
+    NAMEN.set(basis, doel);
+    NAMEN.set(basis + ".ro", doel);
+    if (s.controls[g]) NAMEN.set(basis + ".rw", {...doel, rw: true});
+  }
 const isBegin = t => [...NAMEN.keys()].some(naam => naam.startsWith(t));
 
 // Telefoon rechtop: de tekening een kwartslag gedraaid, boeg boven (§5.6 punt 8).
 const rechtop = matchMedia("(max-width: 640px) and (orientation: portrait)");
 
-let bron = null;      // de tekst van het SVG-bestand, zoals opgehaald
-let plekken = [];     // per waarde in de tekening: {sensor, naam, grootheid, vak, kant}
+let tab = 0;          // de gekozen tab: de plaats van de tekening in TEKENINGEN
+let bron = null;      // de tekst van het SVG-bestand van die tab, zoals opgehaald
+let plekken = [];     // per naam in de tekening: {sensor, naam, grootheid, rw, vak, bediening, kant}
 let laatste = null;   // het laatste antwoord van /api/boot (de lijst "waarden")
+let schakel = {};     // uit hetzelfde antwoord: per relais wat de schakellaag meldt
 
 // --- getallen ---------------------------------------------------------------------------
 const twee = n => String(n).padStart(2, "0");
@@ -144,22 +198,63 @@ function waardeTekst(grootheid, w) {
 }
 
 // --- de tekening ------------------------------------------------------------------------
-// Haalt het SVG-bestand op. De browser bewaart het en vraagt alleen of het gewijzigd is
-// (zie boot_tekening in de webservice).
+// De bestandsnaam van de tekening van de gekozen tab, voor een melding.
+const tekening = () => TEKENINGEN[tab].bestand;
+
+// De tabs (§5.6 "Overzicht met tabs" punt 2): één knop per tekening, in de volgorde van
+// brms.toml. De gekozen tab staat ook achter het # in het adres, zodat de pagina na
+// verversen (of na een herstart van de webservice) op dezelfde tab terugkomt.
+function maakTabs() {
+  const vak = el("tabs");
+  TEKENINGEN.forEach((t, i) => {
+    const knop = document.createElement("button");
+    knop.type = "button";
+    knop.textContent = t.naam;
+    knop.setAttribute("role", "tab");
+    knop.addEventListener("click", () => kiesTab(i));
+    vak.append(knop);
+  });
+  // De tab uit het adres, als die er is; hoofdletters tellen niet mee. Anders de eerste.
+  let naam = "";
+  try { naam = decodeURIComponent(location.hash.slice(1)).toLowerCase(); } catch (e) { /* geen geldige naam */ }
+  const i = TEKENINGEN.findIndex(t => t.naam.toLowerCase() === naam);
+  kiesTab(i < 0 ? 0 : i, true);
+}
+
+// Opent een tab: de oude tekening en haar vakjes weg, de nieuwe ophalen.
+function kiesTab(i, eerste) {
+  if (i === tab && !eerste) return;
+  tab = i;
+  [...el("tabs").children].forEach((knop, n) => knop.setAttribute("aria-selected", n === i ? "true" : "false"));
+  // replaceState: het wisselen van tab komt niet in de geschiedenis van de browser.
+  if (!eerste) history.replaceState(null, "", "#" + encodeURIComponent(TEKENINGEN[i].naam));
+  bron = null; plekken = []; laatste = null;
+  el("tekening").replaceChildren();
+  el("waarden").replaceChildren();
+  status("");
+  laadTekening();
+}
+
+// Haalt het SVG-bestand van de gekozen tab op. De browser bewaart het en vraagt alleen of
+// het gewijzigd is (zie boot_tekening in de webservice).
 async function laadTekening() {
+  const mijn = tab;   // is er intussen een andere tab gekozen, dan telt dit antwoord niet
   try {
-    const a = await haal("/boot/tekening.svg");
+    const a = await haal(TEKENINGEN[mijn].url);
+    if (mijn !== tab) return;
     if (a.status === 404) {
-      status("De tekening " + TEKENING + " staat niet naast brms.toml; zet het bestand daar neer "
+      status("De tekening " + tekening() + " staat niet naast brms.toml; zet het bestand daar neer "
              + "en ververs de pagina.");
       return;
     }
     if (!a.ok) throw new Error("fout " + a.status);
-    bron = await a.text();
+    const tekst = await a.text();
+    if (mijn !== tab) return;
+    bron = tekst;
     bouw();
     vraag();
   } catch (e) {
-    status("Geen verbinding met de BRMS-webservice (" + e.message + ").");
+    if (mijn === tab) status("Geen verbinding met de BRMS-webservice (" + e.message + ").");
   }
 }
 
@@ -168,7 +263,7 @@ async function laadTekening() {
 function bouw() {
   const doc = new DOMParser().parseFromString(bron, "image/svg+xml");
   if (doc.querySelector("parsererror") || doc.documentElement.localName !== "svg") {
-    status("De tekening " + TEKENING + " is geen geldig SVG-bestand.");
+    status("De tekening " + tekening() + " is geen geldig SVG-bestand.");
     return;
   }
   const svg = document.importNode(doc.documentElement, true);
@@ -185,7 +280,7 @@ function bouw() {
     vb = [0, 0, parseFloat(svg.getAttribute("width")), parseFloat(svg.getAttribute("height"))];
   const [minX, minY, B, H] = vb;
   if (!(B > 0) || !(H > 0)) {
-    status("De tekening " + TEKENING + " heeft geen maat (width en height, of een viewBox).");
+    status("De tekening " + tekening() + " heeft geen maat (width en height, of een viewBox).");
     return;
   }
   svg.setAttribute("viewBox", vb.join(" "));
@@ -278,19 +373,36 @@ function bouw() {
   }
 
   // Per gevonden naam: de tekst uit de tekening halen en een vakje maken op de plek van
-  // de eerste letter. Het vakje is een link naar de grafiekenpagina (§5.6 punt 6).
+  // de eerste letter.
+  //   - Een waarde (`sensor.grootheid`, `.RO`): een link naar de grafiekenpagina (§5.6
+  //     punt 6).
+  //   - Een bediening (`sensor.grootheid.RW`, §5.6 "Overzicht met tabs" punt 4): de
+  //     schuifknop van een relais, of het invoerveldje van een grootheid met een in te
+  //     voeren waarde; dezelfde als op de systeempagina (static/bediening.js). Na een
+  //     klik wordt er snel opnieuw gevraagd, zodat de nieuwe keuze niet tot de volgende
+  //     verversing op zich laat wachten; een fout komt in de statusregel.
+  const opties = {naVerzoek: () => setTimeout(vraag, 800), bijFout: status};
   plekken = gevonden.map(({stukken, doel}) => {
     for (const t of stukken) t.e.remove();
     const eerste = stukken[0];
     // Het midden van de regel ligt ongeveer een derde lettergrootte boven de schrijflijn.
     const x = eerste.x, y = eerste.y - 0.35 * eerste.letter;
-    const vak = document.createElement("a");
-    vak.href = "/grafieken?sensor=" + encodeURIComponent(doel.sensor)
-               + "&grootheid=" + encodeURIComponent(doel.grootheid);
+    let vak, bediening = null;
+    if (doel.rw) {
+      const sensor = SENSOR.get(doel.sensor), vorm = sensor.controls[doel.grootheid];
+      bediening = vorm.vorm === "aan/uit"
+        ? Bediening.schuif(sensor, doel.grootheid, opties)
+        : Bediening.invoer(sensor, doel.grootheid, vorm, GROOTHEDEN[doel.grootheid].eenheid, opties);
+      vak = bediening.el;
+    } else {
+      vak = document.createElement("a");
+      vak.href = "/grafieken?sensor=" + encodeURIComponent(doel.sensor)
+                 + "&grootheid=" + encodeURIComponent(doel.grootheid);
+    }
     vak.style.left = 100 * (gedraaid ? (y - minY) / H : (x - minX) / B) + "%";
     vak.style.top = 100 * (gedraaid ? (minX + B - x) / B : (y - minY) / H) + "%";
     el("waarden").append(vak);
-    return {...doel, vak, hoogte: eerste.y, kant: null};
+    return {...doel, vak, bediening, hoogte: eerste.y, kant: null};
   });
 
   // De slagzij (§5.6 punt 5): staat een grootheid met een kant twee keer in de tekening,
@@ -299,7 +411,7 @@ function bouw() {
   // getekend, dus ook als de tekening op een telefoon gedraaid staat.
   const paren = new Map();
   for (const p of plekken) {
-    if (!GROOTHEDEN[p.grootheid].zijden) continue;
+    if (p.rw || !GROOTHEDEN[p.grootheid].zijden) continue;
     const sleutel = p.sensor + "\n" + p.grootheid;
     paren.set(sleutel, [...(paren.get(sleutel) || []), p]);
   }
@@ -311,7 +423,7 @@ function bouw() {
   }
 
   if (!plekken.length)
-    status("In de tekening staat geen tekst van de vorm sensor.grootheid die bij een sensor uit "
+    status("In de tekening " + tekening() + " staat geen tekst van de vorm sensor.grootheid die bij een sensor uit "
            + "brms.toml past, bijvoorbeeld " + ([...NAMEN.keys()][0] || "kajuit.temperatuur") + ".");
   toon();
 }
@@ -323,6 +435,7 @@ async function vraag() {
   if (bezig || !plekken.length) return;
   bezig = true;
   const gevraagd = plekken;   // de tekening kan intussen opnieuw gebouwd worden
+  const gevraagdeTab = tab;   // of er kan een andere tab gekozen zijn
   try {
     const a = await haal("/api/boot", {
       method: "POST", headers: {"Content-Type": "application/json"},
@@ -330,13 +443,20 @@ async function vraag() {
     if (!a.ok) throw new Error("fout " + a.status);
     const d = await a.json();
     // Dezelfde namen in dezelfde volgorde, ook na opnieuw bouwen: het antwoord past nog.
-    if (gevraagd.length === plekken.length) laatste = d.waarden;
+    // Is er intussen een andere tab gekozen, dan hoort het antwoord bij een andere
+    // tekening en telt het niet.
+    if (gevraagdeTab === tab && gevraagd.length === plekken.length) laatste = d.waarden;
+    // Wat de schakellaag over de relais meldt, voor de schuifknoppen (§5.8 punt 9).
+    schakel = d.schakel || {};
     status(d.broker === false ? "De MQTT-broker is niet bereikbaar; er komen geen metingen binnen." : "");
     toon();
   } catch (e) {
     status("Geen verbinding met de BRMS-webservice (" + e.message + ").");
   } finally {
     bezig = false;
+    // Tijdens deze vraag is een andere tab gekozen: die heeft nog geen waarden, en zijn
+    // eigen vraag is overgeslagen omdat deze nog liep. Dus nu meteen opnieuw.
+    if (gevraagdeTab !== tab) vraag();
   }
 }
 
@@ -345,6 +465,13 @@ function toon() {
   plekken.forEach((p, i) => {
     const w = laatste && laatste[i];
     const vak = p.vak, wat = p.naam + " · " + p.grootheid;
+    // Een bediening (`.RW`): de schuifknop toont de keuze zoals de schakellaag hem meldt
+    // en, met de stip, de werkelijke stand (de laatste meting; null bij een stil relais).
+    // Meldt de schakellaag niets over dit relais, dan schakelt de knop zichzelf uit.
+    if (p.bediening) {
+      p.bediening.toon(schakel[p.sensor] || null, w ? w.waarde : null);
+      return;
+    }
     vak.hidden = false;
     vak.classList.toggle("alarm", !!(w && w.alarm));
     if (!w || w.waarde === null) {
@@ -383,7 +510,8 @@ function klem() {
 }
 
 // --- begin ----------------------------------------------------------------------------
-laadTekening();
+// De tabs maken en de eerste (of die uit het adres) openen; dat haalt de tekening op.
+maakTabs();
 setInterval(vraag, VERVERS);
 // De telefoon is gedraaid: de tekening opnieuw opbouwen in de andere stand.
 rechtop.addEventListener("change", () => { if (bron !== null) bouw(); });

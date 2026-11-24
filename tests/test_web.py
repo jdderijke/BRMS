@@ -640,11 +640,12 @@ class TestLiveRoute(unittest.TestCase):
 
 
 class TestBoot(unittest.TestCase):
-    """De bootpagina (§5.6 "Bootpagina"): een tekening van de boot met de actuele waarden.
+    """De pagina Overzicht, tot v0.28 de bootpagina (§5.6 "Bootpagina" en "Overzicht met
+    tabs"): een tekening van de boot met de actuele waarden.
 
     De tekening zelf wordt in de browser gelezen (de namen `sensor.grootheid` en hun plek);
     hier wordt getest wat de webservice doet: welke pagina op / staat, het uitleveren van
-    de tekening en de waarden met hun alarmstand."""
+    de tekeningen (één per tab) en de waarden met hun alarmstand."""
 
     # Een minimale tekening: genoeg om te zien dat het bestand ongewijzigd wordt uitgeleverd.
     SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><text>kajuit.temperatuur</text></svg>'
@@ -659,7 +660,7 @@ class TestBoot(unittest.TestCase):
         self.nu = 10_000
         self.cfg = Config(MqttConfig(), OpslagConfig(self.pad),
                           {MAC: Sensor(MAC, "bthome", "kajuit"), MAC2: Sensor(MAC2, "ruuvi", "motorruim")},
-                          alarmen=ALARMEN, boot=config.BootConfig(self.tekening))
+                          alarmen=ALARMEN, boot=config.BootConfig((self.tekening,)))
         self.client = web.maak_app(self.cfg, self.live, klok=lambda: self.nu + 0.2).test_client()
 
     def tearDown(self):
@@ -673,12 +674,16 @@ class TestBoot(unittest.TestCase):
 
     def test_met_boot_is_de_bootpagina_de_eerste_pagina(self):
         tekst = self.client.get("/").get_data(as_text=True)
-        # De bootpagina: de titel, de naam van de tekening en de sensoren met hun grootheden.
-        for verwacht in ["<title>BRMS – Boot</title>", '"boot.svg"', "kajuit", '"temperatuur"',
-                         "const STIL_NA = 300;"]:
+        # De pagina Overzicht: de titel, de naam van de tekening en de sensoren met hun
+        # grootheden. De tab heet naar het bestand zonder extensie (besluit OPEN-43).
+        for verwacht in ["<title>BRMS – Overzicht</title>", '"bestand": "boot.svg"',
+                         '"naam": "boot"', '"url": "/boot/tekening/0.svg"', "kajuit",
+                         '"temperatuur"', "const STIL_NA = 300;", "/static/bediening.js"]:
             self.assertIn(verwacht, tekst)
         self.assertNotIn("chart.umd.min.js", tekst)
-        # In het menu staat Boot op / en Grafieken op /grafieken.
+        # In het menu staat Overzicht (tot v0.28 "Boot") op / en Grafieken op /grafieken.
+        self.assertIn('<span class="naam">Overzicht</span>', tekst)
+        self.assertNotIn('<span class="naam">Boot</span>', tekst)
         self.assertIn('<a href="/" class="hier" aria-current="page">', tekst)
         self.assertIn('<a href="/grafieken" >', tekst)
         # De grafiekenpagina staat op /grafieken.
@@ -690,8 +695,8 @@ class TestBoot(unittest.TestCase):
         client = web.maak_app(_config(self.pad), self.live).test_client()
         tekst = client.get("/").get_data(as_text=True)
         self.assertIn("chart.umd.min.js", tekst)
-        # Geen regel "Boot" in het menu; Grafieken wijst naar /, zoals altijd.
-        self.assertNotIn('<span class="naam">Boot</span>', tekst)
+        # Geen regel "Overzicht" in het menu; Grafieken wijst naar /, zoals altijd.
+        self.assertNotIn('<span class="naam">Overzicht</span>', tekst)
         self.assertIn('<a href="/" class="hier" aria-current="page">', tekst)
         # /grafieken werkt ook zonder bootpagina; de tekening en haar waarden zijn er niet.
         self.assertEqual(client.get("/grafieken").status_code, 200)
@@ -728,6 +733,38 @@ class TestBoot(unittest.TestCase):
         self.assertEqual(self.client.get("/boot/tekening.svg").status_code, 404)
         # De pagina zelf werkt wel; ze meldt dat de tekening ontbreekt.
         self.assertEqual(self.client.get("/").status_code, 200)
+
+    def test_elke_tekening_een_tab_in_de_volgorde_van_de_lijst(self):
+        # §5.6 "Overzicht met tabs" punt 2: de lijst in brms.toml bepaalt welke tekeningen
+        # er zijn en in welke volgorde; niet de alfabetische volgorde van de bestandsnaam.
+        victron = os.path.join(self._map.name, "Victron.svg")
+        accus = os.path.join(self._map.name, "Accus.svg")
+        pathlib.Path(victron).write_text(self.SVG.replace("kajuit", "victron"), encoding="utf-8")
+        pathlib.Path(accus).write_text(self.SVG.replace("kajuit", "accus"), encoding="utf-8")
+        cfg = Config(MqttConfig(), OpslagConfig(self.pad), self.cfg.sensoren,
+                     boot=config.BootConfig((victron, self.tekening, accus)))
+        client = web.maak_app(cfg, self.live).test_client()
+        tekst = client.get("/").get_data(as_text=True)
+        plaats = [tekst.index(f'"naam": "{naam}"') for naam in ("Victron", "boot", "Accus")]
+        self.assertEqual(plaats, sorted(plaats))
+        # Elke tab haalt zijn eigen bestand op; het adres zonder nummer is de eerste.
+        for nr, woord in enumerate(("victron", "kajuit", "accus")):
+            r = client.get(f"/boot/tekening/{nr}.svg")
+            self.assertEqual(r.status_code, 200)
+            self.assertIn(woord, r.get_data(as_text=True))
+            r.close()
+        r = client.get("/boot/tekening.svg")
+        self.assertIn("victron", r.get_data(as_text=True))
+        r.close()
+        # Een nummer buiten de lijst bestaat niet: het kan nooit naar een ander bestand wijzen.
+        for adres in ("/boot/tekening/3.svg", "/boot/tekening/-1.svg", "/boot/tekening/x.svg"):
+            self.assertEqual(client.get(adres).status_code, 404)
+
+    def test_antwoord_bevat_de_stand_van_de_relais(self):
+        # Voor de schuifknoppen in de tekening (`sensor.grootheid.RW`): wat de schakellaag
+        # meldt, in hetzelfde antwoord als de waarden. Zonder melding: leeg.
+        r = self.client.post("/api/boot", json={"waarden": []})
+        self.assertEqual(r.get_json()["schakel"], {})
 
     def test_laatste_waarde_van_de_bus(self):
         self.live.voeg_toe(maak(self.nu - 60, MAC, "temperatuur", 8.0))
@@ -822,7 +859,7 @@ class TestBoot(unittest.TestCase):
 
 
 class TestBootConfig(unittest.TestCase):
-    """Het blok [boot] in brms.toml (§5.6 "Bootpagina" punt 2)."""
+    """Het blok [boot] in brms.toml (§5.6 "Bootpagina" punt 2, "Overzicht met tabs" punt 2)."""
 
     def test_zonder_blok_geen_bootpagina(self):
         self.assertIsNone(config.controleer({}).boot)
@@ -831,26 +868,222 @@ class TestBootConfig(unittest.TestCase):
         with tempfile.TemporaryDirectory() as map_:
             pathlib.Path(map_, "boot.svg").write_text("<svg/>", encoding="utf-8")
             pathlib.Path(map_, "brms.toml").write_text('[boot]\ntekening = "boot.svg"\n', encoding="utf-8")
-            # Een relatief pad geldt vanaf de map van brms.toml.
+            # Een relatief pad geldt vanaf de map van brms.toml. Eén naam als tekst (zoals
+            # vóór de tabs) blijft werken en geeft één tekening.
             cfg = config.lees(os.path.join(map_, "brms.toml"))
-            self.assertEqual(cfg.boot, config.BootConfig(os.path.join(os.path.abspath(map_), "boot.svg")))
+            self.assertEqual(cfg.boot, config.BootConfig((os.path.join(os.path.abspath(map_), "boot.svg"),)))
+            self.assertEqual(cfg.waarschuwingen, ())
+
+    def test_lijst_van_tekeningen_in_de_volgorde_van_het_bestand(self):
+        with tempfile.TemporaryDirectory() as map_:
+            for naam in ("Privateer.svg", "Victron.SVG"):
+                pathlib.Path(map_, naam).write_text("<svg/>", encoding="utf-8")
+            pathlib.Path(map_, "brms.toml").write_text(
+                '[boot]\ntekening = ["Victron.SVG", "Privateer.svg"]\n', encoding="utf-8")
+            cfg = config.lees(os.path.join(map_, "brms.toml"))
+            # De volgorde van de lijst, niet die van het alfabet; de extensie mag in
+            # hoofdletters. De tab heet naar het bestand zonder extensie (OPEN-43).
+            self.assertEqual([config.tabnaam(p) for p in cfg.boot.tekeningen], ["Victron", "Privateer"])
             self.assertEqual(cfg.waarschuwingen, ())
 
     def test_ontbrekende_tekening_is_een_waarschuwing(self):
-        # Geen fout: een vergeten tekening mag de services niet tegenhouden.
+        # Geen fout: een vergeten tekening mag de services niet tegenhouden. Per ontbrekend
+        # bestand één waarschuwing; de tekening blijft in de lijst (de tab meldt het zelf).
         cfg = config.controleer({"boot": {"tekening": "bestaat-niet.svg"}})
-        self.assertTrue(cfg.boot.tekening.endswith("bestaat-niet.svg"))
+        self.assertTrue(cfg.boot.tekeningen[0].endswith("bestaat-niet.svg"))
         self.assertEqual(len(cfg.waarschuwingen), 1)
         self.assertIn("bestaat niet", cfg.waarschuwingen[0])
+        cfg = config.controleer({"boot": {"tekening": ["a.svg", "b.svg"]}})
+        self.assertEqual((len(cfg.boot.tekeningen), len(cfg.waarschuwingen)), (2, 2))
 
     def test_fouten(self):
         for blok, verwacht in (({}, "'tekening' ontbreekt"),
                                ({"tekening": 5}, "'tekening' ontbreekt"),
+                               ({"tekening": []}, "'tekening' ontbreekt"),
+                               ({"tekening": ["boot.svg", 5]}, "'tekening' ontbreekt"),
                                ({"tekening": "boot.png"}, "SVG-bestand"),
+                               ({"tekening": ["boot.svg", "accu.png"]}, "SVG-bestand"),
+                               # Twee tabs met dezelfde naam zijn niet uit elkaar te houden.
+                               ({"tekening": ["boot.svg", "Boot.svg"]}, "meer dan eens"),
                                ({"tekening": "boot.svg", "plaatje": "x"}, "onbekende sleutel 'plaatje'")):
             with self.assertRaises(config.ConfigFout) as ctx:
                 config.controleer({"boot": blok})
             self.assertIn(verwacht, "\n".join(ctx.exception.fouten))
+
+
+class TestHandbediening(unittest.TestCase):
+    """De handbediening in het web (§5.6 "Relais in het web" en systeempagina punt 5, §5.8):
+    wat de webservice onthoudt van de schakellaag, de sensorlijst voor het blok "Sensoren
+    en actuators" en de opdracht van de schuifknop."""
+
+    def setUp(self):
+        self._map = tempfile.TemporaryDirectory()
+        self.pad = os.path.join(self._map.name, "brms.db")
+        self.nu = 10_000
+        self.live = web.LiveBuffer()
+        # De kachel mag bediend worden; de tweede plug (veilige stand aan) ook; de derde
+        # heeft geen 'controls' en is dus alleen te lezen.
+        self.cfg = Config(MqttConfig(), OpslagConfig(self.pad), {
+            MAC: Sensor(MAC, "bthome", "kajuit"),
+            "kachel": Sensor("kachel", "shelly-relais", "kachelplug", adres="x", controls=("relais",)),
+            "wal": Sensor("wal", "shelly-relais", "walrelais", adres="y", veilige_stand="aan",
+                          controls=("relais",)),
+            "los": Sensor("los", "shelly-relais", "losse plug", adres="z")})
+        self.klok = [100.0]                       # de monotone klok van SchakelStand
+        self.stand = web.SchakelStand(klok=lambda: self.klok[0])
+        self.bus = mock.Mock()
+        self.bus.publiceer.return_value = True
+        self.bus.verbonden = True
+        self.client = web.maak_app(self.cfg, self.live, self.bus, klok=lambda: self.nu + 0.2,
+                                   schakelstand=self.stand).test_client()
+
+    def tearDown(self):
+        self._map.cleanup()
+
+    def _meld(self, sensor_id="kachel", keuze="auto", stand="uit", reden="veilige stand"):
+        self.stand.bij_bericht(f"brms/schakel/{sensor_id}", json.dumps(
+            {"ts": 1, "sensor_id": sensor_id, "keuze": keuze, "stand": stand, "reden": reden}).encode())
+
+    def test_stand_van_de_schakellaag_wordt_onthouden_en_veroudert(self):
+        self.assertEqual(self.stand.lees(), {})
+        self._meld(keuze="aan", stand="aan", reden="met de hand")
+        self.assertEqual(self.stand.lees(),
+                         {"kachel": {"keuze": "aan", "stand": "aan", "reden": "met de hand"}})
+        # De schakellaag meldt zich elke minuut; blijft dat uit, dan telt de stand niet
+        # meer en schakelt de pagina de knop uit.
+        self.klok[0] += web.SCHAKEL_GELDIG + 1
+        self.assertEqual(self.stand.lees(), {})
+        # Een ongeldig bericht wordt genegeerd.
+        for kapot in (b"niks", b'{"sensor_id":"kachel"}',
+                      b'{"sensor_id":"kachel","keuze":"soms","stand":"aan"}',
+                      b'{"sensor_id":"kachel","keuze":"auto","stand":"half"}'):
+            self.stand.bij_bericht("brms/schakel/kachel", kapot)
+        self.assertEqual(self.stand.lees(), {})
+
+    def test_pagina_kent_de_bedienbare_grootheden(self):
+        tekst = self.client.get("/systeem").get_data(as_text=True)
+        # De blokken staan in de volgorde van besluit OPEN-41.
+        plaats = [tekst.index(f"<h2>{kop}</h2>") for kop in
+                  ("Opslag", "Sensoren en actuators", "Logboek", "Services", "Herstarten")]
+        self.assertEqual(plaats, sorted(plaats))
+        # De kachel: het relais is te bedienen, en de schuifknop schuift naar AAN. De plug
+        # zonder 'controls' heeft niets te bedienen.
+        sensoren = {s["id"]: s for s in json.loads(
+            tekst.split("const SENSOREN = ", 1)[1].split(";\n", 1)[0])}
+        self.assertEqual(sensoren["kachel"]["controls"],
+                         {"relais": {"vorm": "aan/uit", "laagste": None, "hoogste": None, "stap": None}})
+        self.assertEqual((sensoren["kachel"]["actieve_stand"], sensoren["wal"]["actieve_stand"]),
+                         ("aan", "uit"))
+        self.assertEqual((sensoren["los"]["controls"], sensoren[MAC]["controls"]), ({}, {}))
+        self.assertIn("/static/bediening.js", tekst)
+
+    def test_sensoren_met_hun_laatste_waarden(self):
+        self.live.voeg_toe(maak(self.nu - 400, MAC, "temperatuur", 8.0))     # ouder dan 5 minuten
+        self.live.voeg_toe(maak(self.nu - 20, "kachel", "relais", 1.0))
+        self.live.voeg_toe(maak(self.nu - 8, "kachel", "vermogen", 1480.0))
+        self._meld(keuze="auto", stand="aan", reden="alarmregel Vorst")
+        d = self.client.get("/api/sensoren").get_json()
+        self.assertEqual((d["nu"], d["stil_na"], d["broker"]), (self.nu, 300, True))
+        sensoren = {s["id"]: s for s in d["sensoren"]}
+        # De volgorde van brms.toml.
+        self.assertEqual([s["id"] for s in d["sensoren"]], [MAC, "kachel", "wal", "los"])
+        # Live: een meting in de laatste 5 minuten. De laatste communicatie is de nieuwste
+        # meting, van welke grootheid ook.
+        kachel = sensoren["kachel"]
+        self.assertEqual((kachel["live"], kachel["ts"]), (True, self.nu - 8))
+        waarden = {g["naam"]: (g["waarde"], g["ts"]) for g in kachel["grootheden"]}
+        self.assertEqual(waarden["relais"], (1.0, self.nu - 20))
+        self.assertEqual(waarden["spanning"], (None, None))
+        # De kajuit zweeg te lang: not_avail, maar de laatst bekende waarde staat er nog.
+        kajuit = sensoren[MAC]
+        self.assertEqual((kajuit["live"], kajuit["ts"]), (False, self.nu - 400))
+        self.assertEqual(kajuit["grootheden"][0], {"naam": "temperatuur", "ts": self.nu - 400, "waarde": 8.0})
+        # Nog niets gehoord sinds de start van de webservice.
+        self.assertEqual((sensoren["wal"]["live"], sensoren["wal"]["ts"]), (False, None))
+        # Wat de schakellaag meldt, alleen voor de relais waarover hij iets gemeld heeft.
+        self.assertEqual(d["schakel"], {"kachel": {"keuze": "auto", "stand": "aan",
+                                                    "reden": "alarmregel Vorst"}})
+        # Hetzelfde staat in het antwoord voor de pagina Overzicht.
+        r = self.client.post("/api/boot", json={"waarden": []})
+        self.assertEqual(r.get_json()["schakel"], d["schakel"])
+
+    def test_alarm_sensor_stil_maakt_de_sensor_direct_not_avail(self):
+        self.live.voeg_toe(maak(self.nu - 30, MAC, "temperatuur", 8.0))
+        self.assertTrue(self.client.get("/api/sensoren").get_json()["sensoren"][0]["live"])
+        db = Database(self.pad)
+        db.alarm_begin(self.nu - 10, "stil", MAC, None, None)
+        db.sluit()
+        self.assertFalse(self.client.get("/api/sensoren").get_json()["sensoren"][0]["live"])
+
+    def test_keuze_gaat_als_opdracht_naar_de_schakellaag(self):
+        def stuur(**inhoud):
+            self.bus.publiceer.reset_mock()
+            with self.assertLogs("brms.web", "WARNING"):
+                r = self.client.post("/api/schakel", json=inhoud)
+            self.assertEqual(r.status_code, 200)
+            (topic, payload), opties = self.bus.publiceer.call_args
+            self.assertEqual((topic, opties), ("brms/opdracht/schakel/hand", {"qos": 1}))
+            return json.loads(payload)
+
+        # De kachel met de hand aan (zijn actieve stand), en terug naar AUTO.
+        self.assertEqual(stuur(sensor="kachel", grootheid="relais", keuze="aan"),
+                         {"ts": self.nu, "sensor_id": "kachel", "keuze": "aan"})
+        self.assertEqual(stuur(sensor="kachel", grootheid="relais", keuze="auto")["keuze"], "auto")
+        # Bij een relais met veilige stand aan is de actieve stand "uit".
+        self.assertEqual(stuur(sensor="wal", grootheid="relais", keuze="uit")["keuze"], "uit")
+
+    def test_alleen_wat_in_controls_staat_en_alleen_de_twee_keuzes(self):
+        def stuur(**inhoud):
+            return self.client.post("/api/schakel", json=inhoud).status_code
+
+        # De veilige stand als keuze bestaat niet (besluit v0.97): alleen AUTO en de
+        # actieve stand van dat relais.
+        self.assertEqual(stuur(sensor="kachel", grootheid="relais", keuze="uit"), 400)
+        self.assertEqual(stuur(sensor="wal", grootheid="relais", keuze="aan"), 400)
+        self.assertEqual(stuur(sensor="kachel", grootheid="relais", keuze="soms"), 400)
+        self.assertEqual(stuur(sensor="kachel", grootheid="relais"), 400)
+        # Niet in 'controls': een plug zonder het veld, een grootheid die alleen te lezen
+        # is, een sensor zonder bediening, een onbekende sensor.
+        self.assertEqual(stuur(sensor="los", grootheid="relais", keuze="aan"), 404)
+        self.assertEqual(stuur(sensor="kachel", grootheid="vermogen", keuze="aan"), 404)
+        self.assertEqual(stuur(sensor=MAC, grootheid="temperatuur", keuze="aan"), 404)
+        self.assertEqual(stuur(sensor="sauna", grootheid="relais", keuze="aan"), 404)
+        self.assertEqual(self.client.post("/api/schakel", data="x").status_code, 404)
+        self.bus.publiceer.assert_not_called()
+        # Zonder broker komt de opdracht niet aan: dat hoort de pagina.
+        self.bus.publiceer.return_value = False
+        with self.assertLogs("brms.web", "WARNING"):
+            self.assertEqual(stuur(sensor="kachel", grootheid="relais", keuze="aan"), 503)
+
+    def test_een_ingevoerde_waarde(self):
+        # Het invoerveldje (§5.6): er is nog geen sensortype met een bedienbare waarde,
+        # dus de test geeft het relais voor even die vorm. De webservice controleert de
+        # grenzen van de decoder en stuurt de waarde met de grootheid mee.
+        from brms import grootheden
+        thermostaat = {"relais": grootheden.Bediening(grootheden.WAARDE, 5.0, 25.0, 0.5)}
+        with mock.patch.dict(config.BEDIENBAAR, {"shelly-relais": thermostaat}):
+            with self.assertLogs("brms.web", "WARNING"):
+                r = self.client.post("/api/schakel", json={"sensor": "kachel", "grootheid": "relais",
+                                                           "waarde": 18.5})
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(json.loads(self.bus.publiceer.call_args.args[1]),
+                             {"ts": self.nu, "sensor_id": "kachel", "grootheid": "relais", "waarde": 18.5})
+            # De pagina krijgt de grenzen mee voor het veldje.
+            tekst = self.client.get("/systeem").get_data(as_text=True)
+            self.assertIn('{"vorm": "waarde", "laagste": 5.0, "hoogste": 25.0, "stap": 0.5}', tekst)
+            self.bus.publiceer.reset_mock()
+            for waarde in (4.9, 25.1, "18", True, None):
+                r = self.client.post("/api/schakel", json={"sensor": "kachel", "grootheid": "relais",
+                                                           "waarde": waarde})
+                self.assertEqual(r.status_code, 400)
+            self.bus.publiceer.assert_not_called()
+
+    def test_alarmenpagina_in_de_nieuwe_volgorde(self):
+        # Besluit OPEN-41: Nu actief, Opgetreden alarmen, Alarmregels.
+        tekst = self.client.get("/alarmen").get_data(as_text=True)
+        plaats = [tekst.index(f"<h2>{kop}</h2>") for kop in
+                  ("Nu actief", "Opgetreden alarmen", "Alarmregels")]
+        self.assertEqual(plaats, sorted(plaats))
 
 
 if __name__ == "__main__":

@@ -1,12 +1,16 @@
 """Tests van het relais (ARCHITECTURE.md §5.2.6) – zonder plug, zonder netwerk en zonder
 broker.
 
-Drie delen, zoals de bouw:
+Vier delen, zoals de bouw:
 - de decoder en de schakelopdracht (brms/readers/shelly_relais.py);
 - het pollen en schakelen door de Shelly-reader (brms/readers/shelly.py);
-- de actie `relais` en het veld `voorwaarde` in de configuratie (brms/config.py) en in
-  de alarmlaag (brms/alarms.py): de thermostaat, de herhaling, de stille sensor en de
-  voorwaarde (alleen aan met walstroom).
+- de actie `relais` en de velden `voorwaarde`, `veilige_stand` en `controls` in de
+  configuratie (brms/config.py);
+- de verzoeken van de alarmlaag aan de schakellaag (brms/alarms.py, §5.8 punt 3 en 8):
+  een regel vraagt om zijn relais zolang het alarm actief is en de sensor waarden levert.
+
+Het beslissen zelf (de voorwaarde, de hand, de herhaling, de veilige stand) zit sinds
+v0.29.0 in de schakellaag en wordt getest in tests/test_schakel.py.
 
 Het antwoord van de plug in deze tests is overgenomen van de echte Shelly Plug M Gen3
 (§5.2.6, "Bevindingen met de plug"); het ophalen en het schakelen zelf zijn vervangen door
@@ -19,8 +23,9 @@ import os
 import tempfile
 import unittest
 
-from brms import config
-from brms.alarms import RELAIS_DUUR, RELAIS_HERHAAL, Alarmlaag, RelaisOpdracht
+from brms import config, grootheden
+from brms import alarms, schakel
+from brms.alarms import RELAIS_DUUR, Alarmlaag
 from brms.config import Alarmregel, Config, Correctie, MqttConfig, OpslagConfig, Sensor
 from brms.meting import maak
 from brms.readers import shelly, shelly_relais
@@ -30,7 +35,10 @@ MAC2 = "A4:C1:38:00:00:02"
 MULTI = "D3:00:00:00:00:03"
 # De plug van de kachel; hij mag alleen aan als de MultiPlus walstroom meldt (§5.2.6 punt 5).
 KACHEL = Sensor("kachel", "shelly-relais", "kachel", adres="192.168.1.121", interval=30.0,
-                voorwaarde=((MULTI, "walstroom", 1.0),))
+                voorwaarde=((MULTI, "walstroom", 1.0),), controls=("relais",))
+# Een relais met de veilige stand aan (§5.8 punt 2), zoals later dat van de walstroom.
+WAL = Sensor("wal", "shelly-relais", "walrelais", adres="192.168.1.123", interval=30.0,
+             veilige_stand="aan", controls=("relais",))
 
 
 def _status(aan=False, vermogen=0.0, spanning=221.3, stroom=0.0, rssi=-61) -> dict:
@@ -107,6 +115,26 @@ class TestDecoder(unittest.TestCase):
             with self.assertRaises(ValueError):
                 shelly_relais.zet_url("192.168.1.121", True, duur)
 
+    def test_veilige_stand_aan_keert_de_beveiliging_om(self):
+        # §5.8 punt 5: de actieve stand gaat met een terugschakeltijd, de veilige zonder.
+        # Bij een relais met veilige stand aan is "uit" de actieve stand.
+        self.assertEqual(shelly_relais.zet_url("x", False, 120.0, veilig_aan=True),
+                         "http://x/rpc/Switch.Set?id=0&on=false&toggle_after=120")
+        self.assertEqual(shelly_relais.zet_url("x", True, None, veilig_aan=True),
+                         "http://x/rpc/Switch.Set?id=0&on=true")
+        # De veilige stand blijft staan: een meegegeven tijd gaat niet mee.
+        self.assertEqual(shelly_relais.zet_url("x", True, 120.0, veilig_aan=True),
+                         "http://x/rpc/Switch.Set?id=0&on=true")
+        self.assertEqual(shelly_relais.zet_url("x", False, 120.0),
+                         "http://x/rpc/Switch.Set?id=0&on=false")
+        with self.assertRaises(ValueError):
+            shelly_relais.zet_url("x", False, None, veilig_aan=True)
+
+    def test_alleen_het_relais_is_te_bedienen(self):
+        # §5.4.2 punt 8: de decoder legt vast wat bedienbaar is, en in welke vorm.
+        self.assertEqual(shelly_relais.BEDIENBAAR, {"relais": grootheden.Bediening(grootheden.AANUIT)})
+        self.assertEqual(config.BEDIENBAAR, {"shelly-relais": shelly_relais.BEDIENBAAR})
+
 
 # =============================================================================
 # De Shelly-reader: pollen en schakelen
@@ -145,11 +173,14 @@ class TestReader(unittest.TestCase):
     def test_opdracht_lezen(self):
         self.assertEqual(shelly.lees_zet(b'{"sensor_id":"kachel","aan":true,"duur":600}'),
                          ("kachel", True, 600.0))
-        # Bij "uit" doet een duur er niet toe.
         self.assertEqual(shelly.lees_zet(b'{"sensor_id":"kachel","aan":false}'),
                          ("kachel", False, None))
+        # Een opdracht zonder duur is hier geldig: of hij mag, hangt af van de veilige
+        # stand van het relais, en dat beoordeelt de reader bij het schakelen (§5.8 punt 5).
+        self.assertEqual(shelly.lees_zet(b'{"sensor_id":"wal","aan":true}'), ("wal", True, None))
+        self.assertEqual(shelly.lees_zet(b'{"sensor_id":"wal","aan":false,"duur":120}'),
+                         ("wal", False, 120.0))
         for kapot in (b"niks", b"[]", b'{"aan":true,"duur":600}', b'{"sensor_id":"kachel","aan":1}',
-                      b'{"sensor_id":"kachel","aan":true}',            # aan zonder duur
                       b'{"sensor_id":"kachel","aan":true,"duur":0}',
                       b'{"sensor_id":"kachel","aan":true,"duur":true}'):
             with self.assertRaises(ValueError):
@@ -158,8 +189,8 @@ class TestReader(unittest.TestCase):
     def test_schakelen_en_direct_pollen(self):
         opdrachten = []
 
-        def nep_schakel(adres, aan, duur, timeout):
-            opdrachten.append((adres, aan, duur))
+        def nep_schakel(adres, aan, duur, timeout, veilig_aan):
+            opdrachten.append((adres, aan, duur, veilig_aan))
             return {"was_on": not aan}
 
         async def proef():
@@ -169,11 +200,48 @@ class TestReader(unittest.TestCase):
             return gelukt, poller.wek.is_set()
 
         self.assertEqual(asyncio.run(proef()), (True, True))
-        self.assertEqual(opdrachten, [("192.168.1.121", True, 600.0)])
+        self.assertEqual(opdrachten, [("192.168.1.121", True, 600.0, False)])
+
+    def test_de_veilige_stand_gaat_zonder_tijd_en_de_actieve_nooit(self):
+        """§5.8 punt 5, voor beide soorten relais: de veilige stand gaat zonder
+        terugschakeltijd (ook als er een bij de opdracht staat), en een opdracht naar de
+        actieve stand zonder tijd weigert de reader, van wie hij ook komt."""
+        from unittest import mock
+        urls = []
+
+        class Antwoord:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, n):
+                return b'{"was_on": false}'
+
+        def nep_open(url, timeout):
+            urls.append(url.split("Switch.Set?")[1])
+            return Antwoord()
+
+        async def proef(sensor, aan, duur):
+            poller = shelly.Poller(sensor, NepBus(), None, None)
+            return await poller.zet(aan, duur)
+
+        with mock.patch.object(shelly.urllib.request, "urlopen", nep_open):
+            self.assertTrue(asyncio.run(proef(KACHEL, True, 120.0)))     # actief, met tijd
+            self.assertTrue(asyncio.run(proef(KACHEL, False, 120.0)))    # veilig: tijd vervalt
+            self.assertTrue(asyncio.run(proef(WAL, False, 120.0)))       # actief, met tijd
+            self.assertTrue(asyncio.run(proef(WAL, True, None)))         # veilig
+            with self.assertLogs("brms.readers.shelly", "WARNING") as log:
+                self.assertFalse(asyncio.run(proef(KACHEL, True, None)))   # actief zonder tijd
+                self.assertFalse(asyncio.run(proef(WAL, False, None)))
+        self.assertEqual(urls, ["id=0&on=true&toggle_after=120", "id=0&on=false",
+                                "id=0&on=false&toggle_after=120", "id=0&on=true"])
+        self.assertEqual(sum("niet geschakeld" in r for r in log.output), 2)
 
     def test_de_reader_vraagt_bij_de_start_om_de_stand(self):
-        """Bij zijn start vraagt de reader de alarmlaag om de stand van de relais (§5.2.6
-        punt 6): één keer, en pas als de broker bereikbaar is."""
+        """Bij zijn start vraagt de reader om de stand van de relais (§5.2.6 punt 6; de
+        schakellaag antwoordt, §5.8 punt 7): één keer, en pas als de broker bereikbaar is."""
         from unittest import mock
 
         class Bus(NepBus):
@@ -217,7 +285,7 @@ class TestReader(unittest.TestCase):
         self.assertEqual(proef({"bilge": bilge}), [])
 
     def test_mislukt_schakelen_is_geen_fout(self):
-        def onbereikbaar(adres, aan, duur, timeout):
+        def onbereikbaar(adres, aan, duur, timeout, veilig_aan):
             raise OSError("timed out")
 
         async def proef():
@@ -246,6 +314,7 @@ type = "shelly-relais"
 naam = "verwarming"
 adres = "192.168.1.121"
 voorwaarde = { multiplus.walstroom = 1 }
+controls = ["relais"]
 """
 MULTIPLUS = """
 [[sensor]]
@@ -292,6 +361,50 @@ class TestConfig(unittest.TestCase):
         # De actie verwijst op naam; in de regel staat het ID. Een camera is niet nodig.
         regel = cfg.alarmen[0]
         self.assertEqual((regel.relais, regel.acties, regel.camera), ("kachel", (), None))
+        # Zonder het veld is de veilige stand "uit" (de kachel); "aan" is dan de actieve.
+        self.assertEqual((s.veilige_stand, config.actieve_stand(s), s.controls),
+                         ("uit", "aan", ("relais",)))
+        self.assertEqual(list(config.bedienbaar(s)), ["relais"])
+
+    def test_veilige_stand(self):
+        # §5.8 punt 2 en punt 11 (check-config).
+        aan = _toml(BASIS.replace('controls', 'veilige_stand = "aan"\ncontrols') + MULTIPLUS)
+        s = aan.sensoren["kachel"]
+        self.assertEqual((s.veilige_stand, config.actieve_stand(s)), ("aan", "uit"))
+        for waarde in ('"half"', 'true', '1'):
+            self.assertIn("'veilige_stand' moet \"uit\" of \"aan\" zijn", self._fouten(
+                BASIS.replace('controls', f'veilige_stand = {waarde}\ncontrols') + MULTIPLUS))
+        self.assertIn("'veilige_stand' hoort alleen bij een relais", self._fouten(
+            BASIS.replace('naam = "kajuit"', 'naam = "kajuit"\nveilige_stand = "uit"') + MULTIPLUS))
+
+    def test_controls(self):
+        # §5.4.2 punt 8: alleen wat het type levert én wat bij dat type te bedienen is.
+        zonder = BASIS.replace('controls = ["relais"]\n', "")
+        s = _toml(zonder + MULTIPLUS).sensoren["kachel"]
+        self.assertEqual((s.controls, config.bedienbaar(s)), ((), {}))
+        for controls, verwacht in [
+                ('["vermogen"]', "'vermogen' in 'controls' is bij type shelly-relais niet te bedienen; wel: relais"),
+                ('["soc"]', "'soc' in 'controls' wordt door type shelly-relais niet geleverd"),
+                ('["sauna"]', "onbekende grootheid 'sauna' in 'controls'"),
+                ('["relais", "relais"]', "'controls' bevat een naam meer dan eens"),
+                ('"relais"', "'controls' moet een lijst van grootheden zijn")]:
+            with self.subTest(controls=controls):
+                self.assertIn(verwacht, self._fouten(
+                    BASIS.replace('controls = ["relais"]', f"controls = {controls}") + MULTIPLUS))
+        # Een type zonder bedienbare grootheden.
+        self.assertIn("dit type heeft geen bedienbare grootheden", self._fouten(
+            BASIS.replace('naam = "kajuit"', 'naam = "kajuit"\ncontrols = ["temperatuur"]') + MULTIPLUS))
+        # Wat bediend wordt, moet ook gemeten worden.
+        self.assertIn("'relais' staat in 'controls' maar niet in 'grootheden'", self._fouten(
+            BASIS.replace('controls', 'grootheden = ["vermogen"]\ncontrols') + MULTIPLUS))
+
+    def test_een_alarmregel_houdt_zich_aan_controls(self):
+        # Besluit v0.95: een regel mag alleen een relais schakelen dat bediend mag worden.
+        zonder = BASIS.replace('controls = ["relais"]\n', "")
+        fouten = self._fouten(zonder + MULTIPLUS + VORST
+                              + 'actie = [{ type = "relais", relais = "verwarming" }]\n')
+        self.assertIn("actie 'relais': sensor 'verwarming' mag niet bediend worden", fouten)
+        self.assertIn('controls = ["relais"]', fouten)
 
     def test_de_plug_als_eigen_voorwaarde(self):
         # Zonder MultiPlus: de plug ziet zelf of er netspanning is. Op naam of op ID, en
@@ -350,12 +463,8 @@ class TestConfig(unittest.TestCase):
 
 
 # =============================================================================
-# De alarmlaag: de thermostaat
+# De alarmlaag: de verzoeken aan de schakellaag
 # =============================================================================
-
-AAN = RelaisOpdracht("kachel", True, RELAIS_DUUR)
-UIT = RelaisOpdracht("kachel", False)
-
 
 def _regel(**velden) -> Alarmregel:
     """De vorstregel als thermostaat: aan onder 2 °C, uit vanaf 3 °C, zonder melding."""
@@ -365,218 +474,166 @@ def _regel(**velden) -> Alarmregel:
     return Alarmregel(**{**basis, **velden})
 
 
+VERZOEK = [("kachel", "vorst")]
+
+
 class TestAlarmlaag(unittest.TestCase):
-    def _laag(self, *regels, walstroom=1.0):
-        """Een alarmlaag met een kajuitsensor, een tweede sensor, een MultiPlus en de
-        kachel. walstroom: de waarde die de MultiPlus vooraf meldt; None = nog niets."""
+    """De alarmlaag beslist niet meer over het relais (§5.8 punt 8): hij houdt alleen bij
+    welke regels om hun relais vragen. Geen opdrachten aan de Shelly-reader meer."""
+
+    def _laag(self, *regels):
+        """Een alarmlaag met een kajuitsensor, een tweede sensor en de kachel."""
         self.klok = NepKlok()
         sensoren = {MAC: Sensor(MAC, "bthome", "kajuit"),
                     MAC2: Sensor(MAC2, "bthome", "vooronder"),
                     MULTI: Sensor(MULTI, "victron-multiplus", "multiplus"),
                     "kachel": KACHEL}
         cfg = Config(MqttConfig(), OpslagConfig("x"), sensoren, alarmen=tuple(regels or (_regel(),)))
-        laag = Alarmlaag(cfg, klok=self.klok, tijd=lambda: 1_800_000_000.4)
-        if walstroom is not None:
-            self._wal(laag, walstroom)
-        return laag
+        return Alarmlaag(cfg, klok=self.klok, tijd=lambda: 1_800_000_000.4)
 
     def _meet(self, laag, waarde, sensor_id=MAC, grootheid="temperatuur"):
-        """Eén meting; geeft alleen de opdrachten aan het relais terug."""
-        return [x for x in laag.bij_meting(maak(1, sensor_id, grootheid, waarde))
-                if isinstance(x, RelaisOpdracht)]
+        """Eén meting; geeft de verzoeken die daarna gelden."""
+        laag.bij_meting(maak(1, sensor_id, grootheid, waarde))
+        return laag.verzoeken()
 
-    def _wal(self, laag, waarde):
-        return self._meet(laag, waarde, MULTI, "walstroom")
+    def test_bericht_als_json(self):
+        # Het bericht bevat de hele lijst, en de schakellaag kan het lezen (§3.3).
+        tekst = alarms.verzoek_json(1_800_000_000, VERZOEK)
+        self.assertEqual(json.loads(tekst), {"ts": 1_800_000_000, "bron": "alarm",
+                                             "verzoeken": [{"sensor_id": "kachel", "alarm_id": "vorst"}]})
+        self.assertEqual(schakel.lees_verzoek(tekst.encode()), VERZOEK)
+        self.assertEqual(schakel.lees_verzoek(alarms.verzoek_json(1, []).encode()), [])
+        self.assertEqual(alarms.TOPIC_VERZOEK, "brms/opdracht/schakel/verzoek")
+        # De grens voor "de sensor levert nog waarden" is de terugschakeltijd (2 minuten).
+        self.assertEqual(RELAIS_DUUR, 120.0)
 
-    def _tik(self, laag):
-        return [x for x in laag.tik() if isinstance(x, RelaisOpdracht)]
-
-    def test_opdracht_als_json(self):
-        # De uitschakeltijd is 2 minuten, de herhaling 1 minuut (besluit OPEN-36).
-        self.assertEqual((RELAIS_DUUR, RELAIS_HERHAAL), (120.0, 60.0))
-        self.assertEqual(json.loads(AAN.naar_json()), {"sensor_id": "kachel", "aan": True, "duur": 120.0})
-        self.assertEqual(json.loads(UIT.naar_json()), {"sensor_id": "kachel", "aan": False})
-        # Wat de alarmlaag stuurt, kan de Shelly-reader lezen.
-        self.assertEqual(shelly.lees_zet(AAN.naar_json().encode()), ("kachel", True, 120.0))
-
-    def test_uit_bij_de_start(self):
-        # Na een herstart is er geen actief alarm: elk relais krijgt "uit" (§5.2.6 punt 6).
+    def test_geen_verzoek_bij_de_start(self):
+        # Na een herstart is er geen actief alarm: de lijst is leeg (§5.8 punt 3).
         laag = self._laag()
-        self.assertEqual(laag.relais_stand(), [UIT])
-        # Heeft een alarm het relais aangezet, dan is de stand "aan" (voor de Shelly-reader
-        # die er bij zijn start om vraagt), en begint de herhaling opnieuw te tellen.
-        self.assertEqual(self._meet(laag, 1.5), [AAN])
-        self.klok.t += RELAIS_HERHAAL - 1
-        self.assertEqual(laag.relais_stand(), [AAN])
-        self.klok.t += 1
-        self._wal(laag, 1.0)
-        self.assertEqual(self._meet(laag, 1.4), [])          # nog niet aan de beurt
-        self.klok.t += RELAIS_HERHAAL - 1
-        self.assertEqual(self._tik(laag), [AAN])
+        self.assertTrue(laag.schakelt)
+        self.assertEqual(laag.verzoeken(), [])
 
-    def test_de_service_geeft_de_stand_bij_de_start_en_op_verzoek(self):
-        """De service-lus geeft "uit" bij de start, en de stand opnieuw als de
-        Shelly-reader erom vraagt (bij zijn eigen start, §5.2.6 punt 6)."""
+    def test_verzoek_bij_alarm_en_ingetrokken_bij_herstel(self):
+        laag = self._laag()
+        self.assertEqual(self._meet(laag, 4.0), [])
+        self.assertEqual(self._meet(laag, 1.5), VERZOEK)
+        # Tussen de grens en de herstelgrens blijft het verzoek staan (de hysterese).
+        self.assertEqual(self._meet(laag, 2.5), VERZOEK)
+        self.assertEqual(self._meet(laag, 3.0), [])
+        # De alarmlaag geeft zelf geen opdrachten meer: alleen gebeurtenissen voor de bus.
+        uit = laag.bij_meting(maak(1, MAC, "temperatuur", 1.5))
+        self.assertEqual([type(x).__name__ for x in uit], ["Gebeurtenis"])
+
+    def test_de_walstroom_doet_er_hier_niet_toe(self):
+        # De voorwaarde van het relais beoordeelt de schakellaag (§5.8 punt 4): de
+        # alarmlaag vraagt, ook zonder walstroom.
+        laag = self._laag()
+        self._meet(laag, 0.0, MULTI, "walstroom")
+        self.assertEqual(self._meet(laag, 1.5), VERZOEK)
+
+    def test_stille_sensor_trekt_het_verzoek_in(self):
+        laag = self._laag()
+        self.assertEqual(self._meet(laag, 1.5), VERZOEK)
+        # De kajuitsensor zwijgt. Het alarm blijft actief (geen data is geen herstel), maar
+        # het verzoek vervalt zodra de laatste waarde zo oud is als de terugschakeltijd.
+        self.klok.t += RELAIS_DUUR - 1
+        self.assertEqual(laag.verzoeken(), VERZOEK)
+        self.klok.t += 1
+        self.assertEqual(laag.verzoeken(), [])
+        self.assertEqual(laag.actief(), [["vorst", MAC]])
+        # Levert de sensor weer een waarde onder de herstelgrens, dan vraagt de regel weer.
+        self.assertEqual(self._meet(laag, 1.2), VERZOEK)
+
+    def test_regel_uitzetten_trekt_het_verzoek_in(self):
+        laag = self._laag()
+        self.assertEqual(self._meet(laag, 1.5), VERZOEK)
+        laag.schakel("vorst", False)
+        self.assertEqual(laag.verzoeken(), [])
+        # Weer aan: de beoordeling begint opnieuw, en bij de volgende lage waarde vraagt de
+        # regel weer om zijn relais.
+        laag.schakel("vorst", True)
+        self.assertEqual(laag.verzoeken(), [])
+        self.assertEqual(self._meet(laag, 1.5), VERZOEK)
+
+    def test_een_van_meer_sensoren_is_genoeg(self):
+        laag = self._laag(_regel(sensoren=(MAC, MAC2)))
+        self.assertEqual(self._meet(laag, 1.5, MAC2), VERZOEK)
+        self.assertEqual(self._meet(laag, 1.0, MAC), VERZOEK)     # één verzoek, niet twee
+        self.assertEqual(self._meet(laag, 5.0, MAC2), VERZOEK)    # de kajuit is nog te koud
+        self.assertEqual(self._meet(laag, 5.0, MAC), [])
+
+    def test_twee_regels_op_hetzelfde_relais(self):
+        laag = self._laag(_regel(), _regel(id="nacht", naam="Nacht", onder=5.0, herstel=6.0))
+        self.assertEqual(self._meet(laag, 4.0), [("kachel", "nacht")])
+        self.assertEqual(self._meet(laag, 1.5), [("kachel", "nacht"), ("kachel", "vorst")])
+
+    def test_duur_van_de_regel_geldt_ook_voor_het_verzoek(self):
+        # Het verzoek volgt het alarm: pas als de voorwaarde de duur heeft gegolden.
+        laag = self._laag(_regel(duur=900))
+        self.assertEqual(self._meet(laag, 1.5), [])
+        self.klok.t += 900
+        self.assertEqual(self._meet(laag, 1.5), VERZOEK)
+
+    def test_zonder_relais_verandert_er_niets(self):
+        laag = self._laag(_regel(relais=None))
+        self.assertFalse(laag.schakelt)
+        self.assertEqual(self._meet(laag, 1.5), [])
+
+    def test_de_service_stuurt_de_lijst_bij_de_start_bij_verandering_en_op_verzoek(self):
+        """De service-lus stuurt de hele lijst: bij de start (leeg), bij een verandering,
+        en opnieuw als de schakellaag om de stand vraagt (bij zijn eigen start, §5.8
+        punt 7)."""
         from unittest import mock
-        from brms import alarms, melding
+        from brms import melding
 
         class Bus(NepBus):
             def __init__(self):
                 super().__init__()
                 self.callbacks = {}
+                self.q = None
 
             def wachtrij(self, topic, qos):
-                return asyncio.Queue()
+                self.q = asyncio.Queue()
+                return self.q
 
             def abonneer(self, topic, qos, callback):
                 self.callbacks[topic] = callback
 
-        sensoren = {MAC: Sensor(MAC, "bthome", "kajuit"),
-                    MULTI: Sensor(MULTI, "victron-multiplus", "multiplus"), "kachel": KACHEL}
+        sensoren = {MAC: Sensor(MAC, "bthome", "kajuit"), "kachel": KACHEL}
         cfg = Config(MqttConfig(), OpslagConfig("x"), sensoren, alarmen=(_regel(),))
         bus = Bus()
+
+        def gestuurd():
+            return [b[1]["verzoeken"] for b in bus.berichten if b[0] == alarms.TOPIC_VERZOEK]
 
         async def proef():
             stop = asyncio.Event()
             taak = asyncio.create_task(alarms.draai(cfg, bus, stop))
             await asyncio.sleep(0.3)
-            eerst = [b for b in bus.berichten if b[0] == alarms.TOPIC_RELAIS_ZET]
-            # Het verzoek van de Shelly-reader (in het echt vanuit de thread van paho).
-            vraag = alarms.TOPIC_RELAIS_STAND_VRAAG
+            eerst = gestuurd()
+            # Het wordt koud: het alarm gaat af.
+            koud = maak(1, MAC, "temperatuur", 1.0)
+            bus.q.put_nowait((koud.topic(), koud.naar_json().encode()))
+            await asyncio.sleep(0.3)
+            dan = gestuurd()
+            # De schakellaag start en vraagt om de stand (in het echt vanuit de thread van paho).
+            vraag = alarms.TOPIC_STAND_VRAAG
             bus.callbacks[vraag](vraag, b'{"ts": 1}')
             await asyncio.sleep(1.5)
             stop.set()
             await asyncio.wait_for(taak, 5)
-            return eerst
+            return eerst, dan
 
         with mock.patch.object(melding, "kanalen", lambda c: {}), \
                 self.assertLogs("brms.alarms", "INFO") as log:
-            eerst = asyncio.run(proef())
-        uit = ("brms/opdracht/relais/zet", {"sensor_id": "kachel", "aan": False})
-        self.assertEqual(eerst, [uit])
-        self.assertEqual([b for b in bus.berichten if b[0] == alarms.TOPIC_RELAIS_ZET], [uit, uit])
-        # Eén regel in het log, niet twee.
-        self.assertEqual(sum("start: relais uit (kachel)" in r for r in log.output), 1)
-
-    def test_aan_bij_alarm_en_uit_bij_herstel(self):
-        laag = self._laag()
-        self.assertEqual(self._meet(laag, 4.0), [])
-        self.assertEqual(self._meet(laag, 1.5), [AAN])
-        # Tussen de grens en de herstelgrens blijft de kachel aan (de hysterese).
-        self.assertEqual(self._meet(laag, 2.5), [])
-        self.assertEqual(self._meet(laag, 3.0), [UIT])
-        self.assertEqual(self._meet(laag, 3.5), [])
-
-    def test_aan_wordt_elke_minuut_herhaald(self):
-        laag = self._laag()
-        self.assertEqual(self._meet(laag, 1.5), [AAN])
-        self.klok.t += RELAIS_HERHAAL - 1
-        self._wal(laag, 1.0)
-        self.assertEqual(self._meet(laag, 1.4), [])
-        self.klok.t += 1
-        self.assertEqual(self._tik(laag), [AAN])
-        self.assertEqual(self._tik(laag), [])
-        # De herhaling komt ruim binnen de uitschakeltijd van de Shelly.
-        self.assertLess(RELAIS_HERHAAL, RELAIS_DUUR)
-
-    def test_stille_sensor_zet_het_relais_uit(self):
-        laag = self._laag()
-        self.assertEqual(self._meet(laag, 1.5), [AAN])
-        # De MultiPlus blijft melden, de kajuitsensor zwijgt. Het alarm blijft actief (geen
-        # data is geen herstel), maar het relais gaat uit.
-        opdrachten = []
-        for _ in range(3):
-            self.klok.t += RELAIS_DUUR / 3
-            opdrachten += self._wal(laag, 1.0)
-        # Onderweg één herhaling van "aan" (na een minuut), en "uit" zodra de laatste
-        # waarde van de sensor zo oud is als de uitschakeltijd.
-        self.assertEqual(opdrachten, [AAN, UIT])
-        self.assertEqual(self._tik(laag), [])
-        self.assertEqual(laag.actief(), [["vorst", MAC]])
-        # Levert de sensor weer een waarde onder de herstelgrens, dan gaat het weer aan.
-        self.assertEqual(self._meet(laag, 1.2), [AAN])
-
-    def test_alleen_met_walstroom(self):
-        laag = self._laag(walstroom=0.0)
-        with self.assertLogs("brms.alarms", "INFO") as log:
-            self.assertEqual(self._meet(laag, 1.5), [])
-        self.assertIn("blijft uit: multiplus.walstroom is 0, niet 1", "\n".join(log.output))
-        # Het alarm zelf hangt niet van de walstroom af.
-        self.assertEqual(laag.actief(), [["vorst", MAC]])
-        # De walstroom komt terug terwijl het alarm nog actief is: aan. Valt hij weer weg:
-        # direct uit.
-        self.assertEqual(self._wal(laag, 1.0), [AAN])
-        self.assertEqual(self._wal(laag, 0.0), [UIT])
-
-    def test_walstroom_onbekend_is_uit(self):
-        # Nog geen enkele waarde van de MultiPlus.
-        laag = self._laag(walstroom=None)
-        self.assertEqual(self._meet(laag, 1.5), [])
-        self.assertEqual(self._wal(laag, 1.0), [AAN])
-        # De MultiPlus valt stil: na de uitschakeltijd is de walstroom weer onbekend.
-        self.klok.t += RELAIS_DUUR
-        self.assertEqual(self._meet(laag, 1.4), [UIT])
-
-    def test_walstroom_van_een_andere_sensor_telt_niet(self):
-        # Alleen een sensor die volgens de configuratie 'walstroom' levert.
-        laag = self._laag(walstroom=None)
-        self._meet(laag, 1.0, MAC2, "walstroom")
-        self.assertEqual(self._meet(laag, 1.5), [])
-
-    def _eigen_laag(self, voorwaarde, *extra):
-        """Een alarmlaag met de kajuitsensor en een plug met de gegeven voorwaarde."""
-        plug = Sensor("kachel", "shelly-relais", "kachel", adres="x", voorwaarde=voorwaarde)
-        self.klok = NepKlok()
-        sensoren = {MAC: Sensor(MAC, "bthome", "kajuit"), "kachel": plug,
-                    **{s.id: s for s in extra}}
-        cfg = Config(MqttConfig(), OpslagConfig("x"), sensoren, alarmen=(_regel(),))
-        return Alarmlaag(cfg, klok=self.klok, tijd=lambda: 1_800_000_000.4)
-
-    def test_de_plug_als_eigen_voorwaarde(self):
-        # Zonder MultiPlus (§5.2.6 punt 5): de voorwaarde kijkt naar de walstroom van de
-        # plug zelf.
-        laag = self._eigen_laag((("kachel", "walstroom", 1.0),))
-        self.assertEqual(self._meet(laag, 1.5), [])                       # nog onbekend
-        self.assertEqual(self._meet(laag, 1.0, "kachel", "walstroom"), [AAN])
-        self.assertEqual(self._meet(laag, 0.0, "kachel", "walstroom"), [UIT])
-
-    def test_alle_voorwaarden_moeten_gelden(self):
-        laag = self._eigen_laag(((MULTI, "walstroom", 1.0), ("kachel", "walstroom", 1.0)),
-                                Sensor(MULTI, "victron-multiplus", "multiplus"))
-        self._meet(laag, 1.5)
-        self.assertEqual(self._wal(laag, 1.0), [])
-        self.assertEqual(self._meet(laag, 1.0, "kachel", "walstroom"), [AAN])
-        self.assertEqual(self._wal(laag, 0.0), [UIT])
-
-    def test_regel_uitzetten_zet_het_relais_uit(self):
-        laag = self._laag()
-        self.assertEqual(self._meet(laag, 1.5), [AAN])
-        uit = laag.schakel("vorst", False)
-        self.assertIn(UIT, uit)
-        # Weer aan: de beoordeling begint opnieuw, en bij de volgende lage waarde gaat de
-        # kachel weer aan.
-        self.assertEqual([x for x in laag.schakel("vorst", True) if isinstance(x, RelaisOpdracht)], [])
-        self.assertEqual(self._meet(laag, 1.5), [AAN])
-
-    def test_een_van_meer_sensoren_is_genoeg(self):
-        laag = self._laag(_regel(sensoren=(MAC, MAC2)))
-        self.assertEqual(self._meet(laag, 1.5, MAC2), [AAN])
-        self.assertEqual(self._meet(laag, 1.0, MAC), [])      # staat al aan
-        self.assertEqual(self._meet(laag, 5.0, MAC2), [])     # de kajuit is nog te koud
-        self.assertEqual(self._meet(laag, 5.0, MAC), [UIT])
-
-    def test_duur_van_de_regel_geldt_ook_voor_het_relais(self):
-        # Het relais volgt het alarm: pas aan als de voorwaarde de duur heeft gegolden.
-        laag = self._laag(_regel(duur=900))
-        self.assertEqual(self._meet(laag, 1.5), [])
-        self.klok.t += 900
-        self._wal(laag, 1.0)
-        self.assertEqual(self._meet(laag, 1.5), [AAN])
-
-    def test_zonder_relais_verandert_er_niets(self):
-        laag = self._laag(_regel(relais=None))
-        self.assertEqual(self._meet(laag, 1.5), [])
-        self.assertEqual(self._tik(laag), [])
+            eerst, dan = asyncio.run(proef())
+        verzoek = [{"sensor_id": "kachel", "alarm_id": "vorst"}]
+        self.assertEqual(eerst, [[]])
+        self.assertEqual(dan, [[], verzoek])
+        self.assertEqual(gestuurd(), [[], verzoek, verzoek])
+        # De verandering staat één keer in het log; de herhaling niet.
+        self.assertEqual(sum("verzoeken aan de schakellaag: kachel (regel vorst)" in r
+                             for r in log.output), 1)
 
 
 if __name__ == "__main__":

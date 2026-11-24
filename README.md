@@ -21,11 +21,12 @@ the documentation are in Dutch.*
 - **Alarmeren** – eigen alarmregels met grens, duur en herstel; meldingen via Telegram en
   e-mail, desgewenst met een foto van het moment.
 - **Schakelen** – een elektrische kachel bij vorst, via een tussenstekker (Shelly Plug M
-  Gen3); alleen met walstroom, en de stekker schakelt zelf uit als BRMS wegvalt.
+  Gen3); alleen met walstroom, en de stekker schakelt zelf uit als BRMS wegvalt. Vanzelf
+  door een alarmregel, of met de hand met een schuifknop in het web (AUTO / AAN).
 - **Kijken** – webinterface met grafieken (live en historisch), opnames van de camera's,
-  live-beeld en een logboek van het systeem. Desgewenst met een bootpagina als eerste
-  pagina: je eigen tekening van de boot (SVG) met op elke plek de actuele waarde. Licht
-  en donker thema, ook bruikbaar op een telefoon.
+  live-beeld en een logboek van het systeem. Desgewenst met de pagina Overzicht als eerste
+  pagina: je eigen tekeningen (SVG), elk op een tab, met op elke plek de actuele waarde.
+  Licht en donker thema, ook bruikbaar op een telefoon.
 - **Onbeheerd draaien** – eigen Python-code met weinig afhankelijkheden, systemd-services
   die vanzelf herstarten, geen clouddienst nodig, niets open op internet.
 
@@ -33,16 +34,16 @@ the documentation are in Dutch.*
 
 De schermafdrukken tonen de echte webinterface met gesimuleerde metingen.
 
-**Boot** – je eigen tekening van de boot, met op elke plek de actuele waarde: temperatuur
+**Overzicht** – je eigen tekening van de boot, met op elke plek de actuele waarde: temperatuur
 per ruimte, laadtoestand van de accu, de bilgepomp, spanning en vermogen van de kachels en
 de slagzij. Een waarde met een actief alarm staat rood en vet (hier: 6° slagzij over
 bakboord); een sensor die zwijgt toont `--`. Een klik op een waarde opent de grafiek ervan.
 
-![Bootpagina: tekening van de boot met de actuele waarden](docs/screenshots/boot.png)
+![Overzicht: tekening van de boot met de actuele waarden](docs/screenshots/boot.png)
 
 #### Je eigen tekening
 
-De bootpagina gebruikt je eigen tekening: BRMS levert er geen mee. Zo maak je haar:
+De pagina Overzicht gebruikt je eigen tekening: BRMS levert er geen mee. Zo maak je haar:
 
 1. **Teken de boot** in een programma naar keuze en sla de tekening op als SVG. Een dia
    uit PowerPoint werkt goed (Opslaan als → SVG): een plattegrond of foto van de boot als
@@ -51,15 +52,26 @@ De bootpagina gebruikt je eigen tekening: BRMS levert er geen mee. Zo maak je ha
    tekstvak met `sensor.grootheid`: de naam van de sensor uit `brms.toml`, een punt en de
    grootheid. Bijvoorbeeld `kajuit.temperatuur`, `accu.soc`, `bilge.bilgepomp` of
    `kachel.vermogen`. Hoofdletters tellen niet mee. Welke grootheden een sensor levert,
-   toont `brms grootheden <type>`.
+   toont `brms grootheden <type>`. Met `.RW` erachter (`kachel.relais.RW`) komt op die
+   plek de bediening van een relais: een schuifknop AUTO / AAN met een stip voor de
+   werkelijke stand. Dat werkt alleen als de sensor in `brms.toml` de regel
+   `controls = ["relais"]` heeft.
 3. **Zet het bestand op de Pi**, in de map `config/` naast `brms.toml`, bijvoorbeeld vanaf
    je pc met `scp boot.svg brms:BRMS/config/`.
-4. **Zet de bootpagina aan** met twee regels in `brms.toml`, en herstart één keer met
+4. **Zet de pagina aan** met twee regels in `brms.toml`, en herstart één keer met
    `brms herstart`:
 
    ```toml
    [boot]
    tekening = "boot.svg"     # het bestand staat naast brms.toml
+   ```
+
+   Met een lijst krijgt elke tekening een eigen tab, in de volgorde van de lijst; de tab
+   heet naar het bestand zonder `.svg`:
+
+   ```toml
+   [boot]
+   tekening = ["Privateer.svg", "Victron.svg"]
    ```
 
 BRMS haalt de teksten `sensor.grootheid` uit de tekening en zet op de plek van de eerste

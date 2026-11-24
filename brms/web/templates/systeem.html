@@ -1,13 +1,21 @@
 {#
   Systeempagina van BRMS (ARCHITECTURE.md §5.6 "Systeempagina", §5.5.5).
 
-  Van boven naar beneden:
-    1. Services    of elke BRMS-service en Mosquitto draait, sinds wanneer, en hoe vaak
-                   systemd hem opnieuw heeft gestart (/api/systeem);
-    2. Herstarten  alle BRMS-services, of de hele Pi – na een bevestiging;
+  Van boven naar beneden (de volgorde van besluit OPEN-41, v0.99):
+    1. Opslag      de schijfruimte (/api/systeem);
+    2. Sensoren en actuators
+                   per sensor uit brms.toml een kleine tegel: de naam, een stip met "live"
+                   (groen) of "not_avail" (rood), het tijdstip van de laatste communicatie,
+                   en een knop die een venster opent met alle grootheden van die sensor en
+                   hun laatst bekende waarde. Een grootheid die te bedienen is (ze staat
+                   in `controls` van de sensor, §5.4.2 punt 8), heeft in dat venster haar
+                   bediening: de schuifknop van een relais, of een invoerveldje
+                   (/api/sensoren, elke 5 s; de bediening staat in static/bediening.js);
     3. Logboek     de waarschuwingen en fouten van de services en de kernel, uit journald
                    (/api/logboek);
-    4. Opslag      de schijfruimte.
+    4. Services    of elke BRMS-service en Mosquitto draait, sinds wanneer, en hoe vaak
+                   systemd hem opnieuw heeft gestart (/api/systeem);
+    5. Herstarten  alle BRMS-services, of de hele Pi – na een bevestiging.
 
   Herstarten: de webservice vraagt het aan systemd; een polkit-regel staat dat toe
   (deploy/polkit/50-brms.rules). "Herstart BRMS" controleert eerst brms.toml; staat daar
@@ -34,6 +42,33 @@
   .service .naam { font-weight: 600; display: flex; align-items: center; gap: 8px; }
   .service .naam span { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
   .service .bij { color: var(--zacht); font-size: 13px; }
+  /* De sensoren en actuators: kleine tegels, smaller dan die van de services. */
+  #sensoren { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 8px; }
+  #sensoren p { grid-column: 1 / -1; margin: 0; }
+  .sensor { border: 1px solid var(--rand); border-radius: 10px; padding: 6px 6px 6px 10px; }
+  .sensor .naam { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .sensor .naam span { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* De knop die het venster met de grootheden opent: klein, alleen een pictogram. */
+  .sensor .meer { flex: none; width: 30px; height: 30px; min-height: 0; padding: 0;
+                  display: inline-flex; align-items: center; justify-content: center; }
+  .sensor .meer svg.icoon { width: 17px; height: 17px; }
+  .sensor .bij { display: flex; align-items: center; gap: 6px; font-size: 13px;
+                 color: var(--zacht); font-variant-numeric: tabular-nums; }
+  /* De stip met het woord: groen "live", rood "not_avail". */
+  .leeft { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; }
+  .leeft i { width: 10px; height: 10px; border-radius: 50%; background: var(--as); flex: none; }
+  .leeft.goed { color: var(--goed); }
+  .leeft.goed i { background: var(--goed); }
+  .leeft.fout { color: var(--fout); }
+  .leeft.fout i { background: var(--fout); }
+  /* Het venster met de grootheden van één sensor: breder dan het bevestigingsvenster,
+     omdat er een tabel in staat. */
+  #venster { max-width: min(580px, 94vw); width: 580px; }
+  #venster table { margin-bottom: 12px; }
+  /* Een waarde met haar eenheid blijft op één regel ("1482,3 W"). */
+  #venster td { vertical-align: middle; white-space: nowrap; }
+  #venster-fout { color: var(--fout); }
+  #venster-fout:empty, #venster-schakel:empty { display: none; }
   /* Het logboek. */
   #logboek td.tekst { word-break: break-word; }
   #logboek tr.fout td.tekst { color: var(--fout); }
@@ -48,6 +83,19 @@
   .meter.vol i { background: var(--fout); }
   dialog ul { margin: 0 0 14px; padding-left: 20px; color: var(--fout); }
   @media (max-width: 640px) {
+    /* Het venster met de grootheden op een telefoon: vier kolommen passen niet. Elke regel
+       wordt een eigen raster: de grootheid, de waarde en de tijd naast elkaar, en de
+       bediening (als die er is) op een eigen regel eronder. De kolomkoppen vervallen. */
+    #venster { padding: 14px 14px; }
+    #venster thead { display: none; }
+    #venster table, #venster tbody { display: block; }
+    #venster tr { display: grid; grid-template-columns: 1fr auto 64px; column-gap: 10px;
+                  align-items: center; padding: 7px 0; border-bottom: 1px solid var(--raster); }
+    #venster tr:last-child { border-bottom: none; }
+    #venster td { border: none; padding: 0; }
+    #venster td.tijd { text-align: right; color: var(--zacht); font-size: 13px; }
+    #venster td.bedien { grid-column: 1 / -1; padding-top: 5px; }
+    #venster td.bedien:empty { display: none; }
     #logboek td.tekst { padding-top: 3px; }
     .herstart button { flex: 1 1 100%; }
     /* Smal scherm: de twee filters elk op een eigen regel; daaronder de keuzelijst, die
@@ -63,19 +111,17 @@
 {% block inhoud %}
   <p id="status"></p>
 
+  {# De volgorde van de blokken is die van besluit OPEN-41 (v0.99): Opslag, Sensoren en
+     actuators, Logboek, Services, Herstarten. #}
   <section class="blok">
-    <h2>Services</h2>
-    <div id="services"><p class="zacht">Wordt opgehaald…</p></div>
+    <h2>Opslag</h2>
+    <div id="schijf"><p class="zacht">Wordt opgehaald…</p></div>
   </section>
 
   <section class="blok">
-    <h2>Herstarten</h2>
-    <div class="rij herstart">
-      <button id="herstart-brms" title="Alle BRMS-services opnieuw starten, bijvoorbeeld na een wijziging van brms.toml">Herstart BRMS</button>
-      <button id="herstart-pi" class="gevaar" title="De hele Pi opnieuw opstarten">Herstart de Pi</button>
-    </div>
-    <p class="zacht klein" style="margin: 0">“Herstart BRMS” controleert eerst de configuratie en start dan alle
-      services opnieuw; dat duurt enkele seconden. “Herstart de Pi” start het hele systeem opnieuw op.</p>
+    <h2>Sensoren en actuators</h2>
+    {# De tegels worden door het script gemaakt, één per sensor uit brms.toml. #}
+    <div id="sensoren"><p class="zacht">Wordt opgehaald…</p></div>
   </section>
 
   <section class="blok">
@@ -118,9 +164,34 @@
   </section>
 
   <section class="blok">
-    <h2>Opslag</h2>
-    <div id="schijf"><p class="zacht">Wordt opgehaald…</p></div>
+    <h2>Services</h2>
+    <div id="services"><p class="zacht">Wordt opgehaald…</p></div>
   </section>
+
+  <section class="blok">
+    <h2>Herstarten</h2>
+    <div class="rij herstart">
+      <button id="herstart-brms" title="Alle BRMS-services opnieuw starten, bijvoorbeeld na een wijziging van brms.toml">Herstart BRMS</button>
+      <button id="herstart-pi" class="gevaar" title="De hele Pi opnieuw opstarten">Herstart de Pi</button>
+    </div>
+    <p class="zacht klein" style="margin: 0">“Herstart BRMS” controleert eerst de configuratie en start dan alle
+      services opnieuw; dat duurt enkele seconden. “Herstart de Pi” start het hele systeem opnieuw op.</p>
+  </section>
+
+  <!-- Het venster met alle grootheden van één sensor (§5.6 systeempagina punt 5): de
+       laatst bekende waarde en haar tijdstip, en bij een grootheid die te bedienen is de
+       bediening. De kolom "Bediening" staat er alleen bij een actuator. -->
+  <dialog id="venster">
+    <h2 id="venster-kop"></h2>
+    <p id="venster-bij" class="zacht klein"></p>
+    <table>
+      <thead><tr><th>Grootheid</th><th class="getal">Waarde</th><th>Tijd</th><th id="venster-kolom">Bediening</th></tr></thead>
+      <tbody id="venster-regels"></tbody>
+    </table>
+    <p id="venster-schakel" class="zacht klein"></p>
+    <p id="venster-fout" class="klein"></p>
+    <div class="rij"><button id="venster-sluit">Sluiten</button></div>
+  </dialog>
 
   <!-- De bevestiging vóór een herstart. -->
   <dialog id="zeker">
@@ -141,8 +212,16 @@
 {% endblock %}
 
 {% block script %}
+{# De schuifknop en het invoerveldje (gedeeld met de pagina Overzicht). #}
+<script src="{{ url_for('static', filename='bediening.js') }}?v={{ versie }}"></script>
 <script>
 const el = id => document.getElementById(id);
+// Uit de configuratie van de Pi: de sensoren met de grootheden die ze leveren en wat
+// daarvan te bedienen is (`controls`), en per grootheid de eenheid, de soort en het aantal
+// decimalen (§5.3.3). Voor het blok "Sensoren en actuators".
+const SENSOREN = {{ sensoren | tojson }};
+const GROOTHEDEN = {{ grootheden | tojson }};
+const SENSOR_INTERVAL = 5000;  // ms tussen twee keer verversen van dat blok (§5.6 punt 5)
 // Het starttijdstip van de webservice waar deze pagina vandaan komt; na een herstart is
 // het anders, en daaraan ziet de pagina dat de herstart klaar is.
 const GESTART = {{ gestart | tojson }};
@@ -227,6 +306,166 @@ function toonSchijf(s) {
   vak.append(maak("div", "zacht klein", "Daarvan: database " + grootte(s.database)
     + " · opnames " + grootte(s.opnames)));
 }
+
+// --- sensoren en actuators ----------------------------------------------------------------
+// (§5.6 systeempagina punt 5.) Per sensor een tegel; de tegels worden één keer gemaakt uit
+// de configuratie en daarna elke 5 s bijgewerkt met het antwoord van /api/sensoren. Een
+// klik op de knop van een tegel opent het venster met alle grootheden van die sensor.
+const klok = ts => {
+  const d = new Date(ts * 1000);
+  return twee(d.getHours()) + ":" + twee(d.getMinutes()) + ":" + twee(d.getSeconds());
+};
+// Een waarde zoals ze in het venster staat, op dezelfde manier als op de pagina
+// Overzicht: een toestand als "aan" of "uit", een grootheid met een kant als "2° bb" (de
+// slagzij), en anders het getal met het vaste aantal decimalen en de eenheid (§5.3.3).
+function waardeTekst(grootheid, w) {
+  const g = GROOTHEDEN[grootheid];
+  const getal = x => Number(x).toLocaleString("nl-NL", {minimumFractionDigits: g.decimalen,
+                                                         maximumFractionDigits: g.decimalen, useGrouping: false});
+  if (g.soort === "toestand") return w ? "aan" : "uit";
+  if (!g.zijden) return getal(w) + " " + g.eenheid;
+  if (Math.abs(w) < 0.5 * Math.pow(10, -g.decimalen)) return getal(0) + "°";
+  return getal(Math.abs(w)) + "° " + (w > 0 ? g.zijden[0] : g.zijden[1]);
+}
+
+// Het pictogram van de knop op een tegel: een lijstje (drie regels met een punt ervoor).
+const LIJST_ICOON = '<svg class="icoon" viewBox="0 0 24 24" aria-hidden="true">'
+                  + '<path d="M9 7h11M9 12h11M9 17h11M4.5 7h.01M4.5 12h.01M4.5 17h.01"/></svg>';
+
+const tegels = new Map();   // sensor-ID -> {leeft, tijd}: de delen van de tegel die veranderen
+let sensorstand = null;     // het laatste antwoord van /api/sensoren
+let venster = null;         // het open venster: {sensor, rijen: [{naam, waarde, tijd, bediening}]}
+
+function maakTegels() {
+  const vak = el("sensoren");
+  vak.replaceChildren();
+  if (!SENSOREN.length) vak.append(maak("p", "zacht", "Er staan geen sensoren in brms.toml."));
+  for (const s of SENSOREN) {
+    const tegel = maak("div", "sensor");
+    const naam = maak("div", "naam");
+    const meer = maak("button", "meer");
+    meer.type = "button";
+    meer.title = "Alle grootheden van " + s.naam
+                 + (Object.keys(s.controls).length ? ", met de bediening" : "");
+    meer.setAttribute("aria-label", meer.title);
+    meer.innerHTML = LIJST_ICOON;       // een vaste tekst uit deze pagina, geen invoer
+    meer.addEventListener("click", () => openVenster(s));
+    naam.append(maak("span", "", s.naam), meer);
+    naam.firstChild.title = s.naam + " (" + s.type + ", " + s.id + ")";
+    const bij = maak("div", "bij");
+    const leeft = maak("span", "leeft"), tijd = maak("span", "", "--");
+    leeft.append(document.createElement("i"), "…");
+    bij.append(leeft, tijd);
+    tegel.append(naam, bij);
+    vak.append(tegel);
+    tegels.set(s.id, {leeft, tijd});
+  }
+}
+
+async function laadSensoren() {
+  try {
+    const a = await fetch("/api/sensoren");
+    if (!a.ok) throw new Error("fout " + a.status);
+    sensorstand = await a.json();
+    toonSensoren();
+  } catch (e) {
+    // De rest van de pagina meldt een verbroken verbinding al (laadSysteem); hier alleen
+    // het venster, als dat open staat.
+    if (venster) el("venster-fout").textContent = "De waarden konden niet worden opgehaald (" + e.message + ").";
+  }
+}
+
+function toonSensoren() {
+  for (const s of sensorstand.sensoren) {
+    const t = tegels.get(s.id);
+    if (!t) continue;
+    // De stip met het woord: live (groen) of not_avail (rood). Live = een meting in de
+    // laatste minuten en geen actief alarm "sensor stil" (zie api_sensoren).
+    t.leeft.className = "leeft " + (s.live ? "goed" : "fout");
+    t.leeft.lastChild.textContent = s.live ? "live" : "not_avail";
+    t.leeft.title = s.live ? "Er komen metingen binnen"
+      : "Geen meting in de laatste " + Math.round(sensorstand.stil_na / 60) + " minuten, of het alarm \"sensor stil\" is actief";
+    // De laatste communicatie: het tijdstip van de laatste meting op de bus.
+    t.tijd.textContent = s.ts === null ? "--" : klok(s.ts);
+    t.tijd.title = s.ts === null ? "Nog geen meting sinds de start van de webservice"
+                                 : "Laatste meting: " + moment(s.ts, true);
+  }
+  if (venster) toonVenster();
+}
+
+// Opent het venster van één sensor. De regels worden één keer gemaakt (één per grootheid)
+// en daarna bij elke verversing bijgewerkt: zo blijft een invoerveldje waarin de
+// gebruiker typt gewoon staan.
+function openVenster(s) {
+  const actuator = Object.keys(s.controls).length > 0;
+  el("venster-kop").textContent = s.naam;
+  el("venster-bij").textContent = (actuator ? "Actuator" : "Sensor") + " van het type " + s.type + " · " + s.id;
+  el("venster-kolom").hidden = !actuator;
+  el("venster-fout").textContent = el("venster-schakel").textContent = "";
+  const tbody = el("venster-regels");
+  tbody.replaceChildren();
+  // Na een klik op de bediening snel opnieuw vragen; een fout komt onderin het venster.
+  const opties = {naVerzoek: () => setTimeout(laadSensoren, 800),
+                  bijFout: tekst => { el("venster-fout").textContent = tekst; }};
+  const rijen = s.grootheden.map(g => {
+    const tr = tbody.insertRow();
+    tr.insertCell().textContent = g;
+    const waarde = tr.insertCell(); waarde.className = "getal";
+    const tijd = tr.insertCell(); tijd.className = "tijd";
+    let bediening = null;
+    if (actuator) {
+      // De bediening staat in de regel van haar grootheid (§5.6 punt 5): de schuifknop
+      // van een relais, of het invoerveldje van een grootheid met een in te voeren waarde.
+      const cel = tr.insertCell(), vorm = s.controls[g];
+      cel.className = "bedien";       // op een telefoon een eigen regel (zie de stijl)
+      if (vorm) {
+        bediening = vorm.vorm === "aan/uit" ? Bediening.schuif(s, g, opties)
+                                            : Bediening.invoer(s, g, vorm, GROOTHEDEN[g].eenheid, opties);
+        cel.append(bediening.el);
+      }
+    }
+    return {naam: g, waarde, tijd, bediening};
+  });
+  if (!rijen.length) {
+    const td = tbody.insertRow().insertCell();
+    td.colSpan = 4; td.className = "zacht";
+    td.textContent = "Deze sensor levert geen grootheden.";
+  }
+  venster = {sensor: s, rijen};
+  if (sensorstand) toonVenster();
+  el("venster").showModal();
+}
+
+function toonVenster() {
+  const s = venster.sensor;
+  const stand = sensorstand.sensoren.find(x => x.id === s.id);
+  if (!stand) return;
+  const schakel = sensorstand.schakel[s.id] || null;
+  for (const rij of venster.rijen) {
+    const w = stand.grootheden.find(x => x.naam === rij.naam);
+    const heeft = !!w && w.waarde !== null;
+    // De laatst bekende waarde, ook van een sensor die nu stil is: het tijdstip erachter
+    // laat zien hoe oud ze is.
+    rij.waarde.textContent = heeft ? waardeTekst(rij.naam, w.waarde) : "--";
+    rij.tijd.textContent = heeft ? klok(w.ts) : "--";
+    rij.tijd.title = heeft ? moment(w.ts, true) : "";
+    // De stip van de schuifknop toont de werkelijke stand; van een relais dat stil is,
+    // is die onbekend (§5.6): dan geen waarde meegeven.
+    if (rij.bediening) rij.bediening.toon(schakel, heeft && stand.live ? w.waarde : null);
+  }
+  // Bij een relais: de veilige stand, en wat de schakellaag wil en waarom (§5.6 "Relais in
+  // het web"). De veilige stand is de andere dan de actieve.
+  if (s.controls.relais) {
+    const veilig = s.actieve_stand === "aan" ? "uit" : "aan";
+    el("venster-schakel").textContent = "Veilige stand: " + veilig + ". " + (schakel
+      ? "Keuze: " + (schakel.keuze === "auto" ? "auto" : "met de hand " + schakel.keuze)
+        + ". De schakellaag wil: " + schakel.stand + " (" + schakel.reden + ")."
+      : "De schakellaag meldt niets (draait de service brms-schakel?); de bediening is uitgeschakeld.");
+  }
+}
+el("venster-sluit").addEventListener("click", () => el("venster").close());
+// Sluiten (ook met Escape): het venster wordt niet meer bijgewerkt.
+el("venster").addEventListener("close", () => { venster = null; });
 
 // --- logboek -------------------------------------------------------------------------------
 // Welk deel van het logboek de lijst toont (v0.61, §5.6 systeempagina punt 3); dezelfde
@@ -409,6 +648,10 @@ function wachtOpHerstart(wat) {
 
 // --- begin ---------------------------------------------------------------------------------
 laadSysteem();
+maakTegels();
+laadSensoren();
+// De sensoren elke 5 s (zoals de pagina Overzicht), de rest van de pagina elke 30 s.
+setInterval(laadSensoren, SENSOR_INTERVAL);
 laadLogboek();
 const verversen = setInterval(() => {
   laadSysteem();

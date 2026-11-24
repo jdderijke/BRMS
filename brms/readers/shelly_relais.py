@@ -29,21 +29,29 @@ geeft de toestand van alle onderdelen. Gecontroleerd met de plug zelf (§5.2.6,
 De energieteller (aenergy), de netfrequentie en de temperatuur in de plug worden niet
 opgeslagen (besluit OPEN-27).
 
-Schakelen (§5.2.6 punt 3 en 4):
+Schakelen (§5.2.6 punt 3, §5.8 punt 5):
 
-    http://<adres>/rpc/Switch.Set?id=0&on=true&toggle_after=600     aan, na 600 s vanzelf uit
+    http://<adres>/rpc/Switch.Set?id=0&on=true&toggle_after=120     aan, na 120 s vanzelf uit
     http://<adres>/rpc/Switch.Set?id=0&on=false                     uit
 
-`toggle_after` is de uitschakeltijd die de Shelly zelf bewaakt: na die tijd keert hij de
-stand om, ook als BRMS intussen is vastgelopen. "Aan" gaat daarom nooit zonder.
+`toggle_after` is de terugschakeltijd die de Shelly zelf bewaakt: na die tijd keert hij de
+stand om, ook als BRMS intussen is vastgelopen. Elk relais heeft een veilige stand (het
+veld `veilige_stand` in brms.toml: de kachel uit, de walstroom aan). De andere, actieve
+stand gaat nooit zonder terugschakeltijd; de veilige stand gaat altijd zonder.
 """
 
+from brms import grootheden
 from brms.readers.shelly_uni import ShellyFout, Veld
 
 # De grootheden die dit sensortype levert (§5.2.6 punt 2 en 5, §5.4.2 punt 3). De reader
 # voegt de signaalsterkte van de wifi (rssi) toe. 'walstroom' wordt niet gemeten maar
 # afgeleid van de spanning (zie walstroom() hieronder).
 LEVERT = ("relais", "vermogen", "spanning", "stroom", "walstroom")
+
+# De grootheden van dit type die te bedienen zijn, met de vorm van de bediening (§5.4.2
+# punt 8): alleen de stand van het relais, als aan/uit. Of BRMS het relais van een
+# bepaalde plug ook echt mag bedienen, staat in brms.toml (controls = ["relais"]).
+BEDIENBAAR = {"relais": grootheden.Bediening(grootheden.AANUIT)}
 
 # De plug zit op de walstroom: staat er netspanning op, dan is er walstroom (§5.2.6 punt
 # 5). Boven deze spanning (volt) geldt walstroom = 1, anders 0.
@@ -103,15 +111,24 @@ def walstroom(spanning: float) -> tuple[float, str]:
             f"spanning {spanning:g} V {'>' if aan else '<='} {WALSTROOM_DREMPEL:g} V")
 
 
-def zet_url(adres: str, aan: bool, duur: float | None = None) -> str:
+def zet_url(adres: str, aan: bool, duur: float | None = None, veilig_aan: bool = False) -> str:
     """Het adres van de schakelopdracht.
 
-    aan   True = relais aan, False = uit
-    duur  de uitschakeltijd in seconden; verplicht bij "aan" (§5.2.6 punt 4): een kachel
-          die aan blijft staan als BRMS wegvalt, is een risico. ValueError zonder duur.
+    aan         True = relais aan, False = uit
+    duur        de terugschakeltijd in seconden: na die tijd keert de Shelly de stand zelf
+                weer om
+    veilig_aan  de veilige stand van dit relais (§5.8 punt 2): False = uit (de kachel, de
+                standaard), True = aan (een relais dat de walstroom schakelt)
+
+    De veilige stand gaat altijd zonder terugschakeltijd: daar moet het relais blijven
+    staan. De andere, actieve stand kan alleen mét (§5.8 punt 5): een kachel die aan
+    blijft staan, of walstroom die uit blijft, als BRMS wegvalt, is een risico.
+    ValueError bij de actieve stand zonder duur.
     """
-    if not aan:
-        return f"http://{adres}/rpc/Switch.Set?id={UITGANG}&on=false"
+    basis = f"http://{adres}/rpc/Switch.Set?id={UITGANG}&on={'true' if aan else 'false'}"
+    if aan == veilig_aan:
+        return basis
     if duur is None or duur <= 0:
-        raise ValueError("'aan' kan alleen met een uitschakeltijd (duur) groter dan 0")
-    return f"http://{adres}/rpc/Switch.Set?id={UITGANG}&on=true&toggle_after={duur:g}"
+        raise ValueError(f"'{'aan' if aan else 'uit'}' is hier de actieve stand en kan alleen "
+                         f"met een terugschakeltijd (duur) groter dan 0")
+    return f"{basis}&toggle_after={duur:g}"
