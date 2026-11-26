@@ -1,6 +1,6 @@
 # BRMS – Architectuur
 
-**Versie 0.103 – concept** · 24 november 2026
+**Versie 0.104 – concept** · 26 november 2026
 
 Dit document beschrijft wát BRMS doet en waarom. Er wordt niets gebouwd dat hier niet
 staat. Elke sectie volgt dezelfde opbouw: eerst de **redenering**, dan de **verworpen
@@ -422,6 +422,9 @@ en betekent stilte gewoon "sensor stil". Er is geen werk aan de 230V-kant nodig.
 4. **Walstroom** komt uit de AC-ingangstoestand van de MultiPlus (grootheid `walstroom`,
    §5.3.3). De veldnaam in de decoder (bekend als `ac_in_state`) wordt bij de eerste test
    met de echte MultiPlus bevestigd.
+   **[OPEN-47]** De dongle zendt meer uit dan de toestand van de AC-ingang (onder meer
+   vermogen AC-in en AC-uit, en de apparaattoestand). Welke daarvan BRMS opneemt, wordt
+   beslist als de dongle er is (§11).
 5. De Shelly-reader (§5.2.1) wordt alleen nog gebruikt voor de **bilge** (Shelly Plus Uni).
 6. OPEN-8 vervalt.
 7. **Sensortypen in de configuratie** (v0.27), elk met een verplichte **`sleutel`** (32
@@ -3645,6 +3648,7 @@ volledige test, en de opslag hoeft dan geen onderscheid te kennen.
 | 45 | ~~Live-historie van de Victron-apparaten gaat maar ongeveer 5,3 uur terug (ze komen ruim 5 keer per seconde op de bus, met herhalingen van dezelfde meting)~~ – **besloten in v0.102**: de BLE-reader geeft een Victron-apparaat hooguit één keer per seconde door | §5.2.2 punt 11, §5.6 punt 4 |
 | 46 | ~~Welke ontvangst van een Victron-apparaat per seconde doorgaat~~ – **besloten in v0.103**: de eerste van elke seconde; de rest van die seconde valt af | §5.2.2 punt 11 |
 | 41 | ~~Andere inrichting van de alarmenpagina en de systeempagina~~ – **besloten in v0.99**: systeempagina in de volgorde Opslag, Sensoren en actuators, Logboek, Services, Herstarten; alarmenpagina in de volgorde Nu actief, Opgetreden alarmen, Alarmregels | §5.6 |
+| 47 | Meer grootheden van de MultiPlus opnemen dan alleen `walstroom`. De VE.Bus Smart dongle zendt in Instant Readout vermoedelijk ook uit: vermogen AC-in en AC-uit (W), de apparaattoestand (bulk, absorptie, float, omvormen, uit), accuspanning, accustroom, accutemperatuur, laadtoestand, alarm en foutcode; de stroom op de AC-ingang vermoedelijk niet. Eerst met de echte dongle nagaan wat hij werkelijk uitzendt (`brms monitor`), dan kiezen. Kandidaten: vermogen AC-in (verbruik van de wal) en de apparaattoestand (laadt hij echt?); spanning, stroom en laadtoestand levert de BMV al. Elke keuze is een nieuwe grootheid in §5.3.3 | §5.2.2 punt 4 en 7, §5.3.3 |
 
 Daarnaast uit `CLAUDE.md`: de accu is nu 4× Victron AGM 12 V 110 Ah en wordt later deze
 winter vervangen door LiFePO4 (2× 300 Ah); bij die wissel de BMV-instellingen en de grens
@@ -3657,6 +3661,7 @@ maand).
 
 | Versie | Datum | Auteur | Wijziging |
 |---|---|---|---|
+| 0.104 | 2026-11-26 | Claude Code, Fable 5.2 | OPEN-47 toegevoegd (§5.2.2 punt 4, §11): welke grootheden van de MultiPlus BRMS opneemt naast `walstroom` (onder meer vermogen AC-in en AC-uit, apparaattoestand). Te beslissen als de VE.Bus Smart dongle er is. Niets gebouwd. |
 | **0.103** | 2026-11-24 | Claude Code, Fable 5.2 | OPEN-46 besloten (§5.2.2 punt 11): van een Victron-apparaat gaat de eerste ontvangst van elke seconde door. De grafiekenpagina van v0.101 en de beperking van v0.102 gebouwd in code v0.30.0: de keuzelijsten en de standaard van een grafiek, "eerder" en "later" in stappen van een derde (bij een aantal metingen de helft), en in de BLE-reader hooguit één Instant Readout-bericht per Victron-apparaat per seconde. Beproefd met tests (539); nog niet op de Pi. |
 | 0.102 | 2026-11-24 | Claude Code, Fable 5.2 | OPEN-45 besloten (§5.2.2 nieuw punt 11, §5.6 punt 4); ontwerp, nog niet gebouwd. Gemeten: een Victron-apparaat zendt vijf tot zeven keer per seconde hetzelfde bericht uit en de reader zette elke ontvangst op de bus, met hetzelfde tijdstip. De BLE-reader geeft een Victron-apparaat voortaan hooguit één keer per seconde door; de live-historie haalt daarmee 24 uur en "laatste 50 metingen" is 50 seconden. Verworpen: beperken in het live-geheugen, het maximum verhogen, zo laten. Nieuw OPEN-46: welke ontvangst van een seconde doorgaat. |
 | 0.101 | 2026-11-24 | Claude Code, Fable 5.2 | Grafiekenpagina (§5.6 punt 4), besluit van de gebruiker; ontwerp, nog niet gebouwd. Live: een nieuwe grafiek begint met "laatste uur" (was 10 minuten); "laatste 6 uur" erbij (samengevat per 30 s). Database: "3 dagen" erbij, "30 dagen" heet "1 maand"; standaard blijft 24 uur. "eerder" en "later" verspringen bij beide bronnen een derde van het venster of de periode, en bij "laatste 50 / 100 metingen" de helft (was een heel venster). Gemeten op de Pi: de Victron-apparaten komen ruim 5 keer per seconde op de bus, waardoor hun live-historie door het maximum van 100.000 metingen ongeveer 5,3 uur teruggaat; nieuw OPEN-45. |
